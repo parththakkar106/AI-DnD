@@ -1,5 +1,6 @@
-# Stage 1 — build the React SPA
-FROM node:22-alpine AS frontend-build
+# Stage 1 — build the React SPA. Node 24: package-lock.json is written by
+# npm 11, which older bundled npms (node 22's 10.x) refuse as out-of-sync.
+FROM node:24-alpine AS frontend-build
 WORKDIR /build
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
