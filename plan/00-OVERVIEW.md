@@ -72,3 +72,31 @@ player input
    15, embedding-based retrieval of relevant memories into context.
 
 Each phase ends with the app runnable and testable end-to-end.
+
+## Public release (phases 7–10)
+
+Goal: public GitHub repo + hosted multi-user deployment, linkable from resume/website.
+
+| Area | Decision |
+|---|---|
+| License | MIT |
+| Auth | Email + password, **optional** — guest sessions play instantly, register to keep data |
+| Signup | Open (rate-limited) |
+| LLM keys | BYOK per user + shared server-funded demo key (capped, details TBD in Phase 8) |
+| Database (hosted) | **TBD — ask at start of Phase 9** (SQLite-on-disk vs Postgres) |
+| Hosting | Render (tier TBD in Phase 10) |
+| Domain | Platform URL (custom domain later, optional) |
+| README media | Deferred — text-only first, screenshots/GIF in a later pass |
+
+Open questions are recorded at the top of each phase file under "Ask before implementing".
+
+7. **[Phase 7 — Public repo & portability](07-phase-public-repo.md)**: MIT license, portfolio
+   README, Dockerfile + compose, cross-platform run instructions, publish to GitHub.
+8. **[Phase 8 — Optional accounts & multi-user](08-phase-accounts.md)** *(the big one)*:
+   guest-first sessions, optional email+password upgrade, per-user data scoping across all
+   routers/tables, per-user encrypted BYOK settings, shared demo key with caps.
+9. **[Phase 9 — Production hardening](09-phase-hardening.md)**: env-var config, quickjs
+   time/memory limits, rate limiting, size/row caps, locked-down debug surface, production
+   serving, database decision.
+10. **[Phase 10 — Deploy & publish](10-phase-deploy.md)**: Render blueprint + deploy, seeded
+    demo scenarios, live smoke test, resume/website links and blurb.
