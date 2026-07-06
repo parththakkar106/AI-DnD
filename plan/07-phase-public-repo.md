@@ -42,10 +42,13 @@ history/messages are fine to publish as-is.
 - [x] `docker-compose.yml`: single service, named volume mounted at `/data`
       (`AIDND_DB_PATH=/data/data.db`), port mapping.
 - [x] `start.sh` for macOS/Linux dev parity with `start.ps1` (optional, nice-to-have).
-- [ ] Test: `docker compose up` from a clean clone → app works at `http://localhost:8000`.
-      **Blocked locally: Docker is not installed on the dev machine.** Verified without Docker:
-      production frontend build + backend serving the SPA (deep links OK) + DB-path override
-      all work. Test the image on any Docker machine (or let Render build it in Phase 10).
+- [x] Test: `docker compose up` from a clean clone → app works at `http://localhost:8000`.
+      Done 2026-07-06 in WSL2 Ubuntu (Docker Engine installed there for this): health + SPA +
+      deep links 200, scenario created via API survives a full `compose down`/`up` (named
+      volume). Two real bugs found and fixed: package-lock.json was missing top-level
+      `@emnapi/*` entries (regenerated with npm 11.18) and the build image needed node 24 to
+      match the npm-11 lockfile. Note: from Windows, reach a WSL-hosted container via the WSL
+      IP (`hostname -I`) — localhost forwarding didn't apply; irrelevant on normal hosts.
 
 ## Publish
 
