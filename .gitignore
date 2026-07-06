@@ -16,3 +16,6 @@ frontend/dist/
 
 # Misc
 .claude/
+
+# Phase 8: auto-generated session/encryption secret (lives next to the DB)
+secret.key

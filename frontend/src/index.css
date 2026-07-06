@@ -94,6 +94,56 @@ a:hover { color: var(--accent-bright); }
 }
 .topnav a.navlink:hover { color: var(--text); }
 
+/* Phase 8: account area (hosted multi-user mode only) */
+.nav-account {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.nav-account button { padding: 5px 12px; font-size: 0.82rem; }
+.guest-nudge {
+  color: var(--text-dim);
+  font-size: 0.78rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.account-email {
+  color: var(--text-dim);
+  font-size: 0.82rem;
+  max-width: 220px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+button.linklike {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+button.linklike:hover { text-decoration: underline; }
+@media (max-width: 900px) {
+  .guest-nudge { display: none; }
+}
+
+/* Phase 8: demo-key banner (Settings) */
+.demo-banner {
+  border: 1px solid var(--border-bright);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-bottom: 18px;
+  color: var(--text-dim);
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+.demo-banner strong { color: var(--accent-bright); }
+
 .page {
   flex: 1;
   width: 100%;

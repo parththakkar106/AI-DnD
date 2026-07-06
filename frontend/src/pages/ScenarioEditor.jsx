@@ -79,19 +79,31 @@ export default function ScenarioEditor() {
   }
 
   if (!scenario) return null
+  // Shared demo scenarios (Phase 8) are visible to everyone but owned by no
+  // one; the backend rejects edits, so present them read-only.
+  const readOnly = !!scenario.is_public
 
   return (
     <div className="page">
       <div className="page-header">
-        <h1>Edit Scenario</h1>
+        <h1>{readOnly ? 'Scenario (read-only)' : 'Edit Scenario'}</h1>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
           <span style={{ color: 'var(--text-dim)', fontSize: '0.85rem' }}>{status}</span>
           <button onClick={exportScenario}>Export</button>
-          <button className="danger" onClick={deleteScenario}>Delete</button>
+          {!readOnly && <button className="danger" onClick={deleteScenario}>Delete</button>}
           <button className="primary" onClick={play}>Play</button>
         </div>
       </div>
 
+      {readOnly && (
+        <div className="demo-banner">
+          This is a shared demo scenario — it can’t be edited, but you can hit
+          <strong> Play</strong> to start your own adventure from it, or <strong>Export</strong> and
+          re-import it as your own copy.
+        </div>
+      )}
+
+      <fieldset disabled={readOnly} style={{ border: 'none', padding: 0, margin: 0, minWidth: 0 }}>
       <Field label="Title" value={scenario.title} onChange={(v) => setField('title', v)} />
       <Field label="Description" value={scenario.description} onChange={(v) => setField('description', v)}
         textarea placeholder="Shown in the scenario list; not sent to the AI." />
@@ -139,6 +151,7 @@ export default function ScenarioEditor() {
           </label>
         ))
       )}
+      </fieldset>
     </div>
   )
 }

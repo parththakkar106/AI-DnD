@@ -33,6 +33,12 @@ models make the whole experience $0.
   (`backend/app/memorybank.py`).
 - **Import/export** — AI Dungeon-compatible formats for scripts and scenarios; JSON for
   everything.
+- **Optional accounts for hosted deployments** — by default the app is single-user with zero
+  auth friction; set `AIDND_MULTI_USER=1` and visitors play instantly as guests (signed
+  session cookie), can register (email + password) at any point to keep their data, and each
+  user gets isolated data plus their own encrypted-at-rest API key. A server-funded **shared
+  demo key** with a daily turn cap lets people try it without bringing a key
+  (`backend/app/auth.py`).
 
 ## Quick start
 
@@ -95,8 +101,10 @@ player input
 
 ```
 frontend/   React + Vite SPA  ──HTTP/SSE──►  backend/  FastAPI
-                                              ├─ routers/      scenarios, adventures, story cards, scripts, settings, debug
-                                              ├─ models.py     SQLAlchemy: Scenario, Adventure, Action, StoryCard, Script, Settings, Memory
+                                              ├─ routers/      auth, scenarios, adventures, story cards, scripts, settings, debug
+                                              ├─ models.py     SQLAlchemy: User, Scenario, Adventure, Action, StoryCard, Script, Settings, Memory
+                                              ├─ auth.py       guest/registered users, sessions, shared demo key
+                                              ├─ security.py   password hashing, cookie signing, API-key encryption
                                               ├─ context/      prompt assembly under a token budget
                                               ├─ scripting/    quickjs sandbox + AI Dungeon API surface
                                               ├─ memorybank.py auto-summarization + embedding retrieval

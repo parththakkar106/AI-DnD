@@ -12,6 +12,31 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+class User(Base):
+    """Phase 8 — optional accounts.
+
+    Three kinds of rows share this table:
+      - the "local user" (email NULL, is_guest False): auto-created in
+        single-user/local mode; owns everything a pre-Phase-8 DB had;
+      - guests (email NULL, is_guest True): created on first visit in
+        multi-user mode, identified only by their session cookie;
+      - registered users (email set): a guest upgraded in place, so their
+        data survives registration with no re-parenting.
+    """
+
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    email: Mapped[str | None] = mapped_column(String(320), unique=True, nullable=True)
+    password_hash: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    is_guest: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Shared demo key usage (resets when the UTC date changes).
+    demo_turns_used: Mapped[int] = mapped_column(Integer, default=0)
+    demo_turns_date: Mapped[str] = mapped_column(String(10), default="")
+
+
 scenario_scripts = Table(
     "scenario_scripts",
     Base.metadata,
@@ -24,6 +49,11 @@ class Scenario(Base):
     __tablename__ = "scenarios"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    # NULL owner + is_public = seeded demo content, readable by everyone.
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=True
+    )
+    is_public: Mapped[bool] = mapped_column(Boolean, default=False)
     title: Mapped[str] = mapped_column(String(200), default="Untitled Scenario")
     description: Mapped[str] = mapped_column(Text, default="")
     prompt: Mapped[str] = mapped_column(Text, default="")
@@ -46,6 +76,9 @@ class Adventure(Base):
     __tablename__ = "adventures"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=True
+    )
     scenario_id: Mapped[int | None] = mapped_column(
         ForeignKey("scenarios.id", ondelete="SET NULL"), nullable=True
     )
@@ -157,6 +190,9 @@ class Script(Base):
     __tablename__ = "scripts"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=True
+    )
     name: Mapped[str] = mapped_column(String(200), default="Untitled Script")
     description: Mapped[str] = mapped_column(Text, default="")
     library_js: Mapped[str] = mapped_column(Text, default="")
@@ -191,8 +227,14 @@ class AdventureScript(Base):
 class Settings(Base):
     __tablename__ = "settings"
 
-    id: Mapped[int] = mapped_column(primary_key=True)  # single row, id=1
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # Phase 8: one row per user (pre-Phase-8 DBs had a single id=1 row, which
+    # the migration assigns to the local user).
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=True, unique=True
+    )
     endpoint_url: Mapped[str] = mapped_column(String(500), default="http://localhost:11434/v1")
+    # Fernet-encrypted at rest ("enc:..." — see security.py); use api_key_plain.
     api_key: Mapped[str] = mapped_column(String(500), default="")
     model: Mapped[str] = mapped_column(String(200), default="")
     api_mode: Mapped[str] = mapped_column(String(20), default="chat")  # chat|completion
@@ -219,3 +261,13 @@ class Settings(Base):
     embedding_model: Mapped[str] = mapped_column(String(200), default="")  # "" = bank disabled
     memory_bank_capacity: Mapped[int] = mapped_column(Integer, default=200)
     memory_top_k: Mapped[int] = mapped_column(Integer, default=5)
+
+    @property
+    def has_api_key(self) -> bool:
+        return bool(self.api_key)
+
+    @property
+    def api_key_plain(self) -> str:
+        from . import security  # local import: models is imported before security
+
+        return security.decrypt_secret(self.api_key)

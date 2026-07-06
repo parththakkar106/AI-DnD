@@ -2,9 +2,14 @@
 
 Run from the backend folder:  .venv\\Scripts\\python.exe seed_demo.py
 Safe to rerun: it deletes any previous rows titled "[Demo] ..." first.
+
+Phase 8: the scenario is seeded as PUBLIC (user_id NULL + is_public), so in
+multi-user mode every guest sees it as read-only starter content. The sample
+adventure and script-library copies belong to the local user (only relevant
+on single-user installs).
 """
 
-from app import models, migrations
+from app import auth, models, migrations
 from app.database import SessionLocal, engine
 
 # create_all + user_version stamp; plain create_all would leave a fresh DB at
@@ -205,6 +210,8 @@ STORY_CARDS = [
 
 db = SessionLocal()
 try:
+    owner = auth.local_user(db)
+
     # Remove earlier demo rows so reruns stay clean.
     for adv in db.query(models.Adventure).filter(models.Adventure.title.like(f"{DEMO_PREFIX}%")):
         db.delete(adv)
@@ -214,12 +221,14 @@ try:
         db.delete(s)
     db.commit()
 
-    # Script library
+    # Scripts attached to the public scenario are unowned (user_id NULL) so
+    # they ship with it everywhere; they're copied into each adventure at
+    # creation, so they never need to appear in anyone's script library.
     scripts = [models.Script(**s) for s in SCRIPTS]
     db.add_all(scripts)
 
-    # Scenario with cards and scripts attached
-    scenario = models.Scenario(**SCENARIO)
+    # Scenario with cards and scripts attached — public starter content.
+    scenario = models.Scenario(**SCENARIO, is_public=True)
     scenario.scripts = scripts
     db.add(scenario)
     db.flush()
@@ -228,6 +237,7 @@ try:
 
     # Adventure created from the scenario, mirroring POST /api/adventures
     adventure = models.Adventure(
+        user_id=owner.id,
         scenario_id=scenario.id,
         title=scenario.title,
         memory=scenario.memory,

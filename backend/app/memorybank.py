@@ -57,7 +57,7 @@ _tasks: set[asyncio.Task] = set()
 def summary_provider(settings: models.Settings) -> OpenAICompatibleProvider:
     return OpenAICompatibleProvider(
         settings.endpoint_url,
-        settings.api_key,
+        settings.api_key_plain,
         settings.summary_model or settings.model,
         settings.api_mode,
         settings.reasoning_max_tokens,
@@ -66,7 +66,7 @@ def summary_provider(settings: models.Settings) -> OpenAICompatibleProvider:
 
 def embedding_provider(settings: models.Settings) -> OpenAICompatibleProvider:
     return OpenAICompatibleProvider(
-        settings.endpoint_url, settings.api_key, settings.embedding_model
+        settings.endpoint_url, settings.api_key_plain, settings.embedding_model
     )
 
 
@@ -165,8 +165,15 @@ async def run_post_turn(adventure_id: int) -> None:
     db = SessionLocal()
     try:
         adventure = db.get(models.Adventure, adventure_id)
-        settings = db.get(models.Settings, 1)
-        if adventure is None or settings is None:
+        if adventure is None:
+            return
+        # Settings are per-user (Phase 8): use the adventure owner's row.
+        settings = (
+            db.query(models.Settings)
+            .filter(models.Settings.user_id == adventure.user_id)
+            .first()
+        )
+        if settings is None:
             return
         # Undo/retry can shrink the action list below a stored cursor, which
         # would stall summarization until the story grew past it again.

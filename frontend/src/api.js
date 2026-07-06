@@ -1,8 +1,19 @@
-async function request(path, options = {}) {
+// Multi-user mode: a 401 means our session cookie is missing/stale. Hitting
+// /api/auth/me creates a fresh guest session, after which the original call
+// is retried once.
+async function ensureSession() {
+  await fetch('/api/auth/me')
+}
+
+async function request(path, options = {}, isRetry = false) {
   const resp = await fetch(`/api${path}`, {
     headers: { 'Content-Type': 'application/json' },
     ...options,
   })
+  if (resp.status === 401 && !isRetry && path !== '/auth/me') {
+    await ensureSession()
+    return request(path, options, true)
+  }
   if (!resp.ok) {
     let detail = resp.statusText
     try {
@@ -16,13 +27,17 @@ async function request(path, options = {}) {
 }
 
 // POSTs to an SSE endpoint and dispatches events: {type: 'player'|'chunk'|'done'|'error', ...}
-async function streamSSE(path, payload, onEvent, signal) {
+async function streamSSE(path, payload, onEvent, signal, isRetry = false) {
   const resp = await fetch(`/api${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
     signal,
   })
+  if (resp.status === 401 && !isRetry) {
+    await ensureSession()
+    return streamSSE(path, payload, onEvent, signal, true)
+  }
   if (!resp.ok) {
     let detail = resp.statusText
     try { detail = (await resp.json()).detail || detail } catch { /* non-JSON */ }
@@ -46,6 +61,14 @@ async function streamSSE(path, payload, onEvent, signal) {
 }
 
 export const api = {
+  // Auth (Phase 8 — no-ops in local mode beyond getMe)
+  getMe: () => request('/auth/me'),
+  register: (email, password) =>
+    request('/auth/register', { method: 'POST', body: JSON.stringify({ email, password }) }),
+  login: (email, password) =>
+    request('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }),
+  logout: () => request('/auth/logout', { method: 'POST' }),
+
   // Scenarios
   listScenarios: () => request('/scenarios'),
   getScenario: (id) => request(`/scenarios/${id}`),

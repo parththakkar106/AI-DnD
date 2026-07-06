@@ -7,7 +7,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .database import engine
 from .migrations import bootstrap
-from .routers import adventures, debug, scenarios, scripts, settings, story_cards
+from .routers import adventures, auth, debug, scenarios, scripts, settings, story_cards
 
 bootstrap(engine)
 
@@ -20,6 +20,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth.router)
 app.include_router(scenarios.router)
 app.include_router(adventures.router)
 app.include_router(story_cards.router)

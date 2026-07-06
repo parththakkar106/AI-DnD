@@ -1,52 +1,77 @@
 from fastapi import APIRouter, Body, Depends, HTTPException
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from .. import models, schemas
+from .. import auth, models, schemas
 from ..database import get_db
 
 router = APIRouter(prefix="/api/scenarios", tags=["scenarios"])
 
 
-def get_scenario_or_404(scenario_id: int, db: Session) -> models.Scenario:
+def get_scenario_or_404(
+    scenario_id: int, db: Session, user: models.User, *, edit: bool = False
+) -> models.Scenario:
+    """Visible = owned or public; editable = owned only."""
     scenario = db.get(models.Scenario, scenario_id)
-    if scenario is None:
+    if scenario is None or (scenario.user_id != user.id and not scenario.is_public):
         raise HTTPException(404, "Scenario not found")
+    if edit and scenario.user_id != user.id:
+        raise HTTPException(403, "This is a shared demo scenario — it can't be edited. Start an adventure from it, or duplicate it.")
     return scenario
 
 
 @router.get("", response_model=list[schemas.ScenarioListItem])
-def list_scenarios(db: Session = Depends(get_db)):
+def list_scenarios(
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.get_current_user),
+):
     return (
         db.query(models.Scenario)
+        .filter(or_(models.Scenario.user_id == user.id, models.Scenario.is_public))
         .order_by(models.Scenario.updated_at.desc())
         .all()
     )
 
 
 @router.post("", response_model=schemas.ScenarioOut, status_code=201)
-def create_scenario(payload: schemas.ScenarioCreate, db: Session = Depends(get_db)):
-    scenario = models.Scenario(**payload.model_dump())
+def create_scenario(
+    payload: schemas.ScenarioCreate,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.get_current_user),
+):
+    scenario = models.Scenario(**payload.model_dump(), user_id=user.id)
     db.add(scenario)
     db.commit()
     return scenario
 
 
 @router.get("/{scenario_id}", response_model=schemas.ScenarioOut)
-def get_scenario(scenario_id: int, db: Session = Depends(get_db)):
-    return get_scenario_or_404(scenario_id, db)
+def get_scenario(
+    scenario_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.get_current_user),
+):
+    return get_scenario_or_404(scenario_id, db, user)
 
 
 @router.patch("/{scenario_id}", response_model=schemas.ScenarioOut)
 def update_scenario(
-    scenario_id: int, payload: schemas.ScenarioUpdate, db: Session = Depends(get_db)
+    scenario_id: int,
+    payload: schemas.ScenarioUpdate,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.get_current_user),
 ):
-    scenario = get_scenario_or_404(scenario_id, db)
+    scenario = get_scenario_or_404(scenario_id, db, user, edit=True)
     data = payload.model_dump(exclude_unset=True)
     script_ids = data.pop("script_ids", None)
     for field, value in data.items():
         setattr(scenario, field, value)
     if script_ids is not None:
-        scripts = db.query(models.Script).filter(models.Script.id.in_(script_ids)).all()
+        scripts = (
+            db.query(models.Script)
+            .filter(models.Script.id.in_(script_ids), models.Script.user_id == user.id)
+            .all()
+        )
         if len(scripts) != len(set(script_ids)):
             raise HTTPException(404, "One or more scripts not found")
         scenario.scripts = sorted(scripts, key=lambda s: script_ids.index(s.id))
@@ -55,8 +80,12 @@ def update_scenario(
 
 
 @router.delete("/{scenario_id}", status_code=204)
-def delete_scenario(scenario_id: int, db: Session = Depends(get_db)):
-    scenario = get_scenario_or_404(scenario_id, db)
+def delete_scenario(
+    scenario_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.get_current_user),
+):
+    scenario = get_scenario_or_404(scenario_id, db, user, edit=True)
     db.delete(scenario)
     db.commit()
 
@@ -64,8 +93,12 @@ def delete_scenario(scenario_id: int, db: Session = Depends(get_db)):
 # ---------- Import / Export ----------
 
 @router.get("/{scenario_id}/export")
-def export_scenario(scenario_id: int, db: Session = Depends(get_db)):
-    s = get_scenario_or_404(scenario_id, db)
+def export_scenario(
+    scenario_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.get_current_user),
+):
+    s = get_scenario_or_404(scenario_id, db, user)
     return {
         "format": "ai-dnd-scenario-v1",
         "title": s.title,
@@ -107,7 +140,11 @@ _IGNORED_KEYS = {"format", "storyCards", "worldInfo", "worldInformation", "scrip
 
 
 @router.post("/import", status_code=201)
-def import_scenario(bundle: dict = Body(...), db: Session = Depends(get_db)):
+def import_scenario(
+    bundle: dict = Body(...),
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.get_current_user),
+):
     """Accepts our export format and AI Dungeon scenario exports best-effort;
     reports any keys it didn't understand."""
     fields: dict = {}
@@ -124,7 +161,7 @@ def import_scenario(bundle: dict = Body(...), db: Session = Depends(get_db)):
     elif isinstance(tags, str):
         fields["tags"] = tags
 
-    scenario = models.Scenario(**fields)
+    scenario = models.Scenario(**fields, user_id=user.id)
     if not scenario.title:
         scenario.title = "Imported Scenario"
     db.add(scenario)
@@ -156,6 +193,7 @@ def import_scenario(bundle: dict = Body(...), db: Session = Depends(get_db)):
         if not isinstance(item, dict):
             continue
         script = models.Script(
+            user_id=user.id,
             name=str(item.get("name") or "Imported Script"),
             description=str(item.get("description") or ""),
             library_js=str(item.get("library") or item.get("sharedLibrary") or ""),

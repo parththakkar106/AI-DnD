@@ -46,6 +46,25 @@ MIGRATIONS: list[tuple[int, str]] = [
     # Reasoning-model support: separate thinking budget + stored reasoning text.
     (11, "ALTER TABLE settings ADD COLUMN reasoning_max_tokens INTEGER NOT NULL DEFAULT 0"),
     (12, "ALTER TABLE actions ADD COLUMN reasoning TEXT"),
+    # Phase 8: optional accounts. The `users` table itself comes from
+    # create_all; these adopt all pre-existing rows under a "local user"
+    # (id=1) so a single-user install keeps working unchanged.
+    (13, """
+        INSERT INTO users (id, email, password_hash, is_guest, created_at,
+                           demo_turns_used, demo_turns_date)
+        SELECT 1, NULL, NULL, 0, CURRENT_TIMESTAMP, 0, ''
+        WHERE NOT EXISTS (SELECT 1 FROM users)
+    """),
+    (14, "ALTER TABLE scenarios ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE CASCADE"),
+    (15, "UPDATE scenarios SET user_id = 1"),
+    (16, "ALTER TABLE scenarios ADD COLUMN is_public BOOLEAN NOT NULL DEFAULT 0"),
+    (17, "ALTER TABLE scripts ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE CASCADE"),
+    (18, "UPDATE scripts SET user_id = 1"),
+    (19, "ALTER TABLE adventures ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE CASCADE"),
+    (20, "UPDATE adventures SET user_id = 1"),
+    (21, "ALTER TABLE settings ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE CASCADE"),
+    (22, "UPDATE settings SET user_id = 1"),
+    (23, "CREATE UNIQUE INDEX IF NOT EXISTS ix_settings_user_id ON settings (user_id)"),
 ]
 
 LATEST_VERSION = max((v for v, _ in MIGRATIONS), default=1)
@@ -64,3 +83,20 @@ def bootstrap(engine: Engine) -> None:
                 conn.execute(text(sql))
                 current = version
         conn.execute(text(f"PRAGMA user_version = {current}"))
+        _encrypt_plaintext_api_keys(conn)
+
+
+def _encrypt_plaintext_api_keys(conn) -> None:
+    """Phase 8 data migration (can't be plain SQL): API keys saved before
+    encryption-at-rest existed are stored bare; wrap them in Fernet. Runs on
+    every start but matches nothing once all rows carry the enc: prefix."""
+    from . import security  # deferred: security derives its key from DB_PATH setup
+
+    rows = conn.execute(text(
+        "SELECT id, api_key FROM settings WHERE api_key != '' AND api_key NOT LIKE 'enc:%'"
+    )).all()
+    for row_id, plain in rows:
+        conn.execute(
+            text("UPDATE settings SET api_key = :key WHERE id = :id"),
+            {"key": security.encrypt_secret(plain), "id": row_id},
+        )

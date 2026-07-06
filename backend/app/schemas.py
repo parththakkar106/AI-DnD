@@ -66,6 +66,7 @@ class ScenarioUpdate(BaseModel):
 
 class ScenarioOut(ORMModel, ScenarioBase):
     id: int
+    is_public: bool = False  # shared demo content — read-only for everyone
     created_at: datetime
     updated_at: datetime
     story_cards: list[StoryCardOut] = []
@@ -77,6 +78,7 @@ class ScenarioListItem(ORMModel):
     title: str
     description: str
     tags: str
+    is_public: bool = False
     updated_at: datetime
 
 
@@ -226,11 +228,19 @@ class AdventureScriptUpdate(BaseModel):
     output_js: str | None = None
 
 
+# ---------- Auth (Phase 8) ----------
+
+class AuthCredentials(BaseModel):
+    email: str
+    password: str
+
+
 # ---------- Settings ----------
 
 class SettingsOut(ORMModel):
     endpoint_url: str
-    api_key: str
+    # The key itself is never echoed back (encrypted at rest, write-only).
+    has_api_key: bool
     model: str
     api_mode: str
     temperature: float

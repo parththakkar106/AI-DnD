@@ -7,7 +7,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from .. import memorybank, models, schemas
+from .. import auth, memorybank, models, schemas
 from ..context import build_context
 from ..database import get_db
 from ..providers import OpenAICompatibleProvider, PromptParts, ProviderError
@@ -16,20 +16,25 @@ from .settings import get_settings
 
 router = APIRouter(prefix="/api/adventures", tags=["adventures"])
 
+CurrentUser = Depends(auth.get_current_user)
 
-def get_adventure_or_404(adventure_id: int, db: Session) -> models.Adventure:
+
+def get_adventure_or_404(
+    adventure_id: int, db: Session, user: models.User
+) -> models.Adventure:
     adventure = db.get(models.Adventure, adventure_id)
-    if adventure is None:
+    if adventure is None or adventure.user_id != user.id:
         raise HTTPException(404, "Adventure not found")
     return adventure
 
 
 @router.get("", response_model=list[schemas.AdventureListItem])
-def list_adventures(db: Session = Depends(get_db)):
+def list_adventures(db: Session = Depends(get_db), user: models.User = CurrentUser):
     rows = (
         db.query(models.Adventure, func.count(models.Action.id), models.Scenario.title)
         .outerjoin(models.Action)
         .outerjoin(models.Scenario, models.Adventure.scenario_id == models.Scenario.id)
+        .filter(models.Adventure.user_id == user.id)
         .group_by(models.Adventure.id)
         .order_by(models.Adventure.updated_at.desc())
         .all()
@@ -60,15 +65,21 @@ def fill_placeholders(text: str, values: dict[str, str]) -> str:
 
 
 @router.post("", response_model=schemas.AdventureOut, status_code=201)
-def create_adventure(payload: schemas.AdventureCreate, db: Session = Depends(get_db)):
+def create_adventure(
+    payload: schemas.AdventureCreate,
+    db: Session = Depends(get_db),
+    user: models.User = CurrentUser,
+):
     scenario = None
     if payload.scenario_id is not None:
         scenario = db.get(models.Scenario, payload.scenario_id)
-        if scenario is None:
+        # Playable = your own scenario or a shared demo one.
+        if scenario is None or (scenario.user_id != user.id and not scenario.is_public):
             raise HTTPException(404, "Scenario not found")
 
     values = payload.placeholders
     adventure = models.Adventure(
+        user_id=user.id,
         scenario_id=scenario.id if scenario else None,
         title=payload.title or (scenario.title if scenario else "Untitled Adventure"),
         memory=fill_placeholders(scenario.memory, values) if scenario else "",
@@ -119,15 +130,20 @@ def create_adventure(payload: schemas.AdventureCreate, db: Session = Depends(get
 
 
 @router.get("/{adventure_id}", response_model=schemas.AdventureOut)
-def get_adventure(adventure_id: int, db: Session = Depends(get_db)):
-    return get_adventure_or_404(adventure_id, db)
+def get_adventure(
+    adventure_id: int, db: Session = Depends(get_db), user: models.User = CurrentUser
+):
+    return get_adventure_or_404(adventure_id, db, user)
 
 
 @router.patch("/{adventure_id}", response_model=schemas.AdventureOut)
 def update_adventure(
-    adventure_id: int, payload: schemas.AdventureUpdate, db: Session = Depends(get_db)
+    adventure_id: int,
+    payload: schemas.AdventureUpdate,
+    db: Session = Depends(get_db),
+    user: models.User = CurrentUser,
 ):
-    adventure = get_adventure_or_404(adventure_id, db)
+    adventure = get_adventure_or_404(adventure_id, db, user)
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(adventure, field, value)
     db.commit()
@@ -135,8 +151,10 @@ def update_adventure(
 
 
 @router.delete("/{adventure_id}", status_code=204)
-def delete_adventure(adventure_id: int, db: Session = Depends(get_db)):
-    adventure = get_adventure_or_404(adventure_id, db)
+def delete_adventure(
+    adventure_id: int, db: Session = Depends(get_db), user: models.User = CurrentUser
+):
+    adventure = get_adventure_or_404(adventure_id, db, user)
     db.delete(adventure)
     db.commit()
 
@@ -197,11 +215,26 @@ def next_index(adventure: models.Adventure) -> int:
     return max((a.index for a in adventure.actions), default=-1) + 1
 
 
-async def generate_turn(adventure: models.Adventure, db: Session, pipeline: ScriptPipeline):
+async def generate_turn(
+    adventure: models.Adventure,
+    db: Session,
+    pipeline: ScriptPipeline,
+    user: models.User,
+):
     """SSE generator: streams the AI continuation through the context/output
     script hooks, then stores the result."""
-    settings = get_settings(db)
-    memories = await memorybank.retrieve_memories(adventure, settings, update_stats=True)
+    settings = get_settings(db, user)
+    cfg = auth.resolve_provider_config(settings)
+    if cfg.using_demo:
+        # No embedding/summarization calls on the server-funded key: memory
+        # retrieval is skipped (with a visible note when the bank is on).
+        memories = (
+            {"used": [], "error": "Memory bank is unavailable on the shared demo key — add your own API key in Settings."}
+            if adventure.memory_bank_enabled
+            else None
+        )
+    else:
+        memories = await memorybank.retrieve_memories(adventure, settings, update_stats=True)
     system_text, story_text, snapshot = build_context(adventure, settings, memories)
 
     # onModelContext: scripts see (and may rewrite) the whole assembled context.
@@ -223,7 +256,7 @@ async def generate_turn(adventure: models.Adventure, db: Session, pipeline: Scri
     }
 
     provider = OpenAICompatibleProvider(
-        settings.endpoint_url, settings.api_key, settings.model, settings.api_mode,
+        cfg.endpoint_url, cfg.api_key, cfg.model, settings.api_mode,
         settings.reasoning_max_tokens,
     )
     chunks: list[str] = []
@@ -264,15 +297,33 @@ async def generate_turn(adventure: models.Adventure, db: Session, pipeline: Scri
     )
     db.add(ai_action)
     adventure.updated_at = models.utcnow()
+    if cfg.using_demo:
+        # Successful demo turns count against the daily cap (checked up front
+        # in the endpoint); failed provider calls above don't reach here.
+        auth.count_demo_turn(user)
     db.commit()
     db.refresh(ai_action)
     yield sse({"type": "done", "action": action_json(ai_action), "script": pipeline.report()})
-    # Phase 6: fire-and-forget summarization/embedding (opens its own DB session).
-    memorybank.schedule_post_turn(adventure)
+    # Phase 6: fire-and-forget summarization/embedding (opens its own DB
+    # session). Skipped on the demo key — background AI calls would be
+    # unmetered spend on the server-funded key.
+    if not cfg.using_demo:
+        memorybank.schedule_post_turn(adventure)
+
+
+def check_demo_cap(db: Session, user: models.User) -> None:
+    """409/429-style guard before a turn starts, so a capped player's input
+    isn't stored and then left without a reply."""
+    settings = get_settings(db, user)
+    if auth.resolve_provider_config(settings).using_demo and auth.demo_turns_left(user) <= 0:
+        raise HTTPException(429, auth.DEMO_CAP_MESSAGE)
 
 
 async def run_player_turn(
-    adventure: models.Adventure, db: Session, payload: schemas.ActionCreate
+    adventure: models.Adventure,
+    db: Session,
+    payload: schemas.ActionCreate,
+    user: models.User,
 ):
     pipeline = ScriptPipeline(adventure, db)
 
@@ -304,26 +355,33 @@ async def run_player_turn(
             yield sse({"type": "stopped", "script": pipeline.report()})
             return
 
-    async for event in generate_turn(adventure, db, pipeline):
+    async for event in generate_turn(adventure, db, pipeline, user):
         yield event
 
 
 @router.post("/{adventure_id}/actions")
 def create_action(
-    adventure_id: int, payload: schemas.ActionCreate, db: Session = Depends(get_db)
+    adventure_id: int,
+    payload: schemas.ActionCreate,
+    db: Session = Depends(get_db),
+    user: models.User = CurrentUser,
 ):
-    adventure = get_adventure_or_404(adventure_id, db)
+    adventure = get_adventure_or_404(adventure_id, db, user)
+    check_demo_cap(db, user)
     acquire_turn_lock(adventure_id)
     return StreamingResponse(
-        with_turn_lock(adventure_id, run_player_turn(adventure, db, payload)),
+        with_turn_lock(adventure_id, run_player_turn(adventure, db, payload, user)),
         media_type="text/event-stream",
     )
 
 
 @router.post("/{adventure_id}/retry")
-def retry_action(adventure_id: int, db: Session = Depends(get_db)):
+def retry_action(
+    adventure_id: int, db: Session = Depends(get_db), user: models.User = CurrentUser
+):
     """Delete the last AI action and regenerate from the same input."""
-    adventure = get_adventure_or_404(adventure_id, db)
+    adventure = get_adventure_or_404(adventure_id, db, user)
+    check_demo_cap(db, user)
     acquire_turn_lock(adventure_id)
     try:
         if adventure.actions and adventure.actions[-1].type == "ai":
@@ -334,15 +392,20 @@ def retry_action(adventure_id: int, db: Session = Depends(get_db)):
         _active_turns.discard(adventure_id)
         raise
     return StreamingResponse(
-        with_turn_lock(adventure_id, generate_turn(adventure, db, ScriptPipeline(adventure, db))),
+        with_turn_lock(
+            adventure_id,
+            generate_turn(adventure, db, ScriptPipeline(adventure, db), user),
+        ),
         media_type="text/event-stream",
     )
 
 
 @router.post("/{adventure_id}/undo", response_model=list[schemas.ActionOut])
-def undo_turn(adventure_id: int, db: Session = Depends(get_db)):
+def undo_turn(
+    adventure_id: int, db: Session = Depends(get_db), user: models.User = CurrentUser
+):
     """Delete the last turn: the trailing AI action plus its player action, if any."""
-    adventure = get_adventure_or_404(adventure_id, db)
+    adventure = get_adventure_or_404(adventure_id, db, user)
     actions = list(adventure.actions)
     if not actions or actions[-1].type == "start":
         raise HTTPException(400, "Nothing to undo")
@@ -358,9 +421,11 @@ def undo_turn(adventure_id: int, db: Session = Depends(get_db)):
 # ---------- Import / Export ----------
 
 @router.get("/{adventure_id}/export")
-def export_adventure(adventure_id: int, db: Session = Depends(get_db)):
+def export_adventure(
+    adventure_id: int, db: Session = Depends(get_db), user: models.User = CurrentUser
+):
     """Full backup: plot components, story cards, scripts (+state), every action."""
-    adv = get_adventure_or_404(adventure_id, db)
+    adv = get_adventure_or_404(adventure_id, db, user)
     return {
         "format": "ai-dnd-adventure-v1",
         "title": adv.title,
@@ -406,11 +471,16 @@ def export_adventure(adventure_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/import", response_model=schemas.AdventureOut, status_code=201)
-def import_adventure(bundle: dict = Body(...), db: Session = Depends(get_db)):
+def import_adventure(
+    bundle: dict = Body(...),
+    db: Session = Depends(get_db),
+    user: models.User = CurrentUser,
+):
     if bundle.get("format") != "ai-dnd-adventure-v1":
         raise HTTPException(400, "Not an adventure export file (expected format ai-dnd-adventure-v1).")
 
     adventure = models.Adventure(
+        user_id=user.id,
         title=str(bundle.get("title") or "Imported Adventure"),
         memory=str(bundle.get("memory") or ""),
         authors_note=str(bundle.get("authorsNote") or ""),
@@ -480,8 +550,10 @@ def import_adventure(bundle: dict = Body(...), db: Session = Depends(get_db)):
 # ---------- Adventure scripts ----------
 
 @router.get("/{adventure_id}/scripts", response_model=list[schemas.AdventureScriptOut])
-def list_adventure_scripts(adventure_id: int, db: Session = Depends(get_db)):
-    return get_adventure_or_404(adventure_id, db).scripts
+def list_adventure_scripts(
+    adventure_id: int, db: Session = Depends(get_db), user: models.User = CurrentUser
+):
+    return get_adventure_or_404(adventure_id, db, user).scripts
 
 
 @router.patch(
@@ -492,7 +564,9 @@ def update_adventure_script(
     adv_script_id: int,
     payload: schemas.AdventureScriptUpdate,
     db: Session = Depends(get_db),
+    user: models.User = CurrentUser,
 ):
+    get_adventure_or_404(adventure_id, db, user)
     script = db.get(models.AdventureScript, adv_script_id)
     if script is None or script.adventure_id != adventure_id:
         raise HTTPException(404, "Script not found")
@@ -505,17 +579,32 @@ def update_adventure_script(
 # ---------- Insights ----------
 
 @router.get("/{adventure_id}/context")
-async def dry_run_context(adventure_id: int, db: Session = Depends(get_db)):
+async def dry_run_context(
+    adventure_id: int, db: Session = Depends(get_db), user: models.User = CurrentUser
+):
     """What would be sent to the AI if the player continued right now."""
-    adventure = get_adventure_or_404(adventure_id, db)
-    settings = get_settings(db)
-    memories = await memorybank.retrieve_memories(adventure, settings, update_stats=False)
+    adventure = get_adventure_or_404(adventure_id, db, user)
+    settings = get_settings(db, user)
+    if auth.resolve_provider_config(settings).using_demo:
+        memories = (
+            {"used": [], "error": "Memory bank is unavailable on the shared demo key."}
+            if adventure.memory_bank_enabled
+            else None
+        )
+    else:
+        memories = await memorybank.retrieve_memories(adventure, settings, update_stats=False)
     _, _, report = build_context(adventure, settings, memories)
     return report
 
 
 @router.get("/{adventure_id}/actions/{action_id}/context")
-def action_context(adventure_id: int, action_id: int, db: Session = Depends(get_db)):
+def action_context(
+    adventure_id: int,
+    action_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = CurrentUser,
+):
+    get_adventure_or_404(adventure_id, db, user)
     action = db.get(models.Action, action_id)
     if action is None or action.adventure_id != adventure_id:
         raise HTTPException(404, "Action not found")
@@ -527,16 +616,21 @@ def action_context(adventure_id: int, action_id: int, db: Session = Depends(get_
 # ---------- Memory bank (Phase 6) ----------
 
 @router.get("/{adventure_id}/memories", response_model=list[schemas.MemoryOut])
-def list_memories(adventure_id: int, db: Session = Depends(get_db)):
-    return get_adventure_or_404(adventure_id, db).memories
+def list_memories(
+    adventure_id: int, db: Session = Depends(get_db), user: models.User = CurrentUser
+):
+    return get_adventure_or_404(adventure_id, db, user).memories
 
 
 @router.post("/{adventure_id}/memories", response_model=schemas.MemoryOut, status_code=201)
 def create_memory(
-    adventure_id: int, payload: schemas.MemoryCreate, db: Session = Depends(get_db)
+    adventure_id: int,
+    payload: schemas.MemoryCreate,
+    db: Session = Depends(get_db),
+    user: models.User = CurrentUser,
 ):
     """Manually add a memory; it gets embedded by the next post-turn pass."""
-    adventure = get_adventure_or_404(adventure_id, db)
+    adventure = get_adventure_or_404(adventure_id, db, user)
     if not payload.text.strip():
         raise HTTPException(400, "Memory text cannot be empty")
     memory = models.Memory(adventure_id=adventure.id, text=payload.text.strip())
@@ -552,7 +646,9 @@ def update_memory(
     memory_id: int,
     payload: schemas.MemoryUpdate,
     db: Session = Depends(get_db),
+    user: models.User = CurrentUser,
 ):
+    get_adventure_or_404(adventure_id, db, user)
     memory = db.get(models.Memory, memory_id)
     if memory is None or memory.adventure_id != adventure_id:
         raise HTTPException(404, "Memory not found")
@@ -566,7 +662,13 @@ def update_memory(
 
 
 @router.delete("/{adventure_id}/memories/{memory_id}", status_code=204)
-def delete_memory(adventure_id: int, memory_id: int, db: Session = Depends(get_db)):
+def delete_memory(
+    adventure_id: int,
+    memory_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = CurrentUser,
+):
+    get_adventure_or_404(adventure_id, db, user)
     memory = db.get(models.Memory, memory_id)
     if memory is None or memory.adventure_id != adventure_id:
         raise HTTPException(404, "Memory not found")
@@ -577,8 +679,10 @@ def delete_memory(adventure_id: int, memory_id: int, db: Session = Depends(get_d
 # ---------- Actions (CRUD) ----------
 
 @router.get("/{adventure_id}/actions", response_model=list[schemas.ActionOut])
-def list_actions(adventure_id: int, db: Session = Depends(get_db)):
-    get_adventure_or_404(adventure_id, db)
+def list_actions(
+    adventure_id: int, db: Session = Depends(get_db), user: models.User = CurrentUser
+):
+    get_adventure_or_404(adventure_id, db, user)
     return (
         db.query(models.Action)
         .filter(models.Action.adventure_id == adventure_id)
@@ -593,7 +697,9 @@ def update_action(
     action_id: int,
     payload: schemas.ActionUpdate,
     db: Session = Depends(get_db),
+    user: models.User = CurrentUser,
 ):
+    get_adventure_or_404(adventure_id, db, user)
     action = db.get(models.Action, action_id)
     if action is None or action.adventure_id != adventure_id:
         raise HTTPException(404, "Action not found")
@@ -603,7 +709,13 @@ def update_action(
 
 
 @router.delete("/{adventure_id}/actions/{action_id}", status_code=204)
-def delete_action(adventure_id: int, action_id: int, db: Session = Depends(get_db)):
+def delete_action(
+    adventure_id: int,
+    action_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = CurrentUser,
+):
+    get_adventure_or_404(adventure_id, db, user)
     action = db.get(models.Action, action_id)
     if action is None or action.adventure_id != adventure_id:
         raise HTTPException(404, "Action not found")

@@ -2,30 +2,44 @@ import httpx
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from .. import models, schemas
+from .. import auth, models, schemas, security
 from ..database import get_db
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 
-def get_settings(db: Session) -> models.Settings:
-    settings = db.get(models.Settings, 1)
+def get_settings(db: Session, user: models.User) -> models.Settings:
+    """Per-user settings row, created on first access (Phase 8: settings —
+    endpoint, key, models, memory config — are per user, not global)."""
+    settings = (
+        db.query(models.Settings).filter(models.Settings.user_id == user.id).first()
+    )
     if settings is None:
-        settings = models.Settings(id=1)
+        settings = models.Settings(user_id=user.id)
         db.add(settings)
         db.commit()
     return settings
 
 
 @router.get("", response_model=schemas.SettingsOut)
-def read_settings(db: Session = Depends(get_db)):
-    return get_settings(db)
+def read_settings(
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.get_current_user),
+):
+    return get_settings(db, user)
 
 
 @router.put("", response_model=schemas.SettingsOut)
-def update_settings(payload: schemas.SettingsUpdate, db: Session = Depends(get_db)):
-    settings = get_settings(db)
+def update_settings(
+    payload: schemas.SettingsUpdate,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.get_current_user),
+):
+    settings = get_settings(db, user)
     fields = payload.model_dump(exclude_unset=True)
+    # Write-only API key: absent = unchanged, "" = cleared, else encrypted.
+    if "api_key" in fields:
+        fields["api_key"] = security.encrypt_secret(fields["api_key"].strip())
     embedding_model_changed = (
         "embedding_model" in fields
         and fields["embedding_model"] != settings.embedding_model
@@ -35,19 +49,33 @@ def update_settings(payload: schemas.SettingsUpdate, db: Session = Depends(get_d
     if embedding_model_changed:
         # Vectors from the old model have a different dimensionality/space;
         # clear them so the post-turn task re-embeds with the new model.
-        db.query(models.Memory).update({"embedding": None})
+        # (This user's adventures only — settings are per-user now.)
+        owned = (
+            db.query(models.Adventure.id)
+            .filter(models.Adventure.user_id == user.id)
+            .scalar_subquery()
+        )
+        db.query(models.Memory).filter(models.Memory.adventure_id.in_(owned)).update(
+            {"embedding": None}, synchronize_session=False
+        )
     db.commit()
     return settings
 
 
 @router.post("/test")
-async def test_connection(db: Session = Depends(get_db)):
-    """Hit the endpoint's /models listing as a cheap connectivity check."""
-    settings = get_settings(db)
-    url = settings.endpoint_url.rstrip("/") + "/models"
+async def test_connection(
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.get_current_user),
+):
+    """Hit the endpoint's /models listing as a cheap connectivity check.
+    Tests whatever the turn engine would actually use — including the shared
+    demo endpoint when the user has no key of their own."""
+    settings = get_settings(db, user)
+    cfg = auth.resolve_provider_config(settings)
+    url = cfg.endpoint_url.rstrip("/") + "/models"
     headers = {}
-    if settings.api_key:
-        headers["Authorization"] = f"Bearer {settings.api_key}"
+    if cfg.api_key:
+        headers["Authorization"] = f"Bearer {cfg.api_key}"
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(url, headers=headers)

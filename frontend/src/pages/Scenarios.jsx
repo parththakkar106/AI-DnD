@@ -115,6 +115,7 @@ export default function Scenarios() {
               <h3>{sc.title}</h3>
               <p>{sc.description || 'No description'}</p>
               <div className="meta">
+                {sc.is_public && <span className="tag small" title="Shared demo scenario (read-only)">demo ✦</span>}
                 {splitTags(sc.tags).map((tag) => (
                   <span key={tag} className="tag small">{tag}</span>
                 ))}

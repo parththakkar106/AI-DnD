@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { api } from './api'
 
 export function downloadJSON(obj, filename) {
   const blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' })
@@ -69,6 +70,67 @@ export function PlaceholderModal({ title, names, onSubmit, onCancel }) {
         <div className="modal-buttons">
           <button type="button" onClick={onCancel}>Cancel</button>
           <button type="submit" className="primary">Begin Adventure</button>
+        </div>
+      </form>
+    </div>
+  )
+}
+
+// Phase 8: register/login for the hosted multi-user mode. `onAuthed(me)` gets
+// the fresh /auth/me payload after success.
+export function AuthModal({ mode: initialMode, onClose, onAuthed }) {
+  const [mode, setMode] = useState(initialMode || 'register')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  const registering = mode === 'register'
+
+  const submit = async (e) => {
+    e.preventDefault()
+    setBusy(true)
+    setError('')
+    try {
+      const me = registering
+        ? await api.register(email, password)
+        : await api.login(email, password)
+      onAuthed(me, mode)
+    } catch (err) {
+      setError(err.message)
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <form className="modal" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
+        <h2>{registering ? 'Create an account' : 'Log in'}</h2>
+        <p className="modal-hint">
+          {registering
+            ? 'Everything you’ve played as a guest stays with your new account, and you can pick it up from any device.'
+            : 'Welcome back — log in to reach your adventures.'}
+        </p>
+        <label className="field">
+          <span className="label">Email</span>
+          <input type="email" autoFocus required value={email}
+            onChange={(e) => setEmail(e.target.value)} />
+        </label>
+        <label className="field">
+          <span className="label">Password{registering ? ' (at least 8 characters)' : ''}</span>
+          <input type="password" required minLength={registering ? 8 : undefined} value={password}
+            onChange={(e) => setPassword(e.target.value)} />
+        </label>
+        {error && <div className="test-error" style={{ marginTop: 4 }}>{error}</div>}
+        <div className="modal-buttons" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+          <button type="button" className="linklike" onClick={() => { setMode(registering ? 'login' : 'register'); setError('') }}>
+            {registering ? 'Have an account? Log in' : 'New here? Create an account'}
+          </button>
+          <div style={{ display: 'flex', gap: 10 }}>
+            <button type="button" onClick={onClose}>Cancel</button>
+            <button type="submit" className="primary" disabled={busy}>
+              {busy ? '…' : registering ? 'Sign up' : 'Log in'}
+            </button>
+          </div>
         </div>
       </form>
     </div>

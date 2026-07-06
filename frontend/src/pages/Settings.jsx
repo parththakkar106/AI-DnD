@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useOutletContext } from 'react-router-dom'
 import { api } from '../api'
 
 function DebugLog() {
@@ -45,7 +46,11 @@ function DebugLog() {
 }
 
 export default function Settings() {
+  const { me, setMe } = useOutletContext() ?? {}
   const [settings, setSettings] = useState(null)
+  // The API key is write-only: the server only reports has_api_key, and this
+  // holds whatever new key the user has typed (empty = leave unchanged).
+  const [apiKey, setApiKey] = useState('')
   const [testResult, setTestResult] = useState(null)
   const [saved, setSaved] = useState('')
 
@@ -55,9 +60,24 @@ export default function Settings() {
 
   const setField = (field, value) => setSettings({ ...settings, [field]: value })
 
+  const buildPayload = () => {
+    const { has_api_key: _hasKey, ...payload } = settings
+    if (apiKey.trim()) payload.api_key = apiKey.trim()
+    return payload
+  }
+
+  const afterSave = async () => {
+    const fresh = await api.getSettings()
+    setSettings(fresh)
+    setApiKey('')
+    if (me?.multi_user) api.getMe().then(setMe).catch(() => {}) // demo banner state
+    return fresh
+  }
+
   const save = async () => {
     try {
-      await api.updateSettings(settings)
+      await api.updateSettings(buildPayload())
+      await afterSave()
       setSaved('Settings saved')
     } catch (err) {
       setSaved(`Save failed: ${err.message}`)
@@ -65,10 +85,22 @@ export default function Settings() {
     setTimeout(() => setSaved(''), 4000)
   }
 
+  const clearKey = async () => {
+    try {
+      await api.updateSettings({ api_key: '' })
+      await afterSave()
+      setSaved('API key removed')
+    } catch (err) {
+      setSaved(`Failed: ${err.message}`)
+    }
+    setTimeout(() => setSaved(''), 4000)
+  }
+
   const test = async () => {
     setTestResult({ pending: true })
     try {
-      await api.updateSettings(settings)
+      await api.updateSettings(buildPayload())
+      await afterSave()
       setTestResult(await api.testConnection())
     } catch (err) {
       setTestResult({ ok: false, detail: err.message })
@@ -76,6 +108,7 @@ export default function Settings() {
   }
 
   if (!settings) return null
+  const demo = me?.demo
 
   return (
     <div className="page" style={{ maxWidth: 640 }}>
@@ -84,6 +117,14 @@ export default function Settings() {
         <span style={{ color: 'var(--text-dim)', fontSize: '0.85rem' }}>{saved}</span>
       </div>
 
+      {demo?.using_demo && (
+        <div className="demo-banner">
+          <strong>Using the shared demo key</strong> — {demo.turns_left} of {demo.turns_per_day} free
+          turns left today (model: {demo.model}). Add your own API key below for unlimited play,
+          your choice of models, and the memory bank.
+        </div>
+      )}
+
       <label className="field">
         <span className="label">Endpoint URL (OpenAI-compatible)</span>
         <input type="text" value={settings.endpoint_url}
@@ -91,10 +132,15 @@ export default function Settings() {
           onChange={(e) => setField('endpoint_url', e.target.value)} />
       </label>
       <label className="field">
-        <span className="label">API Key</span>
-        <input type="password" value={settings.api_key}
-          placeholder="Leave empty for local endpoints"
-          onChange={(e) => setField('api_key', e.target.value)} />
+        <span className="label">API Key {settings.has_api_key ? '(saved — enter a new one to replace it)' : ''}</span>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <input type="password" value={apiKey} style={{ flex: 1 }}
+            placeholder={settings.has_api_key ? '••••••••••••' : 'Leave empty for local endpoints'}
+            onChange={(e) => setApiKey(e.target.value)} />
+          {settings.has_api_key && (
+            <button type="button" onClick={clearKey}>Remove key</button>
+          )}
+        </div>
       </label>
       <label className="field">
         <span className="label">Model</span>
@@ -188,7 +234,8 @@ export default function Settings() {
         </div>
       )}
 
-      <DebugLog />
+      {/* The provider debug log is a single global buffer — local installs only. */}
+      {me?.multi_user !== true && <DebugLog />}
     </div>
   )
 }
