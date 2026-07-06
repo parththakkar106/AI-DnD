@@ -1,0 +1,11 @@
+services:
+  ai-dnd:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ai-dnd-data:/data
+    restart: unless-stopped
+
+volumes:
+  ai-dnd-data:

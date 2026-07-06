@@ -1,0 +1,19 @@
+.git
+.claude
+plan
+*.md
+LICENSE
+start.ps1
+start.sh
+
+# Secrets & local data — never in the image
+*.env
+backend/openrouter_key.env
+*.db
+
+# Build/runtime artifacts rebuilt inside the image
+backend/.venv
+**/__pycache__
+**/*.pyc
+frontend/node_modules
+frontend/dist
