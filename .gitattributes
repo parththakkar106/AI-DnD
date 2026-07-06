@@ -1,0 +1,5 @@
+# Shell scripts must stay LF or the shebang/exec breaks on Linux/macOS,
+# including when a Windows checkout is COPY'd into a Docker build.
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.ps1 text eol=crlf
