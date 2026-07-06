@@ -1,0 +1,611 @@
+import json
+import re
+import threading
+
+from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi.responses import StreamingResponse
+from sqlalchemy import func
+from sqlalchemy.orm import Session
+
+from .. import memorybank, models, schemas
+from ..context import build_context
+from ..database import get_db
+from ..providers import OpenAICompatibleProvider, PromptParts, ProviderError
+from ..scripting import ScriptPipeline
+from .settings import get_settings
+
+router = APIRouter(prefix="/api/adventures", tags=["adventures"])
+
+
+def get_adventure_or_404(adventure_id: int, db: Session) -> models.Adventure:
+    adventure = db.get(models.Adventure, adventure_id)
+    if adventure is None:
+        raise HTTPException(404, "Adventure not found")
+    return adventure
+
+
+@router.get("", response_model=list[schemas.AdventureListItem])
+def list_adventures(db: Session = Depends(get_db)):
+    rows = (
+        db.query(models.Adventure, func.count(models.Action.id), models.Scenario.title)
+        .outerjoin(models.Action)
+        .outerjoin(models.Scenario, models.Adventure.scenario_id == models.Scenario.id)
+        .group_by(models.Adventure.id)
+        .order_by(models.Adventure.updated_at.desc())
+        .all()
+    )
+    return [
+        schemas.AdventureListItem(
+            id=adv.id,
+            scenario_id=adv.scenario_id,
+            scenario_title=scenario_title,
+            title=adv.title,
+            updated_at=adv.updated_at,
+            action_count=count,
+        )
+        for adv, count, scenario_title in rows
+    ]
+
+
+PLACEHOLDER_RE = re.compile(r"\$\{([^}]+)\}")
+
+
+def fill_placeholders(text: str, values: dict[str, str]) -> str:
+    """Replace ${Name} with the player-provided value; unknown names are left as-is."""
+    if not text or not values:
+        return text
+    return PLACEHOLDER_RE.sub(
+        lambda m: values.get(m.group(1).strip(), m.group(0)), text
+    )
+
+
+@router.post("", response_model=schemas.AdventureOut, status_code=201)
+def create_adventure(payload: schemas.AdventureCreate, db: Session = Depends(get_db)):
+    scenario = None
+    if payload.scenario_id is not None:
+        scenario = db.get(models.Scenario, payload.scenario_id)
+        if scenario is None:
+            raise HTTPException(404, "Scenario not found")
+
+    values = payload.placeholders
+    adventure = models.Adventure(
+        scenario_id=scenario.id if scenario else None,
+        title=payload.title or (scenario.title if scenario else "Untitled Adventure"),
+        memory=fill_placeholders(scenario.memory, values) if scenario else "",
+        authors_note=fill_placeholders(scenario.authors_note, values) if scenario else "",
+        ai_instructions=fill_placeholders(scenario.ai_instructions, values) if scenario else "",
+    )
+    db.add(adventure)
+    db.flush()
+
+    if scenario:
+        for card in scenario.story_cards:
+            db.add(
+                models.StoryCard(
+                    adventure_id=adventure.id,
+                    type=card.type,
+                    name=card.name,
+                    keys=fill_placeholders(card.keys, values),
+                    entry=fill_placeholders(card.entry, values),
+                    notes=card.notes,
+                )
+            )
+        for position, script in enumerate(scenario.scripts):
+            db.add(
+                models.AdventureScript(
+                    adventure_id=adventure.id,
+                    position=position,
+                    name=script.name,
+                    description=script.description,
+                    library_js=script.library_js,
+                    input_js=script.input_js,
+                    context_js=script.context_js,
+                    output_js=script.output_js,
+                )
+            )
+        if scenario.prompt.strip():
+            db.add(
+                models.Action(
+                    adventure_id=adventure.id,
+                    index=0,
+                    type="start",
+                    text=fill_placeholders(scenario.prompt, values),
+                )
+            )
+
+    db.commit()
+    db.refresh(adventure)
+    return adventure
+
+
+@router.get("/{adventure_id}", response_model=schemas.AdventureOut)
+def get_adventure(adventure_id: int, db: Session = Depends(get_db)):
+    return get_adventure_or_404(adventure_id, db)
+
+
+@router.patch("/{adventure_id}", response_model=schemas.AdventureOut)
+def update_adventure(
+    adventure_id: int, payload: schemas.AdventureUpdate, db: Session = Depends(get_db)
+):
+    adventure = get_adventure_or_404(adventure_id, db)
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(adventure, field, value)
+    db.commit()
+    return adventure
+
+
+@router.delete("/{adventure_id}", status_code=204)
+def delete_adventure(adventure_id: int, db: Session = Depends(get_db)):
+    adventure = get_adventure_or_404(adventure_id, db)
+    db.delete(adventure)
+    db.commit()
+
+
+# ---------- Turn engine ----------
+
+# One turn at a time per adventure (in-memory; fine for a single-process local app).
+# Sync endpoints run in a threadpool, so the check-and-add must be guarded — and
+# it must happen in the request phase, not when the SSE generator first runs,
+# or two rapid requests both pass the check and generate concurrently.
+_active_turns: set[int] = set()
+_active_turns_guard = threading.Lock()
+
+
+def acquire_turn_lock(adventure_id: int):
+    """Atomically claim the adventure's turn slot; with_turn_lock releases it."""
+    with _active_turns_guard:
+        if adventure_id in _active_turns:
+            raise HTTPException(409, "A turn is already generating for this adventure.")
+        _active_turns.add(adventure_id)
+
+
+async def with_turn_lock(adventure_id: int, gen):
+    """Wrap an SSE generator so the lock (from acquire_turn_lock) is released."""
+    try:
+        async for event in gen:
+            yield event
+    finally:
+        _active_turns.discard(adventure_id)
+
+
+def format_player_input(action_type: str, text: str) -> str:
+    """AI Dungeon input conventions."""
+    text = text.strip()
+    if action_type == "say":
+        text = text.strip('"')
+        if text and text[-1] not in ".!?…":
+            text += "."
+        return f'> You say "{text}"'
+    if action_type == "do":
+        if text.lower().startswith("you "):
+            text = text[4:]
+        if text and text[-1] not in ".!?…":
+            text += "."
+        return f"> You {text}"
+    return text  # story: raw text appended
+
+
+def sse(obj: dict) -> str:
+    return f"data: {json.dumps(obj)}\n\n"
+
+
+def action_json(action: models.Action) -> dict:
+    return schemas.ActionOut.model_validate(action).model_dump(mode="json")
+
+
+def next_index(adventure: models.Adventure) -> int:
+    return max((a.index for a in adventure.actions), default=-1) + 1
+
+
+async def generate_turn(adventure: models.Adventure, db: Session, pipeline: ScriptPipeline):
+    """SSE generator: streams the AI continuation through the context/output
+    script hooks, then stores the result."""
+    settings = get_settings(db)
+    memories = await memorybank.retrieve_memories(adventure, settings, update_stats=True)
+    system_text, story_text, snapshot = build_context(adventure, settings, memories)
+
+    # onModelContext: scripts see (and may rewrite) the whole assembled context.
+    combined = f"{system_text}\n\n{story_text}" if system_text else story_text
+    modified, stop = pipeline.run("context", combined)
+    if stop:
+        yield sse({"type": "stopped", "script": pipeline.report()})
+        return
+    context_changed = modified != combined
+    parts = (
+        PromptParts(system="", story=modified)
+        if context_changed
+        else PromptParts(system=system_text, story=story_text)
+    )
+    snapshot["script"] = pipeline.report() | {
+        "context_changed": context_changed,
+        "context_before": combined if context_changed else None,
+        "context_after": modified if context_changed else None,
+    }
+
+    provider = OpenAICompatibleProvider(
+        settings.endpoint_url, settings.api_key, settings.model, settings.api_mode,
+        settings.reasoning_max_tokens,
+    )
+    chunks: list[str] = []
+    reasoning_chunks: list[str] = []
+    try:
+        async for kind, chunk in provider.generate(
+            parts, temperature=settings.temperature, max_tokens=settings.max_output_tokens
+        ):
+            if kind == "reasoning":
+                reasoning_chunks.append(chunk)
+                yield sse({"type": "reasoning", "text": chunk})
+            else:
+                chunks.append(chunk)
+                yield sse({"type": "chunk", "text": chunk})
+    except ProviderError as exc:
+        yield sse({"type": "error", "detail": str(exc)})
+        return
+
+    text = "".join(chunks).strip()
+    if not text:
+        yield sse({"type": "error", "detail": "The AI returned an empty response."})
+        return
+
+    # onOutput
+    text, _ = pipeline.run("output", text)
+    if not text.strip():
+        yield sse({"type": "error", "detail": "A script's output modifier returned empty text."})
+        return
+    snapshot["script"] = snapshot["script"] | pipeline.report()
+
+    ai_action = models.Action(
+        adventure_id=adventure.id,
+        index=next_index(adventure),
+        type="ai",
+        text=text,
+        reasoning="".join(reasoning_chunks).strip() or None,
+        context_snapshot=snapshot,
+    )
+    db.add(ai_action)
+    adventure.updated_at = models.utcnow()
+    db.commit()
+    db.refresh(ai_action)
+    yield sse({"type": "done", "action": action_json(ai_action), "script": pipeline.report()})
+    # Phase 6: fire-and-forget summarization/embedding (opens its own DB session).
+    memorybank.schedule_post_turn(adventure)
+
+
+async def run_player_turn(
+    adventure: models.Adventure, db: Session, payload: schemas.ActionCreate
+):
+    pipeline = ScriptPipeline(adventure, db)
+
+    # An empty do/say/story is just a continue.
+    if payload.type != "continue" and payload.text.strip():
+        # onInput sees the formatted text (as in AI Dungeon: "> You ...").
+        formatted = format_player_input(payload.type, payload.text)
+        modified, stop = pipeline.run("input", formatted)
+        if not modified.strip():
+            yield sse({"type": "error", "detail": "A script's input modifier returned empty text.",
+                       "script": pipeline.report()})
+            return
+        player_action = models.Action(
+            adventure_id=adventure.id,
+            index=next_index(adventure),
+            type=payload.type,
+            text=modified,
+        )
+        db.add(player_action)
+        db.commit()
+        db.refresh(player_action)
+        # The new action was added via its FK, so the loaded adventure.actions
+        # collection is stale — without this, build_context and next_index for
+        # the AI action would not see the player action just saved.
+        db.expire(adventure, ["actions"])
+        yield sse({"type": "player", "action": action_json(player_action)})
+        if stop:
+            # onInput { stop: true } prevents the AI call.
+            yield sse({"type": "stopped", "script": pipeline.report()})
+            return
+
+    async for event in generate_turn(adventure, db, pipeline):
+        yield event
+
+
+@router.post("/{adventure_id}/actions")
+def create_action(
+    adventure_id: int, payload: schemas.ActionCreate, db: Session = Depends(get_db)
+):
+    adventure = get_adventure_or_404(adventure_id, db)
+    acquire_turn_lock(adventure_id)
+    return StreamingResponse(
+        with_turn_lock(adventure_id, run_player_turn(adventure, db, payload)),
+        media_type="text/event-stream",
+    )
+
+
+@router.post("/{adventure_id}/retry")
+def retry_action(adventure_id: int, db: Session = Depends(get_db)):
+    """Delete the last AI action and regenerate from the same input."""
+    adventure = get_adventure_or_404(adventure_id, db)
+    acquire_turn_lock(adventure_id)
+    try:
+        if adventure.actions and adventure.actions[-1].type == "ai":
+            db.delete(adventure.actions[-1])
+            db.commit()
+            db.refresh(adventure)
+    except BaseException:
+        _active_turns.discard(adventure_id)
+        raise
+    return StreamingResponse(
+        with_turn_lock(adventure_id, generate_turn(adventure, db, ScriptPipeline(adventure, db))),
+        media_type="text/event-stream",
+    )
+
+
+@router.post("/{adventure_id}/undo", response_model=list[schemas.ActionOut])
+def undo_turn(adventure_id: int, db: Session = Depends(get_db)):
+    """Delete the last turn: the trailing AI action plus its player action, if any."""
+    adventure = get_adventure_or_404(adventure_id, db)
+    actions = list(adventure.actions)
+    if not actions or actions[-1].type == "start":
+        raise HTTPException(400, "Nothing to undo")
+    last = actions.pop()
+    db.delete(last)
+    if last.type == "ai" and actions and actions[-1].type in ("do", "say", "story"):
+        db.delete(actions.pop())
+    db.commit()
+    db.refresh(adventure)
+    return adventure.actions
+
+
+# ---------- Import / Export ----------
+
+@router.get("/{adventure_id}/export")
+def export_adventure(adventure_id: int, db: Session = Depends(get_db)):
+    """Full backup: plot components, story cards, scripts (+state), every action."""
+    adv = get_adventure_or_404(adventure_id, db)
+    return {
+        "format": "ai-dnd-adventure-v1",
+        "title": adv.title,
+        "memory": adv.memory,
+        "authorsNote": adv.authors_note,
+        "aiInstructions": adv.ai_instructions,
+        "storySummary": adv.story_summary,
+        "scriptState": adv.script_state,
+        "autoSummarize": adv.auto_summarize,
+        "memoryBankEnabled": adv.memory_bank_enabled,
+        "memoryCursor": adv.memory_cursor,
+        "summaryCursor": adv.summary_cursor,
+        "memories": [
+            {
+                "text": m.text, "pinned": m.pinned, "forgotten": m.forgotten,
+                "sourceStart": m.source_start, "sourceEnd": m.source_end,
+                "useCount": m.use_count,
+            }
+            for m in adv.memories
+        ],
+        "storyCards": [
+            {"type": c.type, "name": c.name, "keys": c.keys, "entry": c.entry, "notes": c.notes}
+            for c in adv.story_cards
+        ],
+        "scripts": [
+            {
+                "position": s.position, "enabled": s.enabled,
+                "name": s.name, "description": s.description,
+                "library": s.library_js, "input": s.input_js,
+                "context": s.context_js, "output": s.output_js,
+            }
+            for s in adv.scripts
+        ],
+        "actions": [
+            {
+                "index": a.index, "type": a.type, "text": a.text,
+                "reasoning": a.reasoning,
+                "createdAt": a.created_at.isoformat(),
+            }
+            for a in adv.actions
+        ],
+    }
+
+
+@router.post("/import", response_model=schemas.AdventureOut, status_code=201)
+def import_adventure(bundle: dict = Body(...), db: Session = Depends(get_db)):
+    if bundle.get("format") != "ai-dnd-adventure-v1":
+        raise HTTPException(400, "Not an adventure export file (expected format ai-dnd-adventure-v1).")
+
+    adventure = models.Adventure(
+        title=str(bundle.get("title") or "Imported Adventure"),
+        memory=str(bundle.get("memory") or ""),
+        authors_note=str(bundle.get("authorsNote") or ""),
+        ai_instructions=str(bundle.get("aiInstructions") or ""),
+        story_summary=str(bundle.get("storySummary") or ""),
+        script_state=bundle.get("scriptState") or {},
+        auto_summarize=bool(bundle.get("autoSummarize", False)),
+        memory_bank_enabled=bool(bundle.get("memoryBankEnabled", False)),
+        memory_cursor=int(bundle.get("memoryCursor", 0)),
+        summary_cursor=int(bundle.get("summaryCursor", 0)),
+    )
+    db.add(adventure)
+    db.flush()
+
+    for m in bundle.get("memories") or []:
+        if isinstance(m, dict) and str(m.get("text") or "").strip():
+            db.add(models.Memory(
+                adventure_id=adventure.id,
+                text=str(m["text"]),
+                pinned=bool(m.get("pinned", False)),
+                forgotten=bool(m.get("forgotten", False)),
+                source_start=m.get("sourceStart"),
+                source_end=m.get("sourceEnd"),
+                use_count=int(m.get("useCount", 0)),
+            ))
+
+    for card in bundle.get("storyCards") or []:
+        if isinstance(card, dict):
+            db.add(models.StoryCard(
+                adventure_id=adventure.id,
+                type=str(card.get("type") or ""),
+                name=str(card.get("name") or ""),
+                keys=str(card.get("keys") or ""),
+                entry=str(card.get("entry") or ""),
+                notes=str(card.get("notes") or ""),
+            ))
+
+    for i, s in enumerate(bundle.get("scripts") or []):
+        if isinstance(s, dict):
+            db.add(models.AdventureScript(
+                adventure_id=adventure.id,
+                position=int(s.get("position", i)),
+                enabled=bool(s.get("enabled", True)),
+                name=str(s.get("name") or "Imported Script"),
+                description=str(s.get("description") or ""),
+                library_js=str(s.get("library") or ""),
+                input_js=str(s.get("input") or ""),
+                context_js=str(s.get("context") or ""),
+                output_js=str(s.get("output") or ""),
+            ))
+
+    for i, a in enumerate(bundle.get("actions") or []):
+        if isinstance(a, dict) and str(a.get("text") or ""):
+            db.add(models.Action(
+                adventure_id=adventure.id,
+                index=int(a.get("index", i)),
+                type=str(a.get("type") or "story"),
+                text=str(a["text"]),
+                reasoning=str(a["reasoning"]) if a.get("reasoning") else None,
+            ))
+
+    db.commit()
+    db.refresh(adventure)
+    return adventure
+
+
+# ---------- Adventure scripts ----------
+
+@router.get("/{adventure_id}/scripts", response_model=list[schemas.AdventureScriptOut])
+def list_adventure_scripts(adventure_id: int, db: Session = Depends(get_db)):
+    return get_adventure_or_404(adventure_id, db).scripts
+
+
+@router.patch(
+    "/{adventure_id}/scripts/{adv_script_id}", response_model=schemas.AdventureScriptOut
+)
+def update_adventure_script(
+    adventure_id: int,
+    adv_script_id: int,
+    payload: schemas.AdventureScriptUpdate,
+    db: Session = Depends(get_db),
+):
+    script = db.get(models.AdventureScript, adv_script_id)
+    if script is None or script.adventure_id != adventure_id:
+        raise HTTPException(404, "Script not found")
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(script, field, value)
+    db.commit()
+    return script
+
+
+# ---------- Insights ----------
+
+@router.get("/{adventure_id}/context")
+async def dry_run_context(adventure_id: int, db: Session = Depends(get_db)):
+    """What would be sent to the AI if the player continued right now."""
+    adventure = get_adventure_or_404(adventure_id, db)
+    settings = get_settings(db)
+    memories = await memorybank.retrieve_memories(adventure, settings, update_stats=False)
+    _, _, report = build_context(adventure, settings, memories)
+    return report
+
+
+@router.get("/{adventure_id}/actions/{action_id}/context")
+def action_context(adventure_id: int, action_id: int, db: Session = Depends(get_db)):
+    action = db.get(models.Action, action_id)
+    if action is None or action.adventure_id != adventure_id:
+        raise HTTPException(404, "Action not found")
+    if action.context_snapshot is None:
+        raise HTTPException(404, "No context snapshot for this action")
+    return action.context_snapshot
+
+
+# ---------- Memory bank (Phase 6) ----------
+
+@router.get("/{adventure_id}/memories", response_model=list[schemas.MemoryOut])
+def list_memories(adventure_id: int, db: Session = Depends(get_db)):
+    return get_adventure_or_404(adventure_id, db).memories
+
+
+@router.post("/{adventure_id}/memories", response_model=schemas.MemoryOut, status_code=201)
+def create_memory(
+    adventure_id: int, payload: schemas.MemoryCreate, db: Session = Depends(get_db)
+):
+    """Manually add a memory; it gets embedded by the next post-turn pass."""
+    adventure = get_adventure_or_404(adventure_id, db)
+    if not payload.text.strip():
+        raise HTTPException(400, "Memory text cannot be empty")
+    memory = models.Memory(adventure_id=adventure.id, text=payload.text.strip())
+    db.add(memory)
+    db.commit()
+    db.refresh(memory)
+    return memory
+
+
+@router.patch("/{adventure_id}/memories/{memory_id}", response_model=schemas.MemoryOut)
+def update_memory(
+    adventure_id: int,
+    memory_id: int,
+    payload: schemas.MemoryUpdate,
+    db: Session = Depends(get_db),
+):
+    memory = db.get(models.Memory, memory_id)
+    if memory is None or memory.adventure_id != adventure_id:
+        raise HTTPException(404, "Memory not found")
+    fields = {k: v for k, v in payload.model_dump(exclude_unset=True).items() if v is not None}
+    if "text" in fields and fields["text"].strip() != memory.text:
+        memory.embedding = None  # re-embed on the next post-turn pass
+    for field, value in fields.items():
+        setattr(memory, field, value)
+    db.commit()
+    return memory
+
+
+@router.delete("/{adventure_id}/memories/{memory_id}", status_code=204)
+def delete_memory(adventure_id: int, memory_id: int, db: Session = Depends(get_db)):
+    memory = db.get(models.Memory, memory_id)
+    if memory is None or memory.adventure_id != adventure_id:
+        raise HTTPException(404, "Memory not found")
+    db.delete(memory)
+    db.commit()
+
+
+# ---------- Actions (CRUD) ----------
+
+@router.get("/{adventure_id}/actions", response_model=list[schemas.ActionOut])
+def list_actions(adventure_id: int, db: Session = Depends(get_db)):
+    get_adventure_or_404(adventure_id, db)
+    return (
+        db.query(models.Action)
+        .filter(models.Action.adventure_id == adventure_id)
+        .order_by(models.Action.index)
+        .all()
+    )
+
+
+@router.patch("/{adventure_id}/actions/{action_id}", response_model=schemas.ActionOut)
+def update_action(
+    adventure_id: int,
+    action_id: int,
+    payload: schemas.ActionUpdate,
+    db: Session = Depends(get_db),
+):
+    action = db.get(models.Action, action_id)
+    if action is None or action.adventure_id != adventure_id:
+        raise HTTPException(404, "Action not found")
+    action.text = payload.text
+    db.commit()
+    return action
+
+
+@router.delete("/{adventure_id}/actions/{action_id}", status_code=204)
+def delete_action(adventure_id: int, action_id: int, db: Session = Depends(get_db)):
+    action = db.get(models.Action, action_id)
+    if action is None or action.adventure_id != adventure_id:
+        raise HTTPException(404, "Action not found")
+    db.delete(action)
+    db.commit()
