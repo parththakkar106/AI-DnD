@@ -49,7 +49,8 @@ export default function Scenarios() {
     const scenario = await api.getScenario(scenarioId)
     const names = extractPlaceholders(
       scenario.prompt, scenario.memory, scenario.authors_note, scenario.ai_instructions,
-      ...scenario.story_cards.map((c) => c.entry),
+      // Cards can carry ${placeholders} in trigger keys too, not just entries.
+      ...scenario.story_cards.flatMap((c) => [c.keys, c.entry]),
     )
     if (names.length === 0) return begin(scenarioId)
     setPending({ scenario, names })

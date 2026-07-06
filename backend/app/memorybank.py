@@ -71,6 +71,10 @@ def embedding_provider(settings: models.Settings) -> OpenAICompatibleProvider:
 
 
 def cosine(a: list[float], b: list[float]) -> float:
+    # Different lengths means the embedding model changed since this vector was
+    # stored; zip() would silently score garbage.
+    if len(a) != len(b):
+        return 0.0
     dot = sum(x * y for x, y in zip(a, b))
     norm = math.sqrt(sum(x * x for x in a)) * math.sqrt(sum(y * y for y in b))
     return dot / norm if norm else 0.0
@@ -118,10 +122,12 @@ async def retrieve_memories(
         key=lambda pair: pair[0],
         reverse=True,
     )
-    # Pinned memories are always used; the rest fill up to top_k by similarity.
+    # Pinned memories are always used and count toward top_k, so the injected
+    # set never exceeds the configured budget (unless pinned alone exceed it).
     top_k = max(1, settings.memory_top_k)
     used = [(score, m) for score, m in scored if m.pinned]
-    used += [(score, m) for score, m in scored if not m.pinned][:top_k]
+    remaining = max(0, top_k - len(used))
+    used += [(score, m) for score, m in scored if not m.pinned][:remaining]
     used.sort(key=lambda pair: pair[0], reverse=True)
 
     if update_stats:
@@ -162,6 +168,11 @@ async def run_post_turn(adventure_id: int) -> None:
         settings = db.get(models.Settings, 1)
         if adventure is None or settings is None:
             return
+        # Undo/retry can shrink the action list below a stored cursor, which
+        # would stall summarization until the story grew past it again.
+        count = len(story_actions(adventure))
+        adventure.memory_cursor = min(adventure.memory_cursor, count)
+        adventure.summary_cursor = min(adventure.summary_cursor, count)
         if adventure.auto_summarize:
             await _create_due_memories(adventure, settings, db)
             await _update_story_summary(adventure, settings, db)
@@ -213,10 +224,17 @@ async def _update_story_summary(
 
     # Fold in memories covering the uncovered stretch; fall back to raw story
     # text if memory creation is lagging (e.g. it just failed).
+    # summary_cursor is a position into story_actions(); Memory.source_end is
+    # an Action.index. Translate the cursor to an index boundary before
+    # comparing — the two spaces diverge once actions are deleted or empty.
+    if adventure.summary_cursor < len(actions):
+        boundary = actions[adventure.summary_cursor].index
+    else:
+        boundary = actions[-1].index + 1 if actions else 0
     new_events = [
         m.text
         for m in adventure.memories
-        if m.source_end is not None and m.source_end >= adventure.summary_cursor
+        if m.source_end is not None and m.source_end >= boundary
     ]
     if new_events:
         events_text = "\n".join(f"- {t}" for t in new_events)

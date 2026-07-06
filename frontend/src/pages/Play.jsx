@@ -50,12 +50,17 @@ const SECTION_LABELS = {
 }
 
 function PlotPanel({ adventure, setAdventure }) {
-  const saveTimer = useRef(null)
+  // One timer per field/card: a single shared timer would cancel the pending
+  // save of whatever was edited previously within the debounce window.
+  const saveTimers = useRef(new Map())
+  const debounceSave = (key, fn) => {
+    clearTimeout(saveTimers.current.get(key))
+    saveTimers.current.set(key, setTimeout(fn, 600))
+  }
 
   const setField = (field, value) => {
     setAdventure({ ...adventure, [field]: value })
-    clearTimeout(saveTimer.current)
-    saveTimer.current = setTimeout(() => api.updateAdventure(adventure.id, { [field]: value }), 600)
+    debounceSave(field, () => api.updateAdventure(adventure.id, { [field]: value }))
   }
 
   const addCard = async () => {
@@ -68,12 +73,11 @@ function PlotPanel({ adventure, setAdventure }) {
       ...adventure,
       story_cards: adventure.story_cards.map((c) => (c.id === card.id ? card : c)),
     })
-    clearTimeout(saveTimer.current)
-    saveTimer.current = setTimeout(() => {
+    debounceSave(`card-${card.id}`, () => {
       api.updateStoryCard(card.id, {
         name: card.name, type: card.type, keys: card.keys, entry: card.entry, notes: card.notes,
       })
-    }, 600)
+    })
   }
 
   const deleteCard = async (cardId) => {
@@ -324,11 +328,15 @@ function InsightsPanel({ advId, inspectActionId, onClearInspect, refreshKey }) {
   const [error, setError] = useState(null)
 
   useEffect(() => {
+    let stale = false // a slow earlier request must not clobber a newer one
     setError(null)
     const load = inspectActionId
       ? api.getActionContext(advId, inspectActionId)
       : api.getAdventureContext(advId)
-    load.then(setReport).catch((err) => { setReport(null); setError(err.message) })
+    load
+      .then((r) => { if (!stale) setReport(r) })
+      .catch((err) => { if (!stale) { setReport(null); setError(err.message) } })
+    return () => { stale = true }
   }, [advId, inspectActionId, refreshKey])
 
   if (error) return <div className="empty">{error}</div>
@@ -502,6 +510,11 @@ export default function Play() {
 
   function send(type = mode) {
     const text = input.trim()
+    if (type === 'continue') {
+      // Continue never consumes typed text — leave it in the box.
+      runTurn((signal) => api.sendAction(id, { type: 'continue', text: '' }, handleEvent, signal))
+      return
+    }
     const payload = { type: text ? type : 'continue', text }
     setInput('')
     runTurn((signal) => api.sendAction(id, payload, handleEvent, signal))
@@ -510,7 +523,16 @@ export default function Play() {
   function retry() {
     setActions((prev) =>
       prev.length && prev[prev.length - 1].type === 'ai' ? prev.slice(0, -1) : prev)
-    runTurn((signal) => api.retry(id, handleEvent, signal))
+    runTurn(async (signal) => {
+      try {
+        await api.retry(id, handleEvent, signal)
+      } catch (err) {
+        // Failed retry (409, network): the optimistically removed action may
+        // still exist server-side — resync instead of guessing.
+        api.getAdventure(id).then((adv) => setActions(adv.actions)).catch(() => {})
+        throw err
+      }
+    })
   }
 
   async function undo() {

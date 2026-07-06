@@ -31,6 +31,8 @@ function log(msg) {
 }
 var console = { log: log };
 
+// Returns the new card's index, or false if a card with those keys exists —
+// matching real AI Dungeon. Note index 0 is falsy; that quirk is upstream's.
 function addStoryCard(keys, entry, type) {
   for (var i = 0; i < storyCards.length; i++) {
     if (storyCards[i].keys === keys) return false;

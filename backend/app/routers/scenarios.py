@@ -130,7 +130,13 @@ def import_scenario(bundle: dict = Body(...), db: Session = Depends(get_db)):
     db.add(scenario)
     db.flush()
 
-    cards = bundle.get("storyCards") or bundle.get("worldInfo") or []
+    # AI Dungeon exports have used all three names for the same list.
+    cards = (
+        bundle.get("storyCards")
+        or bundle.get("worldInfo")
+        or bundle.get("worldInformation")
+        or []
+    )
     for card in cards:
         if not isinstance(card, dict):
             continue

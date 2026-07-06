@@ -119,9 +119,16 @@ class OpenAICompatibleProvider(Provider):
                     if resp.status_code != 200:
                         detail = (await resp.aread()).decode(errors="replace")[:500]
                         raise ProviderError(self._friendly_http_error(resp.status_code, detail))
+                    # Some servers ignore stream=true and return one plain JSON
+                    # body; buffer non-SSE lines so we can fall back to it.
+                    saw_sse = False
+                    raw_lines: list[str] = []
                     async for line in resp.aiter_lines():
                         if not line.startswith("data:"):
+                            if not saw_sse:
+                                raw_lines.append(line)
                             continue
+                        saw_sse = True
                         data = line[5:].strip()
                         if data == "[DONE]":
                             debuglog.finish_entry(log, response="".join(received))
@@ -137,6 +144,27 @@ class OpenAICompatibleProvider(Provider):
                         if chunk:
                             received.append(chunk)
                             yield "text", chunk
+                    if not saw_sse:
+                        body_text = "\n".join(raw_lines).strip()
+                        try:
+                            payload = json.loads(body_text)
+                        except ValueError:
+                            raise ProviderError(
+                                "AI endpoint returned neither an SSE stream nor JSON: "
+                                + body_text[:200]
+                            )
+                        reasoning = self._extract_reasoning(payload)
+                        if reasoning:
+                            yield "reasoning", reasoning
+                        chunk = self._extract_chunk(payload)
+                        if chunk:
+                            received.append(chunk)
+                            yield "text", chunk
+                        if not received:
+                            raise ProviderError(
+                                "AI endpoint returned a response with no text: "
+                                + body_text[:200]
+                            )
             debuglog.finish_entry(log, response="".join(received))
         except httpx.ConnectError as exc:
             error = f"Could not connect to {self.base_url} — is the AI server running?"

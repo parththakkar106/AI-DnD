@@ -9,7 +9,13 @@ export default function ScenarioEditor() {
   const [scenario, setScenario] = useState(null)
   const [allScripts, setAllScripts] = useState([])
   const [status, setStatus] = useState('')
-  const saveTimer = useRef(null)
+  // One timer per field/card: a single shared timer would cancel the pending
+  // save of whatever was edited previously within the debounce window.
+  const saveTimers = useRef(new Map())
+  const debounceSave = (key, fn) => {
+    clearTimeout(saveTimers.current.get(key))
+    saveTimers.current.set(key, setTimeout(fn, 600))
+  }
 
   useEffect(() => {
     api.getScenario(id).then(setScenario).catch(() => navigate('/scenarios'))
@@ -19,12 +25,11 @@ export default function ScenarioEditor() {
   const setField = (field, value) => {
     const next = { ...scenario, [field]: value }
     setScenario(next)
-    clearTimeout(saveTimer.current)
-    saveTimer.current = setTimeout(async () => {
+    debounceSave(field, async () => {
       await api.updateScenario(id, { [field]: value })
       setStatus('Saved')
       setTimeout(() => setStatus(''), 1500)
-    }, 600)
+    })
   }
 
   const addCard = async () => {
@@ -37,12 +42,11 @@ export default function ScenarioEditor() {
       ...scenario,
       story_cards: scenario.story_cards.map((c) => (c.id === card.id ? card : c)),
     })
-    clearTimeout(saveTimer.current)
-    saveTimer.current = setTimeout(() => {
+    debounceSave(`card-${card.id}`, () => {
       api.updateStoryCard(card.id, {
         name: card.name, type: card.type, keys: card.keys, entry: card.entry, notes: card.notes,
       })
-    }, 600)
+    })
   }
 
   const deleteCard = async (cardId) => {

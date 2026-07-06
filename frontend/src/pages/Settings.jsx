@@ -56,16 +56,23 @@ export default function Settings() {
   const setField = (field, value) => setSettings({ ...settings, [field]: value })
 
   const save = async () => {
-    await api.updateSettings(settings)
-    setSaved('Settings saved')
-    setTimeout(() => setSaved(''), 2000)
+    try {
+      await api.updateSettings(settings)
+      setSaved('Settings saved')
+    } catch (err) {
+      setSaved(`Save failed: ${err.message}`)
+    }
+    setTimeout(() => setSaved(''), 4000)
   }
 
   const test = async () => {
     setTestResult({ pending: true })
-    await api.updateSettings(settings)
-    const result = await api.testConnection()
-    setTestResult(result)
+    try {
+      await api.updateSettings(settings)
+      setTestResult(await api.testConnection())
+    } catch (err) {
+      setTestResult({ ok: false, detail: err.message })
+    }
   }
 
   if (!settings) return null

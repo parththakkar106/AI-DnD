@@ -45,6 +45,7 @@ class ScriptPipeline:
     def _apply_cards(self, returned: list) -> None:
         existing = {c.id: c for c in self.adventure.story_cards}
         seen_ids = set()
+        added = 0
         for item in returned:
             if not isinstance(item, dict):
                 continue
@@ -56,13 +57,14 @@ class ScriptPipeline:
                 seen_ids.add(card_id)
                 card = existing[card_id]
                 card.keys, card.entry, card.type = keys, entry, card_type
-            elif len(existing) + len(seen_ids) < MAX_STORY_CARDS:
+            elif len(existing) + added < MAX_STORY_CARDS:
                 self.db.add(
                     models.StoryCard(
                         adventure_id=self.adventure.id,
                         keys=keys, entry=entry, type=card_type,
                     )
                 )
+                added += 1
         for card_id, card in existing.items():
             if card_id not in seen_ids:
                 self.db.delete(card)
