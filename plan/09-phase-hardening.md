@@ -74,5 +74,20 @@ rate-limited instead of burning the demo key, and the app streams turns normally
   (No LLM key configured here, so it streams the "No model configured" error event; a *live*
   provider turn through this path was verified end-to-end in Phase 8.)
 
-All Phase 9 exit criteria met. Not yet exercised: Postgres (`DATABASE_URL`) path and the
-Docker production image specifically — both are Phase 10 deploy steps.
+All Phase 9 exit criteria met.
+
+### Postgres path verified 2026-07-07 (real Neon, PostgreSQL 18.4)
+
+Pointed the backend at a live Neon `DATABASE_URL` (pooled, `sslmode=require&channel_binding=require`):
+
+- **Driver/URL:** `postgres://`/`postgresql://` normalized to `postgresql+psycopg://`; raw
+  psycopg3 connect succeeds.
+- **Bootstrap:** fresh DB → `create_all` builds all 11 tables and stamps `schema_version = 23`
+  (= `LATEST_VERSION`); the SQLite-only migrations 2–23 are correctly skipped on a fresh DB.
+- **Embedding column:** `memories.embedding` is Postgres `json`; a float list round-trips
+  intact (`[0.1, 0.2, 0.3, -0.4]` back as a `list`).
+- **ORM CRUD:** user → scenario → adventure → memory create/read/delete with FK cascades works.
+- **HTTP round-trip (multi-user, TestClient):** guest bootstrap → register → me → create
+  scenario → list → settings → delete, all 200/201/204 against Neon.
+
+Remaining Phase 10 step: the Docker production image specifically (build + run the container).

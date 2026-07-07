@@ -1,0 +1,48 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+#
+# One web service: the multi-stage Dockerfile builds the React SPA and the
+# FastAPI backend into a single image that serves both same-origin. Database
+# is external Neon Postgres (set AIDND_DATABASE_URL in the dashboard); the
+# free tier has no persistent disk, which is why the DB lives off-box.
+#
+# First deploy: create a Blueprint from this repo in the Render dashboard,
+# then fill the `sync: false` secrets (Neon URL + demo key). Pushes to `main`
+# auto-deploy thereafter.
+
+services:
+  - type: web
+    name: ai-dnd
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: free           # sleeps after ~15 min idle; first wake takes ~30-60s
+    region: virginia     # us-east, closest to the Neon us-east-1 database
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      # Multi-user hardening on (guest sessions, per-user data, rate limits).
+      - key: AIDND_MULTI_USER
+        value: "1"
+
+      # Signs session cookies + encrypts stored API keys. Render generates a
+      # strong value once and keeps it stable across deploys (a regenerated
+      # secret would log out every user on each deploy).
+      - key: AIDND_SECRET_KEY
+        generateValue: true
+
+      # Neon Postgres connection string (pooled, sslmode=require). Secret —
+      # set it in the dashboard; never commit it.
+      - key: AIDND_DATABASE_URL
+        sync: false
+
+      # --- Shared demo key (optional): lets first-time visitors play without
+      #     bringing their own API key. Set these in the dashboard to enable;
+      #     leave unset to require BYOK. ---
+      - key: AIDND_DEMO_API_KEY
+        sync: false
+      - key: AIDND_DEMO_MODELS
+        sync: false
+      - key: AIDND_DEMO_TURNS_PER_DAY
+        value: "20"
+
+      # CORS is unset on purpose: the SPA is served same-origin by FastAPI.

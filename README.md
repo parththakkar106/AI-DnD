@@ -115,6 +115,22 @@ frontend/   React + Vite SPA  ──HTTP/SSE──►  backend/  FastAPI
 In production the backend serves the built SPA from one port (see `Dockerfile`); in
 development Vite proxies `/api` to FastAPI.
 
+## Deploy (Render)
+
+The repo ships a [`render.yaml`](render.yaml) blueprint: one Docker web service that
+serves the SPA and API same-origin, backed by external [Neon](https://neon.tech) Postgres
+(the free tier has no persistent disk, so the database lives off-box).
+
+1. Create a **Neon** project and copy its pooled connection string.
+2. In Render: **New → Blueprint**, point it at this repo. Render reads `render.yaml`.
+3. Fill the secrets it prompts for (`sync: false` vars): `AIDND_DATABASE_URL` (the Neon
+   string) and, to offer a no-signup demo, `AIDND_DEMO_API_KEY` / `AIDND_DEMO_MODELS`.
+   `AIDND_SECRET_KEY` is generated automatically and kept stable across deploys.
+4. Deploy. Pushes to `main` auto-deploy thereafter. Health check: `/api/health`.
+
+On the free tier the service sleeps after ~15 min idle; the first request then takes
+~30–60s to wake.
+
 ## Repo notes
 
 - `plan/` — the phased implementation plan this was built from, kept as a build log
