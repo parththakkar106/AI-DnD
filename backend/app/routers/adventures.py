@@ -2,12 +2,12 @@ import json
 import re
 import threading
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from .. import auth, memorybank, models, schemas
+from .. import auth, limits, memorybank, models, schemas
 from ..context import build_context
 from ..database import get_db
 from ..providers import OpenAICompatibleProvider, PromptParts, ProviderError
@@ -70,6 +70,7 @@ def create_adventure(
     db: Session = Depends(get_db),
     user: models.User = CurrentUser,
 ):
+    limits.check_row_cap("adventures", db, user)
     scenario = None
     if payload.scenario_id is not None:
         scenario = db.get(models.Scenario, payload.scenario_id)
@@ -205,6 +206,12 @@ def format_player_input(action_type: str, text: str) -> str:
 
 def sse(obj: dict) -> str:
     return f"data: {json.dumps(obj)}\n\n"
+
+
+# no-cache defeats any intermediary caching; X-Accel-Buffering makes
+# nginx-style reverse proxies (hosted deploys) flush each event immediately
+# instead of buffering the stream.
+SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
 
 
 def action_json(action: models.Action) -> dict:
@@ -363,24 +370,32 @@ async def run_player_turn(
 def create_action(
     adventure_id: int,
     payload: schemas.ActionCreate,
+    request: Request,
     db: Session = Depends(get_db),
     user: models.User = CurrentUser,
 ):
     adventure = get_adventure_or_404(adventure_id, db, user)
+    limits.rate_limit("turn", request, user)
+    limits.check_row_cap("actions", db, user, adventure=adventure)
     check_demo_cap(db, user)
     acquire_turn_lock(adventure_id)
     return StreamingResponse(
         with_turn_lock(adventure_id, run_player_turn(adventure, db, payload, user)),
         media_type="text/event-stream",
+        headers=SSE_HEADERS,
     )
 
 
 @router.post("/{adventure_id}/retry")
 def retry_action(
-    adventure_id: int, db: Session = Depends(get_db), user: models.User = CurrentUser
+    adventure_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: models.User = CurrentUser,
 ):
     """Delete the last AI action and regenerate from the same input."""
     adventure = get_adventure_or_404(adventure_id, db, user)
+    limits.rate_limit("turn", request, user)
     check_demo_cap(db, user)
     acquire_turn_lock(adventure_id)
     try:
@@ -397,6 +412,7 @@ def retry_action(
             generate_turn(adventure, db, ScriptPipeline(adventure, db), user),
         ),
         media_type="text/event-stream",
+        headers=SSE_HEADERS,
     )
 
 
@@ -472,16 +488,26 @@ def export_adventure(
 
 @router.post("/import", response_model=schemas.AdventureOut, status_code=201)
 def import_adventure(
+    request: Request,
     bundle: dict = Body(...),
     db: Session = Depends(get_db),
     user: models.User = CurrentUser,
 ):
     if bundle.get("format") != "ai-dnd-adventure-v1":
         raise HTTPException(400, "Not an adventure export file (expected format ai-dnd-adventure-v1).")
+    limits.rate_limit("import", request, user)
+    limits.check_row_cap("adventures", db, user)
+    limits.check_bundle_lists(
+        story_cards=bundle.get("storyCards"),
+        memories=bundle.get("memories"),
+        actions=bundle.get("actions"),
+    )
 
+    # Raw-dict import bypasses the schemas — clamp strings headed for VARCHAR
+    # columns (Postgres enforces the widths; see schemas.py).
     adventure = models.Adventure(
         user_id=user.id,
-        title=str(bundle.get("title") or "Imported Adventure"),
+        title=str(bundle.get("title") or "Imported Adventure")[:schemas.NAME_MAX],
         memory=str(bundle.get("memory") or ""),
         authors_note=str(bundle.get("authorsNote") or ""),
         ai_instructions=str(bundle.get("aiInstructions") or ""),
@@ -511,8 +537,8 @@ def import_adventure(
         if isinstance(card, dict):
             db.add(models.StoryCard(
                 adventure_id=adventure.id,
-                type=str(card.get("type") or ""),
-                name=str(card.get("name") or ""),
+                type=str(card.get("type") or "")[:schemas.CARD_TYPE_MAX],
+                name=str(card.get("name") or "")[:schemas.NAME_MAX],
                 keys=str(card.get("keys") or ""),
                 entry=str(card.get("entry") or ""),
                 notes=str(card.get("notes") or ""),
@@ -524,7 +550,7 @@ def import_adventure(
                 adventure_id=adventure.id,
                 position=int(s.get("position", i)),
                 enabled=bool(s.get("enabled", True)),
-                name=str(s.get("name") or "Imported Script"),
+                name=str(s.get("name") or "Imported Script")[:schemas.NAME_MAX],
                 description=str(s.get("description") or ""),
                 library_js=str(s.get("library") or ""),
                 input_js=str(s.get("input") or ""),
@@ -537,7 +563,7 @@ def import_adventure(
             db.add(models.Action(
                 adventure_id=adventure.id,
                 index=int(a.get("index", i)),
-                type=str(a.get("type") or "story"),
+                type=str(a.get("type") or "story")[:20],  # VARCHAR(20)
                 text=str(a["text"]),
                 reasoning=str(a["reasoning"]) if a.get("reasoning") else None,
             ))
@@ -631,6 +657,7 @@ def create_memory(
 ):
     """Manually add a memory; it gets embedded by the next post-turn pass."""
     adventure = get_adventure_or_404(adventure_id, db, user)
+    limits.check_row_cap("memories", db, user, adventure=adventure)
     if not payload.text.strip():
         raise HTTPException(400, "Memory text cannot be empty")
     memory = models.Memory(adventure_id=adventure.id, text=payload.text.strip())

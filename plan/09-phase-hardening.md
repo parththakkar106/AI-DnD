@@ -53,3 +53,26 @@ Render tier: free tier sleeps after idle + has no persistent disk).
 Running the production Docker image locally with `MULTI_USER=true`: a hostile user cannot hang
 the server with a `while(true)` script, cannot see another user's data or the debug log, gets
 rate-limited instead of burning the demo key, and the app streams turns normally the whole time.
+
+### Verified 2026-07-07 (uvicorn, `MULTI_USER=1`, fresh SQLite DB, curl)
+
+- **Fail-fast secret:** `import app.main` with `MULTI_USER=1` and no `AIDND_SECRET_KEY` raises
+  the RuntimeError as designed (won't boot).
+- **`while(true)` script:** `POST /api/scripts/{id}/test` on an `input_js` infinite loop returns
+  `InternalError: interrupted` (engine time limit) — server stays responsive afterward.
+- **Cross-user isolation:** guest B sees `[]` for scripts, gets 404 on guest A's script id;
+  guest A keeps its own row. No leakage.
+- **Debug log:** `GET /api/debug/requests` → 403 in multi-user mode.
+- **Rate limiting:** 12 rapid `POST /api/auth/register` → 429 after the 10th (auth scope, 10/300s).
+- **Body size:** 3 MB body to `POST /api/scenarios` → 413 (limit 2 MB) via BodySizeLimitMiddleware.
+- **Security headers:** CSP, `x-frame-options: DENY`, `x-content-type-options: nosniff`,
+  `referrer-policy: same-origin` on every response — including the SSE stream.
+- **Docs disabled:** Swagger UI and OpenAPI schema not served (`/docs`, `/openapi.json` fall
+  through to the SPA `index.html`; no `swagger-ui`, no API schema exposed).
+- **SSE streaming:** `POST /api/adventures/{id}/actions` streams `text/event-stream` with
+  `x-accel-buffering: no`, chunked, incremental events — the pure-ASGI middlewares don't buffer.
+  (No LLM key configured here, so it streams the "No model configured" error event; a *live*
+  provider turn through this path was verified end-to-end in Phase 8.)
+
+All Phase 9 exit criteria met. Not yet exercised: Postgres (`DATABASE_URL`) path and the
+Docker production image specifically — both are Phase 10 deploy steps.

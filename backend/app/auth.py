@@ -16,8 +16,6 @@ whitelist and a per-day turn cap.
 """
 
 import os
-import time
-from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import timezone
 
@@ -35,7 +33,15 @@ def _env_flag(name: str) -> bool:
 MULTI_USER = _env_flag("AIDND_MULTI_USER")
 
 SESSION_COOKIE = "aidnd_session"
-COOKIE_SECURE = _env_flag("AIDND_COOKIE_SECURE")  # enable behind HTTPS in prod
+# Secure cookies default on in multi-user (hosted = HTTPS; browsers also
+# accept Secure on http://localhost). AIDND_COOKIE_SECURE=0/1 overrides —
+# e.g. 0 when testing multi-user over plain http on a LAN address.
+_cookie_secure_env = os.environ.get("AIDND_COOKIE_SECURE", "").strip().lower()
+COOKIE_SECURE = (
+    _cookie_secure_env in ("1", "true", "yes", "on")
+    if _cookie_secure_env
+    else MULTI_USER
+)
 COOKIE_MAX_AGE = 60 * 60 * 24 * 365
 
 # ---------- Shared demo key (BYOK fallback) ----------
@@ -151,21 +157,3 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> models.
             raise HTTPException(401, "No session. Call GET /api/auth/me first.")
     _touch(user, db)
     return user
-
-
-# ---------- Brute-force limiter for register/login ----------
-
-_ATTEMPT_LIMIT = 10
-_ATTEMPT_WINDOW = 300  # seconds
-_attempts: dict[str, deque] = defaultdict(deque)
-
-
-def rate_limit_auth(request: Request) -> None:
-    ip = request.client.host if request.client else "unknown"
-    now = time.time()
-    window = _attempts[ip]
-    while window and window[0] < now - _ATTEMPT_WINDOW:
-        window.popleft()
-    if len(window) >= _ATTEMPT_LIMIT:
-        raise HTTPException(429, "Too many attempts. Try again in a few minutes.")
-    window.append(now)

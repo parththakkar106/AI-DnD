@@ -7,7 +7,9 @@ Everything keys off one server-side secret:
 The secret comes from AIDND_SECRET_KEY, or is auto-generated once into
 `secret.key` next to the database so local installs and Docker volumes work
 with zero configuration (losing the file logs everyone out and orphans
-stored API keys — users just re-enter them).
+stored API keys — users just re-enter them). Multi-user deploys must set the
+env var: hosted filesystems are ephemeral, and a secret.key regenerated on
+every deploy would silently log out all users each time.
 
 Passwords use hashlib.scrypt (stdlib, OpenSSL-backed) so we don't need a
 separate hashing dependency.
@@ -27,9 +29,19 @@ _SECRET_FILE = DB_PATH.parent / "secret.key"
 
 
 def _load_secret() -> bytes:
-    env = os.environ.get("AIDND_SECRET_KEY")
+    env = os.environ.get("AIDND_SECRET_KEY", "").strip()
     if env:
         return env.encode()
+    # Same flag parse as auth.MULTI_USER (auth imports this module, so it
+    # can't be imported from there).
+    if os.environ.get("AIDND_MULTI_USER", "").strip().lower() in ("1", "true", "yes", "on"):
+        raise RuntimeError(
+            "AIDND_SECRET_KEY must be set when AIDND_MULTI_USER is on: an "
+            "auto-generated secret.key on an ephemeral hosted filesystem would "
+            "rotate on every deploy, logging out every user and orphaning "
+            "their stored API keys. Generate one with: "
+            "python -c \"import secrets; print(secrets.token_urlsafe(48))\""
+        )
     if _SECRET_FILE.exists():
         return _SECRET_FILE.read_bytes().strip()
     secret = secrets.token_urlsafe(48).encode()

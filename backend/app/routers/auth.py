@@ -3,7 +3,7 @@ import re
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 
-from .. import auth, models, schemas, security
+from .. import auth, limits, models, schemas, security
 from ..database import get_db
 from .settings import get_settings
 
@@ -53,6 +53,8 @@ def me(request: Request, response: Response, db: Session = Depends(get_db)):
     else:
         user = auth.resolve_session_user(request, db)
         if user is None:
+            # Each new guest is a database row — cap how fast one IP can mint them.
+            limits.rate_limit("guest", request)
             user = models.User(is_guest=True)
             db.add(user)
             db.commit()
@@ -71,7 +73,7 @@ def register(
     scenario, script and setting they created as a guest is kept."""
     if not auth.MULTI_USER:
         raise HTTPException(400, "Accounts are disabled in local mode.")
-    auth.rate_limit_auth(request)
+    limits.rate_limit("auth", request)
     email = payload.email.strip().lower()
     if not EMAIL_RE.match(email):
         raise HTTPException(422, "Enter a valid email address.")
@@ -99,7 +101,7 @@ def login(
     session is simply abandoned (its data stays under the guest user)."""
     if not auth.MULTI_USER:
         raise HTTPException(400, "Accounts are disabled in local mode.")
-    auth.rate_limit_auth(request)
+    limits.rate_limit("auth", request)
     email = payload.email.strip().lower()
     user = db.query(models.User).filter(models.User.email == email).first()
     if (

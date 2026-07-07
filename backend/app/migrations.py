@@ -1,14 +1,20 @@
-"""Lightweight versioned schema migrations over SQLite's PRAGMA user_version.
+"""Lightweight versioned schema migrations.
 
 How it works:
 - A fresh database is created by `Base.metadata.create_all()` (always current)
   and stamped with LATEST_VERSION.
 - An existing database runs every migration whose version is greater than its
-  stored user_version, in order, then is stamped.
+  stored version, in order, then is stamped.
+
+The version lives in SQLite's PRAGMA user_version, or a one-row
+`schema_version` table on Postgres (no PRAGMA there).
 
 To change the schema: update models.py (keeps fresh DBs current) AND append a
 (version, sql) pair here (upgrades existing DBs). Keep migrations idempotent
-where cheap (IF NOT EXISTS etc.).
+where cheap (IF NOT EXISTS etc.). Migrations up to 23 predate Postgres support
+and use SQLite-only syntax — that's fine because every Postgres database
+starts fresh (created by create_all, stamped LATEST, never replays them), but
+migrations added from Phase 9 on must run on both dialects.
 """
 
 from sqlalchemy import inspect, text
@@ -70,19 +76,46 @@ MIGRATIONS: list[tuple[int, str]] = [
 LATEST_VERSION = max((v for v, _ in MIGRATIONS), default=1)
 
 
+def _get_version(conn) -> int:
+    if conn.dialect.name == "sqlite":
+        return conn.execute(text("PRAGMA user_version")).scalar() or 1
+    conn.execute(text(
+        "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)"
+    ))
+    version = conn.execute(text("SELECT version FROM schema_version")).scalar()
+    # A non-fresh database with no stamp can only have been created by an
+    # earlier create_all of this same codebase — i.e. already at LATEST.
+    return version if version is not None else LATEST_VERSION
+
+
+def _set_version(conn, version: int) -> None:
+    if conn.dialect.name == "sqlite":
+        conn.execute(text(f"PRAGMA user_version = {version}"))
+        return
+    conn.execute(text(
+        "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)"
+    ))
+    if conn.execute(text("SELECT version FROM schema_version")).scalar() is None:
+        conn.execute(
+            text("INSERT INTO schema_version (version) VALUES (:v)"), {"v": version}
+        )
+    else:
+        conn.execute(text("UPDATE schema_version SET version = :v"), {"v": version})
+
+
 def bootstrap(engine: Engine) -> None:
     fresh = not inspect(engine).get_table_names()
     Base.metadata.create_all(bind=engine)
     with engine.begin() as conn:
         if fresh:
-            conn.execute(text(f"PRAGMA user_version = {LATEST_VERSION}"))
+            _set_version(conn, LATEST_VERSION)
             return
-        current = conn.execute(text("PRAGMA user_version")).scalar() or 1
+        current = _get_version(conn)
         for version, sql in MIGRATIONS:
             if version > current:
                 conn.execute(text(sql))
                 current = version
-        conn.execute(text(f"PRAGMA user_version = {current}"))
+        _set_version(conn, current)
         _encrypt_plaintext_api_keys(conn)
 
 

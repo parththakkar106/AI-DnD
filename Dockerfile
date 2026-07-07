@@ -33,4 +33,9 @@ VOLUME /data
 
 EXPOSE 8000
 WORKDIR /app/backend
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# --proxy-headers: behind a reverse proxy (any hosted deploy), trust
+# X-Forwarded-For so per-IP rate limits key on the client, not the proxy.
+# Single worker on purpose: the turn lock, rate limiter, and debug log are
+# in-process state.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", \
+     "--proxy-headers", "--forwarded-allow-ips", "*"]

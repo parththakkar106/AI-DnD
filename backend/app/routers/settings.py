@@ -1,8 +1,8 @@
 import httpx
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
-from .. import auth, models, schemas, security
+from .. import auth, limits, models, schemas, security
 from ..database import get_db
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -64,12 +64,14 @@ def update_settings(
 
 @router.post("/test")
 async def test_connection(
+    request: Request,
     db: Session = Depends(get_db),
     user: models.User = Depends(auth.get_current_user),
 ):
     """Hit the endpoint's /models listing as a cheap connectivity check.
     Tests whatever the turn engine would actually use — including the shared
     demo endpoint when the user has no key of their own."""
+    limits.rate_limit("connection-test", request, user)
     settings = get_settings(db, user)
     cfg = auth.resolve_provider_config(settings)
     url = cfg.endpoint_url.rstrip("/") + "/models"

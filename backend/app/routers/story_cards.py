@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from .. import auth, models, schemas
+from .. import auth, limits, models, schemas
 from ..database import get_db
 
 router = APIRouter(prefix="/api/story-cards", tags=["story-cards"])
@@ -50,6 +50,10 @@ def create_story_card(
     owner = db.get(owner_model, owner_id)
     if owner is None or owner.user_id != user.id:
         raise HTTPException(404, "Owner not found")
+    limits.check_row_cap(
+        "story_cards", db, user,
+        scenario_id=payload.scenario_id, adventure_id=payload.adventure_id,
+    )
     card = models.StoryCard(**payload.model_dump())
     db.add(card)
     db.commit()

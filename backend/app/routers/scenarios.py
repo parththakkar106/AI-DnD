@@ -1,8 +1,8 @@
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from .. import auth, models, schemas
+from .. import auth, limits, models, schemas
 from ..database import get_db
 
 router = APIRouter(prefix="/api/scenarios", tags=["scenarios"])
@@ -39,6 +39,7 @@ def create_scenario(
     db: Session = Depends(get_db),
     user: models.User = Depends(auth.get_current_user),
 ):
+    limits.check_row_cap("scenarios", db, user)
     scenario = models.Scenario(**payload.model_dump(), user_id=user.id)
     db.add(scenario)
     db.commit()
@@ -141,12 +142,15 @@ _IGNORED_KEYS = {"format", "storyCards", "worldInfo", "worldInformation", "scrip
 
 @router.post("/import", status_code=201)
 def import_scenario(
+    request: Request,
     bundle: dict = Body(...),
     db: Session = Depends(get_db),
     user: models.User = Depends(auth.get_current_user),
 ):
     """Accepts our export format and AI Dungeon scenario exports best-effort;
     reports any keys it didn't understand."""
+    limits.rate_limit("import", request, user)
+    limits.check_row_cap("scenarios", db, user)
     fields: dict = {}
     unmapped: list[str] = []
     for key, value in bundle.items():
@@ -164,6 +168,10 @@ def import_scenario(
     scenario = models.Scenario(**fields, user_id=user.id)
     if not scenario.title:
         scenario.title = "Imported Scenario"
+    # Raw-dict import bypasses the schemas — clamp to VARCHAR widths
+    # (Postgres enforces them; see schemas.py).
+    scenario.title = scenario.title[:schemas.NAME_MAX]
+    scenario.tags = scenario.tags[:schemas.TAGS_MAX]
     db.add(scenario)
     db.flush()
 
@@ -174,14 +182,15 @@ def import_scenario(
         or bundle.get("worldInformation")
         or []
     )
+    limits.check_bundle_lists(story_cards=cards)
     for card in cards:
         if not isinstance(card, dict):
             continue
         db.add(
             models.StoryCard(
                 scenario_id=scenario.id,
-                type=str(card.get("type") or ""),
-                name=str(card.get("name") or card.get("title") or ""),
+                type=str(card.get("type") or "")[:schemas.CARD_TYPE_MAX],
+                name=str(card.get("name") or card.get("title") or "")[:schemas.NAME_MAX],
                 keys=str(card.get("keys") or ""),
                 # AI Dungeon world info uses "value"; story cards use "entry".
                 entry=str(card.get("entry") or card.get("value") or ""),
@@ -194,7 +203,7 @@ def import_scenario(
             continue
         script = models.Script(
             user_id=user.id,
-            name=str(item.get("name") or "Imported Script"),
+            name=str(item.get("name") or "Imported Script")[:schemas.NAME_MAX],
             description=str(item.get("description") or ""),
             library_js=str(item.get("library") or item.get("sharedLibrary") or ""),
             input_js=str(item.get("input") or item.get("onInput") or ""),

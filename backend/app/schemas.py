@@ -1,7 +1,26 @@
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+
+# Length caps (Phase 9). The VARCHAR ones are correctness, not just abuse
+# limits: Postgres enforces column lengths (SQLite never did), so anything
+# longer must be a 422 here rather than a 500 at INSERT. Text-column caps are
+# generous abuse ceilings a legitimate player won't hit.
+NAME_MAX = 200          # titles/names — VARCHAR(200)
+TAGS_MAX = 500          # VARCHAR(500)
+CARD_TYPE_MAX = 100     # VARCHAR(100)
+PROSE_MAX = 50_000      # memory, author's note, prompts, entries, notes...
+SCRIPT_MAX = 200_000    # one JS source
+ACTION_MAX = 20_000     # one player action
+MEMORY_TEXT_MAX = 5_000
+
+Name = Annotated[str, Field(max_length=NAME_MAX)]
+Tags = Annotated[str, Field(max_length=TAGS_MAX)]
+CardType = Annotated[str, Field(max_length=CARD_TYPE_MAX)]
+Prose = Annotated[str, Field(max_length=PROSE_MAX)]
+ScriptSource = Annotated[str, Field(max_length=SCRIPT_MAX)]
+ActionText = Annotated[str, Field(max_length=ACTION_MAX)]
 
 
 class ORMModel(BaseModel):
@@ -11,11 +30,11 @@ class ORMModel(BaseModel):
 # ---------- Story cards ----------
 
 class StoryCardBase(BaseModel):
-    type: str = ""
-    name: str = ""
-    keys: str = ""
-    entry: str = ""
-    notes: str = ""
+    type: CardType = ""
+    name: Name = ""
+    keys: Prose = ""
+    entry: Prose = ""
+    notes: Prose = ""
 
 
 class StoryCardCreate(StoryCardBase):
@@ -24,11 +43,11 @@ class StoryCardCreate(StoryCardBase):
 
 
 class StoryCardUpdate(BaseModel):
-    type: str | None = None
-    name: str | None = None
-    keys: str | None = None
-    entry: str | None = None
-    notes: str | None = None
+    type: CardType | None = None
+    name: Name | None = None
+    keys: Prose | None = None
+    entry: Prose | None = None
+    notes: Prose | None = None
 
 
 class StoryCardOut(ORMModel, StoryCardBase):
@@ -40,13 +59,13 @@ class StoryCardOut(ORMModel, StoryCardBase):
 # ---------- Scenarios ----------
 
 class ScenarioBase(BaseModel):
-    title: str = "Untitled Scenario"
-    description: str = ""
-    prompt: str = ""
-    memory: str = ""
-    authors_note: str = ""
-    ai_instructions: str = ""
-    tags: str = ""
+    title: Name = "Untitled Scenario"
+    description: Prose = ""
+    prompt: Prose = ""
+    memory: Prose = ""
+    authors_note: Prose = ""
+    ai_instructions: Prose = ""
+    tags: Tags = ""
 
 
 class ScenarioCreate(ScenarioBase):
@@ -54,13 +73,13 @@ class ScenarioCreate(ScenarioBase):
 
 
 class ScenarioUpdate(BaseModel):
-    title: str | None = None
-    description: str | None = None
-    prompt: str | None = None
-    memory: str | None = None
-    authors_note: str | None = None
-    ai_instructions: str | None = None
-    tags: str | None = None
+    title: Name | None = None
+    description: Prose | None = None
+    prompt: Prose | None = None
+    memory: Prose | None = None
+    authors_note: Prose | None = None
+    ai_instructions: Prose | None = None
+    tags: Tags | None = None
     script_ids: list[int] | None = None
 
 
@@ -86,17 +105,17 @@ class ScenarioListItem(ORMModel):
 
 class AdventureCreate(BaseModel):
     scenario_id: int | None = None
-    title: str | None = None
+    title: Name | None = None
     # ${Placeholder} values collected from the player at start (AI Dungeon behavior).
     placeholders: dict[str, str] = {}
 
 
 class AdventureUpdate(BaseModel):
-    title: str | None = None
-    memory: str | None = None
-    authors_note: str | None = None
-    ai_instructions: str | None = None
-    story_summary: str | None = None
+    title: Name | None = None
+    memory: Prose | None = None
+    authors_note: Prose | None = None
+    ai_instructions: Prose | None = None
+    story_summary: Prose | None = None
     auto_summarize: bool | None = None
     memory_bank_enabled: bool | None = None
 
@@ -112,12 +131,12 @@ class ActionOut(ORMModel):
 
 
 class ActionUpdate(BaseModel):
-    text: str
+    text: ActionText
 
 
 class ActionCreate(BaseModel):
     type: Literal["do", "say", "story", "continue"]
-    text: str = ""
+    text: ActionText = ""
 
 
 class AdventureOut(ORMModel):
@@ -153,11 +172,11 @@ class MemoryOut(ORMModel):
 
 
 class MemoryCreate(BaseModel):
-    text: str
+    text: Annotated[str, Field(max_length=MEMORY_TEXT_MAX)]
 
 
 class MemoryUpdate(BaseModel):
-    text: str | None = None
+    text: Annotated[str, Field(max_length=MEMORY_TEXT_MAX)] | None = None
     pinned: bool | None = None
     forgotten: bool | None = None
 
@@ -174,12 +193,12 @@ class AdventureListItem(ORMModel):
 # ---------- Scripts ----------
 
 class ScriptBase(BaseModel):
-    name: str = "Untitled Script"
-    description: str = ""
-    library_js: str = ""
-    input_js: str = ""
-    context_js: str = ""
-    output_js: str = ""
+    name: Name = "Untitled Script"
+    description: Prose = ""
+    library_js: ScriptSource = ""
+    input_js: ScriptSource = ""
+    context_js: ScriptSource = ""
+    output_js: ScriptSource = ""
 
 
 class ScriptCreate(ScriptBase):
@@ -187,12 +206,12 @@ class ScriptCreate(ScriptBase):
 
 
 class ScriptUpdate(BaseModel):
-    name: str | None = None
-    description: str | None = None
-    library_js: str | None = None
-    input_js: str | None = None
-    context_js: str | None = None
-    output_js: str | None = None
+    name: Name | None = None
+    description: Prose | None = None
+    library_js: ScriptSource | None = None
+    input_js: ScriptSource | None = None
+    context_js: ScriptSource | None = None
+    output_js: ScriptSource | None = None
 
 
 class ScriptOut(ORMModel, ScriptBase):
@@ -203,7 +222,7 @@ class ScriptOut(ORMModel, ScriptBase):
 
 class ScriptTestRequest(BaseModel):
     hook: Literal["input", "context", "output"]
-    text: str = ""
+    text: Prose = ""
     state: dict = {}
 
 
@@ -222,17 +241,19 @@ class AdventureScriptOut(ORMModel):
 
 class AdventureScriptUpdate(BaseModel):
     enabled: bool | None = None
-    library_js: str | None = None
-    input_js: str | None = None
-    context_js: str | None = None
-    output_js: str | None = None
+    library_js: ScriptSource | None = None
+    input_js: ScriptSource | None = None
+    context_js: ScriptSource | None = None
+    output_js: ScriptSource | None = None
 
 
 # ---------- Auth (Phase 8) ----------
 
 class AuthCredentials(BaseModel):
-    email: str
-    password: str
+    email: Annotated[str, Field(max_length=320)]  # VARCHAR(320)
+    # Upper bound keeps scrypt cost flat — hashing megabyte "passwords" is CPU
+    # an attacker would otherwise get for free.
+    password: Annotated[str, Field(max_length=128)]
 
 
 # ---------- Settings ----------
@@ -259,17 +280,19 @@ ScenarioOut.model_rebuild()
 
 
 class SettingsUpdate(BaseModel):
-    endpoint_url: str | None = None
-    api_key: str | None = None
-    model: str | None = None
-    api_mode: str | None = None
-    temperature: float | None = None
-    max_output_tokens: int | None = None
-    reasoning_max_tokens: int | None = None
-    context_token_budget: int | None = None
-    narrator_prompt: str | None = None
+    endpoint_url: Annotated[str, Field(max_length=500)] | None = None  # VARCHAR(500)
+    # Encryption expands the stored value ~4/3 into the same VARCHAR(500):
+    # 256 plaintext chars is the largest safe input ("enc:" + Fernet + base64).
+    api_key: Annotated[str, Field(max_length=256)] | None = None
+    model: Name | None = None
+    api_mode: Annotated[str, Field(max_length=20)] | None = None
+    temperature: Annotated[float, Field(ge=0, le=5)] | None = None
+    max_output_tokens: Annotated[int, Field(ge=1, le=100_000)] | None = None
+    reasoning_max_tokens: Annotated[int, Field(ge=0, le=100_000)] | None = None
+    context_token_budget: Annotated[int, Field(ge=256, le=200_000)] | None = None
+    narrator_prompt: Prose | None = None
     stream: bool | None = None
-    summary_model: str | None = None
-    embedding_model: str | None = None
-    memory_bank_capacity: int | None = None
-    memory_top_k: int | None = None
+    summary_model: Name | None = None
+    embedding_model: Name | None = None
+    memory_bank_capacity: Annotated[int, Field(ge=1, le=1000)] | None = None
+    memory_top_k: Annotated[int, Field(ge=1, le=50)] | None = None

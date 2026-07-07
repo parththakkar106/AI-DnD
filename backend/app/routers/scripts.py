@@ -1,7 +1,7 @@
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
-from .. import auth, models, schemas
+from .. import auth, limits, models, schemas
 from ..database import get_db
 from ..scripting import run_hook
 
@@ -36,6 +36,7 @@ def create_script(
     db: Session = Depends(get_db),
     user: models.User = Depends(auth.get_current_user),
 ):
+    limits.check_row_cap("scripts", db, user)
     script = models.Script(**payload.model_dump(), user_id=user.id)
     db.add(script)
     db.commit()
@@ -79,11 +80,13 @@ def delete_script(
 def test_script(
     script_id: int,
     payload: schemas.ScriptTestRequest,
+    request: Request,
     db: Session = Depends(get_db),
     user: models.User = Depends(auth.get_current_user),
 ):
     """Dry-run one hook against sample text — no AI call, no persistence."""
     script = get_script_or_404(script_id, db, user)
+    limits.rate_limit("script-test", request, user)
     result = run_hook(
         script.library_js,
         getattr(script, HOOK_FIELDS[payload.hook]),
@@ -125,11 +128,14 @@ def export_script(
 
 @router.post("/import", response_model=schemas.ScriptOut, status_code=201)
 def import_script(
+    request: Request,
     bundle: dict = Body(...),
     db: Session = Depends(get_db),
     user: models.User = Depends(auth.get_current_user),
 ):
     """Accepts our export bundle; tolerates *_js key names too."""
+    limits.rate_limit("import", request, user)
+    limits.check_row_cap("scripts", db, user)
     def pick(*keys: str) -> str:
         for key in keys:
             value = bundle.get(key)
@@ -139,7 +145,8 @@ def import_script(
 
     script = models.Script(
         user_id=user.id,
-        name=pick("name") or "Imported Script",
+        # Raw-dict import bypasses the schemas — clamp to the VARCHAR width.
+        name=(pick("name") or "Imported Script")[:schemas.NAME_MAX],
         description=pick("description"),
         library_js=pick("library", "library_js", "sharedLibrary"),
         input_js=pick("input", "input_js", "onInput"),
