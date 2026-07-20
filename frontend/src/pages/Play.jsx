@@ -395,18 +395,20 @@ function ScriptsPanel({ advId }) {
 // Renders one script-state value: primitives inline (typed/coloured), and
 // objects/arrays as a collapsible, indented tree — recursing into nesting so
 // deep state shows structure instead of a flat JSON blob.
-function StateValue({ value }) {
+function StateValue({ value, depth = 0 }) {
   if (value === null || value === undefined) return <span className="jv-null">null</span>
   if (typeof value === 'boolean') return <span className="jv-bool">{String(value)}</span>
   if (typeof value === 'number') return <span className="jv-number">{value}</span>
   if (typeof value === 'string') return <span className="jv-string">{value}</span>
-  if (Array.isArray(value)) return <StateTree entries={value.map((v, i) => [i, v])} empty="[ ]" />
-  if (typeof value === 'object') return <StateTree entries={Object.entries(value)} empty="{ }" />
+  if (Array.isArray(value)) return <StateTree entries={value.map((v, i) => [i, v])} empty="[ ]" depth={depth} />
+  if (typeof value === 'object') return <StateTree entries={Object.entries(value)} empty="{ }" depth={depth} />
   return <span className="jv-string">{String(value)}</span>
 }
 
-function StateTree({ entries, empty }) {
-  const [open, setOpen] = useState(true)
+// Only the first level is expanded by default (depth 0); nested trees start
+// collapsed and can be opened on demand.
+function StateTree({ entries, empty, depth = 0 }) {
+  const [open, setOpen] = useState(depth < 1)
   if (entries.length === 0) return <span className="jv-empty">{empty}</span>
   return (
     <div className="jv-tree">
@@ -418,7 +420,7 @@ function StateTree({ entries, empty }) {
           {entries.map(([k, v]) => (
             <li key={k}>
               <span className="jv-key">{k}</span>
-              <StateValue value={v} />
+              <StateValue value={v} depth={depth + 1} />
             </li>
           ))}
         </ul>
