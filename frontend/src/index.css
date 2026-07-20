@@ -439,6 +439,72 @@ button:disabled { opacity: 0.45; cursor: default; transform: none; box-shadow: n
   top: 56px;
   animation: panel-in 0.25s ease both;
 }
+
+/* ---------- Left status drawer (script state) ---------- */
+
+.status-drawer {
+  flex-shrink: 0;
+  position: sticky;
+  top: 56px;
+  height: calc(100vh - 56px);
+  display: flex;
+  align-items: flex-start;
+  border-right: 1px solid var(--border);
+  background: var(--bg-panel);
+}
+.status-drawer.open { width: 300px; }
+.status-toggle {
+  flex-shrink: 0;
+  height: 100%;
+  width: 30px;
+  padding: 12px 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+.status-toggle:hover { color: var(--text); background: var(--bg-input); }
+.status-toggle-label {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  letter-spacing: 0.12em;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+}
+.status-body {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  overflow-y: auto;
+  padding: 20px 16px;
+  animation: panel-in 0.2s ease both;
+}
+.status-vars { list-style: none; margin: 0; padding: 0; }
+.status-vars li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+.status-key {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.82rem;
+  color: var(--accent-bright);
+  word-break: break-word;
+}
+.status-val {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.82rem;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 @keyframes panel-in {
   from { opacity: 0; transform: translateX(16px); }
   to { opacity: 1; transform: none; }

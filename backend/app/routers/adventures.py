@@ -141,6 +141,17 @@ def get_adventure(
     return get_adventure_or_404(adventure_id, db, user)
 
 
+@router.get("/{adventure_id}/script-state")
+def get_script_state(
+    adventure_id: int, db: Session = Depends(get_db), user: models.User = CurrentUser
+):
+    """The scripting `state` object — every variable scripts read/write via
+    `state.x`, persisted after each hook. Empty {} until a script sets one."""
+    adventure = get_adventure_or_404(adventure_id, db, user)
+    state = adventure.script_state if isinstance(adventure.script_state, dict) else {}
+    return {"state": state}
+
+
 @router.patch("/{adventure_id}", response_model=schemas.AdventureOut)
 def update_adventure(
     adventure_id: int,

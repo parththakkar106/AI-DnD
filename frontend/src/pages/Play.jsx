@@ -317,6 +317,60 @@ function ScriptsPanel({ advId }) {
   )
 }
 
+// Collapsible left rail showing the scripting `state` object — every variable
+// scripts read/write via state.x, refreshed after each turn.
+function StatusDrawer({ advId, refreshKey }) {
+  const [open, setOpen] = useState(false)
+  const [state, setState] = useState(null)
+  const [failed, setFailed] = useState(false)
+
+  const load = useCallback(() => {
+    api.getScriptState(advId)
+      .then((r) => { setState(r.state || {}); setFailed(false) })
+      .catch(() => setFailed(true))
+  }, [advId])
+
+  // Only fetch while open; re-fetch after each turn so values stay live.
+  useEffect(() => { if (open) load() }, [open, refreshKey, load])
+
+  const entries = state ? Object.entries(state) : []
+
+  return (
+    <div className={`status-drawer ${open ? 'open' : ''}`}>
+      <button className="status-toggle" onClick={() => setOpen((o) => !o)}
+        title="Script state variables">
+        {open ? '‹' : '›'}<span className="status-toggle-label">State</span>
+      </button>
+      {open && (
+        <div className="status-body">
+          <div className="side-panel-header">
+            <h2>Script State</h2>
+            <button onClick={load} title="Refresh">↻</button>
+          </div>
+          {failed ? (
+            <div className="empty">Couldn’t load state.</div>
+          ) : entries.length === 0 ? (
+            <div className="empty">
+              No variables yet. Scripts that use <code>state</code> will appear here after a turn.
+            </div>
+          ) : (
+            <ul className="status-vars">
+              {entries.map(([k, v]) => (
+                <li key={k}>
+                  <span className="status-key">{k}</span>
+                  <span className="status-val">
+                    {typeof v === 'string' ? v : JSON.stringify(v, null, 2)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function ScriptReport({ script }) {
   if (!script || (!script.logs?.length && !script.errors?.length && !script.context_changed)) {
     return null
@@ -620,6 +674,7 @@ export default function Play() {
 
   return (
     <div className={`play-layout ${panel ? 'with-panel' : ''}`}>
+      <StatusDrawer advId={id} refreshKey={actions.length} />
       <div className="page play-page">
         <div className="page-header">
           <h1>{adventure.title}</h1>
