@@ -612,6 +612,16 @@ export default function Play() {
   const storyEndRef = useRef(null)
   const abortRef = useRef(null)
   const pinnedRef = useRef(true) // autoscroll only while the reader is at the bottom
+  const inputRef = useRef(null)
+
+  // Grow the action box with its content (CSS caps it at ~4 lines, then
+  // scrolls); shrinks back after send() clears the text.
+  useEffect(() => {
+    const el = inputRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${el.scrollHeight}px`
+  }, [input])
 
   useEffect(() => {
     api.getAdventure(id)
@@ -863,8 +873,9 @@ export default function Play() {
                 </button>
               ))}
             </div>
-            <input
-              type="text"
+            <textarea
+              ref={inputRef}
+              rows={1}
               value={input}
               disabled={busy}
               placeholder={
@@ -873,7 +884,10 @@ export default function Play() {
                   : 'What happens next?'
               }
               onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter' && !busy) send() }}
+              // Enter sends; Shift+Enter inserts a newline.
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey && !busy) { e.preventDefault(); send() }
+              }}
             />
             {busy ? (
               <button className="danger" onClick={stopGeneration}>■ Stop</button>

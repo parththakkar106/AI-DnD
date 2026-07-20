@@ -392,8 +392,17 @@ button:disabled { opacity: 0.45; cursor: default; transform: none; box-shadow: n
 .turn-buttons button { font-size: 0.78rem; padding: 4px 12px; color: var(--text-dim); }
 .turn-buttons button:hover:not(:disabled) { color: var(--text); }
 
-.input-bar { display: flex; gap: 8px; align-items: stretch; }
+.input-bar { display: flex; gap: 8px; align-items: flex-end; }
 .input-bar input { flex: 1; }
+/* Auto-growing action box: starts at one line, grows to ~4, then scrolls. */
+.input-bar textarea {
+  flex: 1;
+  resize: none;
+  min-height: 0;
+  max-height: calc(6em + 20px); /* ~4 lines (1.5em each) + padding/border */
+  overflow-y: auto;
+  line-height: 1.5;
+}
 
 .mode-select { display: flex; }
 .mode-select button {
