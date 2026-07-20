@@ -544,6 +544,25 @@ button:disabled { opacity: 0.45; cursor: default; transform: none; box-shadow: n
   white-space: pre-wrap;
   word-break: break-word;
 }
+/* Recursive script-state value tree */
+.jv-string { color: var(--text); }
+.jv-number { color: var(--player); }
+.jv-bool { color: var(--accent-bright); }
+.jv-null { color: var(--text-dim); font-style: italic; }
+.jv-empty { color: var(--text-dim); }
+.jv-tree { display: inline-block; vertical-align: top; max-width: 100%; }
+.jv-toggle {
+  background: none; border: none; padding: 0; cursor: pointer;
+  font-family: inherit; font-size: 0.72rem; color: var(--text-dim);
+}
+.jv-toggle:hover { color: var(--accent-bright); }
+.jv-children {
+  list-style: none; margin: 2px 0 2px 0; padding-left: 12px;
+  border-left: 1px solid var(--border);
+}
+.jv-children li { padding: 2px 0; word-break: break-word; }
+.jv-key { color: var(--accent); margin-right: 6px; }
+.jv-key::after { content: ':'; color: var(--text-dim); }
 @keyframes panel-in {
   from { opacity: 0; transform: translateX(16px); }
   to { opacity: 1; transform: none; }

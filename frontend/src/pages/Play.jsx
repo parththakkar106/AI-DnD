@@ -392,6 +392,41 @@ function ScriptsPanel({ advId }) {
   )
 }
 
+// Renders one script-state value: primitives inline (typed/coloured), and
+// objects/arrays as a collapsible, indented tree — recursing into nesting so
+// deep state shows structure instead of a flat JSON blob.
+function StateValue({ value }) {
+  if (value === null || value === undefined) return <span className="jv-null">null</span>
+  if (typeof value === 'boolean') return <span className="jv-bool">{String(value)}</span>
+  if (typeof value === 'number') return <span className="jv-number">{value}</span>
+  if (typeof value === 'string') return <span className="jv-string">{value}</span>
+  if (Array.isArray(value)) return <StateTree entries={value.map((v, i) => [i, v])} empty="[ ]" />
+  if (typeof value === 'object') return <StateTree entries={Object.entries(value)} empty="{ }" />
+  return <span className="jv-string">{String(value)}</span>
+}
+
+function StateTree({ entries, empty }) {
+  const [open, setOpen] = useState(true)
+  if (entries.length === 0) return <span className="jv-empty">{empty}</span>
+  return (
+    <div className="jv-tree">
+      <button className="jv-toggle" onClick={() => setOpen((o) => !o)}>
+        {open ? '▾' : '▸'} {entries.length} {entries.length === 1 ? 'item' : 'items'}
+      </button>
+      {open && (
+        <ul className="jv-children">
+          {entries.map(([k, v]) => (
+            <li key={k}>
+              <span className="jv-key">{k}</span>
+              <StateValue value={v} />
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
 // Collapsible left rail showing the scripting `state` object — every variable
 // scripts read/write via state.x, refreshed after each turn.
 function StatusDrawer({ advId, refreshKey }) {
@@ -433,9 +468,7 @@ function StatusDrawer({ advId, refreshKey }) {
               {entries.map(([k, v]) => (
                 <li key={k}>
                   <span className="status-key">{k}</span>
-                  <span className="status-val">
-                    {typeof v === 'string' ? v : JSON.stringify(v, null, 2)}
-                  </span>
+                  <div className="status-val"><StateValue value={v} /></div>
                 </li>
               ))}
             </ul>
