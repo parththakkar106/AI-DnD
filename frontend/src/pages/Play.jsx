@@ -303,6 +303,22 @@ function ScriptsPanel({ advId }) {
     setScripts((prev) => prev.map((s) => (s.id === script.id ? updated : s)))
   }
 
+  // Download as an import-compatible bundle (matches /scripts export), so demo
+  // scripts can be forked into your own library via the Scripts page's Import.
+  const download = (s) => {
+    downloadJSON(
+      {
+        name: s.name,
+        description: s.description,
+        library: s.library_js,
+        input: s.input_js,
+        context: s.context_js,
+        output: s.output_js,
+      },
+      `${(s.name || 'script').replace(/\W+/g, '-')}.json`,
+    )
+  }
+
   if (!scripts) return <div className="empty">Loading…</div>
   if (scripts.length === 0) {
     return (
@@ -324,9 +340,12 @@ function ScriptsPanel({ advId }) {
                 <input type="checkbox" checked={s.enabled} onChange={() => toggle(s)} />
                 <span>{s.name}</span>
               </label>
-              <button className="linklike" onClick={() => setOpenId(open ? null : s.id)}>
-                {open ? 'Hide code' : 'View code'}
-              </button>
+              <div style={{ display: 'flex', gap: 12, flexShrink: 0 }}>
+                <button className="linklike" onClick={() => setOpenId(open ? null : s.id)}>
+                  {open ? 'Hide code' : 'View code'}
+                </button>
+                <button className="linklike" onClick={() => download(s)}>Download</button>
+              </div>
             </div>
             {s.description && <div className="dim adv-script-desc">{s.description}</div>}
             {open && (
