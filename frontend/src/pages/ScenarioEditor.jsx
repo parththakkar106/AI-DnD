@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { api } from '../api'
-import { Field, StoryCardRow, downloadJSON } from '../components'
+import { Field, StoryCardRow, downloadJSON, pickJSONFile } from '../components'
 
 export default function ScenarioEditor() {
   const { id } = useParams()
@@ -52,6 +52,23 @@ export default function ScenarioEditor() {
   const deleteCard = async (cardId) => {
     await api.deleteStoryCard(cardId)
     setScenario({ ...scenario, story_cards: scenario.story_cards.filter((c) => c.id !== cardId) })
+  }
+
+  const exportCards = async () => {
+    const cards = await api.exportStoryCards({ scenario_id: id })
+    downloadJSON(cards, `${scenario.title.replace(/\W+/g, '-')}-cards.json`)
+  }
+
+  const importCards = async () => {
+    try {
+      const parsed = await pickJSONFile()
+      const cards = Array.isArray(parsed) ? parsed : (parsed.cards || parsed.storyCards)
+      if (!Array.isArray(cards)) return alert('Expected a JSON array of story cards.')
+      const created = await api.importStoryCards({ scenario_id: Number(id), cards })
+      setScenario({ ...scenario, story_cards: [...scenario.story_cards, ...created] })
+    } catch (err) {
+      alert(err.message)
+    }
   }
 
   const toggleScript = async (scriptId) => {
@@ -119,7 +136,11 @@ export default function ScenarioEditor() {
 
       <div className="page-header" style={{ marginTop: 28 }}>
         <h2 style={{ margin: 0, fontFamily: 'Georgia, serif', fontSize: '1.2rem' }}>Story Cards</h2>
-        <button onClick={addCard}>+ Add Card</button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button onClick={exportCards} disabled={scenario.story_cards.length === 0}>Export</button>
+          {!readOnly && <button onClick={importCards}>Import</button>}
+          <button onClick={addCard}>+ Add Card</button>
+        </div>
       </div>
       {scenario.story_cards.length === 0 && (
         <div className="empty" style={{ padding: '20px 0' }}>

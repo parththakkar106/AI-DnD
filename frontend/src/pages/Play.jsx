@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { api } from '../api'
-import { Field, StoryCardRow } from '../components'
+import { Field, StoryCardRow, downloadJSON, pickJSONFile } from '../components'
 
 const MODES = ['do', 'say', 'story']
 const PLAYER_TYPES = ['do', 'say', 'story']
@@ -88,6 +88,23 @@ function PlotPanel({ adventure, setAdventure }) {
     })
   }
 
+  const exportCards = async () => {
+    const cards = await api.exportStoryCards({ adventure_id: adventure.id })
+    downloadJSON(cards, `${(adventure.title || 'adventure').replace(/\W+/g, '-')}-cards.json`)
+  }
+
+  const importCards = async () => {
+    try {
+      const parsed = await pickJSONFile()
+      const cards = Array.isArray(parsed) ? parsed : (parsed.cards || parsed.storyCards)
+      if (!Array.isArray(cards)) return alert('Expected a JSON array of story cards.')
+      const created = await api.importStoryCards({ adventure_id: adventure.id, cards })
+      setAdventure({ ...adventure, story_cards: [...adventure.story_cards, ...created] })
+    } catch (err) {
+      alert(err.message)
+    }
+  }
+
   return (
     <div>
       <Field label="Plot Essentials (Memory)" value={adventure.memory}
@@ -105,7 +122,11 @@ function PlotPanel({ adventure, setAdventure }) {
 
       <div className="page-header" style={{ marginTop: 18 }}>
         <h3 style={{ margin: 0 }}>Story Cards</h3>
-        <button onClick={addCard}>+ Add</button>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button onClick={exportCards} disabled={adventure.story_cards.length === 0}>Export</button>
+          <button onClick={importCards}>Import</button>
+          <button onClick={addCard}>+ Add</button>
+        </div>
       </div>
       {adventure.story_cards.length === 0 && (
         <div className="empty" style={{ padding: '12px 0' }}>No story cards yet.</div>

@@ -127,6 +127,10 @@ export const api = {
   createStoryCard: (data) => request('/story-cards', { method: 'POST', body: JSON.stringify(data) }),
   updateStoryCard: (id, data) => request(`/story-cards/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteStoryCard: (id) => request(`/story-cards/${id}`, { method: 'DELETE' }),
+  // Bulk import/export in AI Dungeon world-info format. `owner` is
+  // { scenario_id } or { adventure_id }.
+  exportStoryCards: (owner) => request(`/story-cards/export?${new URLSearchParams(owner)}`),
+  importStoryCards: (payload) => request('/story-cards/import', { method: 'POST', body: JSON.stringify(payload) }),
 
   // Debug
   getDebugRequests: () => request('/debug/requests'),
