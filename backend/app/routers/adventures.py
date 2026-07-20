@@ -110,6 +110,7 @@ def create_adventure(
             db.add(
                 models.AdventureScript(
                     adventure_id=adventure.id,
+                    source_script_id=script.id,
                     position=position,
                     name=script.name,
                     description=script.description,
@@ -600,11 +601,77 @@ def import_adventure(
 
 # ---------- Adventure scripts ----------
 
+# Fields copied from a library Script into its adventure-script snapshot, and
+# compared to decide whether a copy is out of date.
+SYNC_FIELDS = ("name", "description", "library_js", "input_js", "context_js", "output_js")
+
+
+def resolve_library_script(
+    adv_script: models.AdventureScript, db: Session, user: models.User
+) -> models.Script | None:
+    """The player-owned library Script an adventure-script can re-sync from:
+    the one it was copied from, or — for legacy copies with no link — one of
+    the player's own scripts sharing its name. Only the player's own scripts
+    are ever considered, so a demo-derived copy has nothing to sync to."""
+    if adv_script.source_script_id is not None:
+        script = db.get(models.Script, adv_script.source_script_id)
+        if script is not None and script.user_id == user.id:
+            return script
+    return (
+        db.query(models.Script)
+        .filter(models.Script.user_id == user.id, models.Script.name == adv_script.name)
+        .order_by(models.Script.updated_at.desc())
+        .first()
+    )
+
+
+def _mark_out_of_date(
+    adv_script: models.AdventureScript, db: Session, user: models.User
+) -> models.AdventureScript:
+    """Attach a transient `out_of_date` flag (read by AdventureScriptOut):
+    True/False when a syncable library version exists, None when it doesn't."""
+    library = resolve_library_script(adv_script, db, user)
+    adv_script.out_of_date = (
+        None if library is None
+        else any(getattr(adv_script, f) != getattr(library, f) for f in SYNC_FIELDS)
+    )
+    return adv_script
+
+
 @router.get("/{adventure_id}/scripts", response_model=list[schemas.AdventureScriptOut])
 def list_adventure_scripts(
     adventure_id: int, db: Session = Depends(get_db), user: models.User = CurrentUser
 ):
-    return get_adventure_or_404(adventure_id, db, user).scripts
+    adventure = get_adventure_or_404(adventure_id, db, user)
+    return [_mark_out_of_date(s, db, user) for s in adventure.scripts]
+
+
+@router.post(
+    "/{adventure_id}/scripts/{adv_script_id}/sync",
+    response_model=schemas.AdventureScriptOut,
+)
+def sync_adventure_script(
+    adventure_id: int,
+    adv_script_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = CurrentUser,
+):
+    """Overwrite this copy's code with the latest from its library script,
+    keeping `enabled`, `position`, and the adventure's shared script_state."""
+    get_adventure_or_404(adventure_id, db, user)
+    script = db.get(models.AdventureScript, adv_script_id)
+    if script is None or script.adventure_id != adventure_id:
+        raise HTTPException(404, "Script not found")
+    library = resolve_library_script(script, db, user)
+    if library is None:
+        raise HTTPException(404, "No library script to sync from")
+    for field in SYNC_FIELDS:
+        setattr(script, field, getattr(library, field))
+    # Adopt the link so a name-matched legacy copy syncs by id next time.
+    script.source_script_id = library.id
+    db.commit()
+    db.refresh(script)
+    return _mark_out_of_date(script, db, user)
 
 
 @router.patch(

@@ -298,9 +298,22 @@ function ScriptsPanel({ advId }) {
     api.listAdventureScripts(advId).then(setScripts).catch(() => setScripts([]))
   }, [advId])
 
+  const [syncingId, setSyncingId] = useState(null)
+
   const toggle = async (script) => {
     const updated = await api.updateAdventureScript(advId, script.id, { enabled: !script.enabled })
     setScripts((prev) => prev.map((s) => (s.id === script.id ? updated : s)))
+  }
+
+  // Pull the latest code from the library script this copy was made from.
+  const sync = async (script) => {
+    setSyncingId(script.id)
+    try {
+      const updated = await api.syncAdventureScript(advId, script.id)
+      setScripts((prev) => prev.map((s) => (s.id === script.id ? updated : s)))
+    } finally {
+      setSyncingId(null)
+    }
   }
 
   // Download as an import-compatible bundle (matches /scripts export), so demo
@@ -341,6 +354,16 @@ function ScriptsPanel({ advId }) {
                 <span>{s.name}</span>
               </label>
               <div style={{ display: 'flex', gap: 12, flexShrink: 0 }}>
+                {s.out_of_date && (
+                  <button
+                    className="linklike"
+                    title="Replace this adventure's copy with the latest from your script library"
+                    disabled={syncingId === s.id}
+                    onClick={() => sync(s)}
+                  >
+                    {syncingId === s.id ? 'Syncing…' : '⟳ Sync from library'}
+                  </button>
+                )}
                 <button className="linklike" onClick={() => setOpenId(open ? null : s.id)}>
                   {open ? 'Hide code' : 'View code'}
                 </button>

@@ -71,6 +71,10 @@ MIGRATIONS: list[tuple[int, str]] = [
     (21, "ALTER TABLE settings ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE CASCADE"),
     (22, "UPDATE settings SET user_id = 1"),
     (23, "CREATE UNIQUE INDEX IF NOT EXISTS ix_settings_user_id ON settings (user_id)"),
+    # Link each adventure-script copy back to its library Script so it can be
+    # re-synced on demand. NULL for copies made before this column existed.
+    (24, "ALTER TABLE adventure_scripts ADD COLUMN source_script_id INTEGER "
+         "REFERENCES scripts(id) ON DELETE SET NULL"),
 ]
 
 LATEST_VERSION = max((v for v, _ in MIGRATIONS), default=1)

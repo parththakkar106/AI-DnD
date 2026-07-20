@@ -109,6 +109,8 @@ export const api = {
   listAdventureScripts: (advId) => request(`/adventures/${advId}/scripts`),
   updateAdventureScript: (advId, scriptId, data) =>
     request(`/adventures/${advId}/scripts/${scriptId}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  syncAdventureScript: (advId, scriptId) =>
+    request(`/adventures/${advId}/scripts/${scriptId}/sync`, { method: 'POST' }),
 
   // Scripts
   listScripts: () => request('/scripts'),

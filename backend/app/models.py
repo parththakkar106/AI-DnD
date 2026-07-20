@@ -205,13 +205,21 @@ class Script(Base):
 
 class AdventureScript(Base):
     """A script copied into an adventure at creation, so library edits don't
-    change running adventures. `state` lives on Adventure.script_state (one
-    shared state per adventure, as in AI Dungeon)."""
+    change running adventures unless the player explicitly re-syncs it from
+    `source_script_id`. `state` lives on Adventure.script_state (one shared
+    state per adventure, as in AI Dungeon)."""
 
     __tablename__ = "adventure_scripts"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     adventure_id: Mapped[int] = mapped_column(ForeignKey("adventures.id", ondelete="CASCADE"))
+    # The library Script this copy was made from, so it can be re-synced on
+    # demand. NULL for legacy copies (predate this column) and demo-derived
+    # ones whose source isn't owned by the player — those fall back to a
+    # name match, or simply aren't syncable.
+    source_script_id: Mapped[int | None] = mapped_column(
+        ForeignKey("scripts.id", ondelete="SET NULL"), nullable=True
+    )
     position: Mapped[int] = mapped_column(Integer, default=0)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     name: Mapped[str] = mapped_column(String(200), default="Untitled Script")

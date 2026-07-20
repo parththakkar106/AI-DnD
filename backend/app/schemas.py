@@ -237,6 +237,9 @@ class AdventureScriptOut(ORMModel):
     input_js: str
     context_js: str
     output_js: str
+    # Set by the router (not stored): True when a syncable library version
+    # exists whose code differs from this copy; None when nothing to sync.
+    out_of_date: bool | None = None
 
 
 class AdventureScriptUpdate(BaseModel):
