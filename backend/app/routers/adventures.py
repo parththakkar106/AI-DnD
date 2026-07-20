@@ -1,3 +1,4 @@
+import copy
 import json
 import re
 import threading
@@ -153,6 +154,13 @@ def get_script_state(
     return {"state": state}
 
 
+def snapshot_state(adventure: models.Adventure) -> dict:
+    """Deep copy of the shared script_state, to staple onto an action so undo/
+    retry can restore it. Independent of later hook mutations."""
+    state = adventure.script_state if isinstance(adventure.script_state, dict) else {}
+    return copy.deepcopy(state)
+
+
 @router.patch("/{adventure_id}", response_model=schemas.AdventureOut)
 def update_adventure(
     adventure_id: int,
@@ -258,6 +266,9 @@ async def generate_turn(
         )
     else:
         memories = await memorybank.retrieve_memories(adventure, settings, update_stats=True)
+    # Scoreboard as it stands before this AI turn's context/output hooks mutate
+    # it — stapled onto the AI action so retry can start over from here.
+    state_before = snapshot_state(adventure)
     system_text, story_text, snapshot = build_context(adventure, settings, memories)
 
     # onModelContext: scripts see (and may rewrite) the whole assembled context.
@@ -327,6 +338,7 @@ async def generate_turn(
         text=text,
         reasoning="".join(reasoning_chunks).strip() or None,
         context_snapshot=snapshot,
+        state_before=state_before,
     )
     db.add(ai_action)
     adventure.updated_at = models.utcnow()
@@ -362,6 +374,9 @@ async def run_player_turn(
 
     # An empty do/say/story is just a continue.
     if payload.type != "continue" and payload.text.strip():
+        # Scoreboard before the input hook mutates it — the pre-turn state that
+        # undo restores to (the AI action keeps its own post-input snapshot).
+        state_before = snapshot_state(adventure)
         # onInput sees the formatted text (as in AI Dungeon: "> You ...").
         formatted = format_player_input(payload.type, payload.text)
         modified, stop = pipeline.run("input", formatted)
@@ -374,6 +389,7 @@ async def run_player_turn(
             index=next_index(adventure),
             type=payload.type,
             text=modified,
+            state_before=state_before,
         )
         db.add(player_action)
         db.commit()
@@ -426,7 +442,13 @@ def retry_action(
     acquire_turn_lock(adventure_id)
     try:
         if adventure.actions and adventure.actions[-1].type == "ai":
-            db.delete(adventure.actions[-1])
+            last_ai = adventure.actions[-1]
+            # Roll the scoreboard back to before this AI turn's hooks ran, so
+            # regenerating starts fresh instead of stacking output mutations on
+            # top of the discarded attempt. NULL for pre-migration actions.
+            if last_ai.state_before is not None:
+                adventure.script_state = copy.deepcopy(last_ai.state_before)
+            db.delete(last_ai)
             db.commit()
             db.refresh(adventure)
     except BaseException:
@@ -446,18 +468,34 @@ def retry_action(
 def undo_turn(
     adventure_id: int, db: Session = Depends(get_db), user: models.User = CurrentUser
 ):
-    """Delete the last turn: the trailing AI action plus its player action, if any."""
+    """Delete the last turn: the trailing AI action plus its player action, if any.
+
+    Also rolls the shared script_state back to before that turn ran and prunes
+    any memory that summarized the removed actions. The turn lock guards against
+    undoing while a turn is still generating."""
     adventure = get_adventure_or_404(adventure_id, db, user)
-    actions = list(adventure.actions)
-    if not actions or actions[-1].type == "start":
-        raise HTTPException(400, "Nothing to undo")
-    last = actions.pop()
-    db.delete(last)
-    if last.type == "ai" and actions and actions[-1].type in ("do", "say", "story"):
-        db.delete(actions.pop())
-    db.commit()
-    db.refresh(adventure)
-    return adventure.actions
+    acquire_turn_lock(adventure_id)
+    try:
+        actions = list(adventure.actions)
+        if not actions or actions[-1].type == "start":
+            raise HTTPException(400, "Nothing to undo")
+        last = actions.pop()
+        # The earliest action removed in this turn holds the pre-turn scoreboard.
+        first_removed = last
+        db.delete(last)
+        if last.type == "ai" and actions and actions[-1].type in ("do", "say", "story"):
+            first_removed = actions.pop()
+            db.delete(first_removed)
+        if first_removed.state_before is not None:
+            adventure.script_state = copy.deepcopy(first_removed.state_before)
+        db.flush()  # apply deletes so pruning sees the shrunken action list
+        db.expire(adventure, ["actions"])
+        memorybank.prune_dangling_memories(adventure, db)
+        db.commit()
+        db.refresh(adventure)
+        return adventure.actions
+    finally:
+        _active_turns.discard(adventure_id)
 
 
 # ---------- Import / Export ----------

@@ -181,6 +181,10 @@ class Action(Base):
     # Reasoning-model "thinking" that preceded the text (AI actions only).
     reasoning: Mapped[str | None] = mapped_column(Text, nullable=True)
     context_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Copy of Adventure.script_state as it was immediately BEFORE this action's
+    # script hooks ran, so undo/retry can roll the shared scoreboard back.
+    # NULL for actions created before this column existed.
+    state_before: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     adventure: Mapped[Adventure] = relationship(back_populates="actions")

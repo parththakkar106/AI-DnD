@@ -75,6 +75,10 @@ MIGRATIONS: list[tuple[int, str]] = [
     # re-synced on demand. NULL for copies made before this column existed.
     (24, "ALTER TABLE adventure_scripts ADD COLUMN source_script_id INTEGER "
          "REFERENCES scripts(id) ON DELETE SET NULL"),
+    # Per-action snapshot of the shared script_state as it was before that
+    # action's hooks ran, enabling undo/retry to roll state back. JSON is valid
+    # on both SQLite and Postgres.
+    (25, "ALTER TABLE actions ADD COLUMN state_before JSON"),
 ]
 
 LATEST_VERSION = max((v for v, _ in MIGRATIONS), default=1)

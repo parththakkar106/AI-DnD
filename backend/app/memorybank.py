@@ -84,6 +84,21 @@ def story_actions(adventure: models.Adventure) -> list[models.Action]:
     return [a for a in adventure.actions if a.text.strip()]
 
 
+def prune_dangling_memories(adventure: models.Adventure, db: Session) -> int:
+    """Delete memories that summarized actions which no longer exist (e.g. after
+    undo). source_start/source_end are Action.index values; a memory is dangling
+    if any covered action is past the current end of the story. Returns the count
+    removed. Cursors are self-healing in run_post_turn, so this is cleanup only."""
+    max_index = max((a.index for a in adventure.actions), default=-1)
+    dangling = [
+        m for m in adventure.memories
+        if m.source_end is not None and m.source_end > max_index
+    ]
+    for m in dangling:
+        db.delete(m)
+    return len(dangling)
+
+
 # ---------- Retrieval (runs inside the turn, before build_context) ----------
 
 async def retrieve_memories(
