@@ -288,7 +288,17 @@ async def generate_turn(
 
     text = "".join(chunks).strip()
     if not text:
-        yield sse({"type": "error", "detail": "The AI returned an empty response."})
+        # If the model streamed reasoning but no story text, it spent its whole
+        # budget thinking — say so instead of a mysterious "empty response".
+        if reasoning_chunks:
+            detail = (
+                "The model used its entire token budget on reasoning and returned no "
+                'story text. Raise "Max output tokens" in Settings, set a "Reasoning '
+                'max tokens" cap, or switch to a non-reasoning model.'
+            )
+        else:
+            detail = "The AI returned an empty response."
+        yield sse({"type": "error", "detail": detail})
         return
 
     # onOutput

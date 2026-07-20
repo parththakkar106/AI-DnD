@@ -5,6 +5,10 @@ with your own AI model. Create scenarios, play open-ended adventures where an LL
 world, and extend the engine with **JavaScript scripts compatible with real AI Dungeon
 scripting**.
 
+> ### ▶️ Try it live: **[ai-dnd-1gmp.onrender.com](https://ai-dnd-1gmp.onrender.com)**
+> Play a demo scenario as a guest — no sign-up, no API key needed. (Hosted on Render's free
+> tier, so the first load after it's been idle takes ~30–60s to wake up.)
+
 Built with FastAPI + SQLite on the backend and React (Vite) on the frontend. Works with **any
 OpenAI-compatible endpoint**: Ollama and LM Studio locally, or OpenRouter / OpenAI / Groq / vLLM
 in the cloud — endpoint, key, and model are all runtime settings, and OpenRouter's free-tier

@@ -239,7 +239,9 @@ class Settings(Base):
     model: Mapped[str] = mapped_column(String(200), default="")
     api_mode: Mapped[str] = mapped_column(String(20), default="chat")  # chat|completion
     temperature: Mapped[float] = mapped_column(Float, default=0.8)
-    max_output_tokens: Mapped[int] = mapped_column(Integer, default=400)
+    # 800 leaves room for a full scene; 400 tended to truncate mid-paragraph
+    # and left reasoning models with nothing after their thinking.
+    max_output_tokens: Mapped[int] = mapped_column(Integer, default=800)
     # Separate thinking budget for reasoning models (OpenRouter-style
     # `reasoning: {max_tokens}`); 0 = param not sent. Added on top of
     # max_output_tokens so story output keeps its full budget.
