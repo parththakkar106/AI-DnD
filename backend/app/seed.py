@@ -7,9 +7,12 @@ can start an adventure from them, while nobody can edit them. Starting an
 adventure copies the scenario's story cards and scripts into the adventure, so
 the seeded scripts run for guests too.
 
-The seed is idempotent: a scenario is inserted only if no public, unowned
-scenario with the same title already exists, so it is safe to run on every boot
-and it re-heals a database that lost its demo content.
+Seed files are the source of truth for demo content: a scenario is inserted if
+missing, and reconciled in place when a seed file's content changes (so edits
+ship on the next deploy). When a seed already matches, nothing is written, so
+this stays cheap to run on every boot. Existing adventures already started from
+a demo keep their own copied cards/scripts and are unaffected — only new
+adventures pick up the updated content.
 """
 
 import json
@@ -25,6 +28,10 @@ logger = logging.getLogger(__name__)
 
 SEED_DIR = Path(__file__).resolve().parent / "seed_data"
 
+_SCALARS = ("description", "prompt", "memory", "authors_note", "ai_instructions", "tags")
+_CARD_FIELDS = ("type", "name", "keys", "entry", "notes")
+_SCRIPT_FIELDS = ("name", "library_js", "input_js", "context_js", "output_js")
+
 
 def seed_public_scenarios(engine: Engine) -> None:
     if not SEED_DIR.is_dir():
@@ -35,7 +42,7 @@ def seed_public_scenarios(engine: Engine) -> None:
 
     db = SessionLocal()
     try:
-        created = 0
+        changed = 0
         for path in files:
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
@@ -47,7 +54,7 @@ def seed_public_scenarios(engine: Engine) -> None:
             if not title:
                 continue
 
-            exists = (
+            existing = (
                 db.query(models.Scenario)
                 .filter(
                     models.Scenario.title == title,
@@ -56,15 +63,16 @@ def seed_public_scenarios(engine: Engine) -> None:
                 )
                 .first()
             )
-            if exists is not None:
-                continue
+            if existing is None:
+                _insert_scenario(db, data)
+                changed += 1
+            elif not _matches(existing, data):
+                _update_scenario(db, existing, data)
+                changed += 1
 
-            _insert_scenario(db, data)
-            created += 1
-
-        if created:
+        if changed:
             db.commit()
-            logger.info("Seeded %d public demo scenario(s).", created)
+            logger.info("Seeded/updated %d public demo scenario(s).", changed)
     except Exception:
         db.rollback()
         # A seed failure must never take the app down; log and carry on.
@@ -73,21 +81,61 @@ def seed_public_scenarios(engine: Engine) -> None:
         db.close()
 
 
-def _insert_scenario(db, data: dict) -> None:
-    scenario = models.Scenario(
-        user_id=None,
-        is_public=True,
-        title=data.get("title", ""),
-        description=data.get("description", ""),
-        prompt=data.get("prompt", ""),
-        memory=data.get("memory", ""),
-        authors_note=data.get("authors_note", ""),
-        ai_instructions=data.get("ai_instructions", ""),
-        tags=data.get("tags", ""),
+def _card_tuple(source, get) -> tuple:
+    return tuple(get(source, f) for f in _CARD_FIELDS)
+
+
+def _script_tuple(source, get) -> tuple:
+    return tuple(get(source, f) for f in _SCRIPT_FIELDS)
+
+
+def _matches(scenario: models.Scenario, data: dict) -> bool:
+    """True when the DB scenario already equals the seed file, so we can skip
+    the write and avoid churning rows on every boot."""
+    if any(getattr(scenario, f) != data.get(f, "") for f in _SCALARS):
+        return False
+    have_cards = sorted(_card_tuple(c, lambda o, f: getattr(o, f)) for c in scenario.story_cards)
+    want_cards = sorted(
+        _card_tuple(c, lambda o, f: o.get(f, ""))
+        for c in (data.get("story_cards") or []) if isinstance(c, dict)
     )
+    if have_cards != want_cards:
+        return False
+    have_scripts = sorted(_script_tuple(s, lambda o, f: getattr(o, f)) for s in scenario.scripts)
+    want_scripts = sorted(
+        _script_tuple(s, lambda o, f: (o.get(f, "") or ("Script" if f == "name" else "")))
+        for s in (data.get("scripts") or []) if isinstance(s, dict)
+    )
+    return have_scripts == want_scripts
+
+
+def _insert_scenario(db, data: dict) -> None:
+    scenario = models.Scenario(user_id=None, is_public=True, title=data.get("title", ""))
+    _apply_scalars(scenario, data)
     db.add(scenario)
     db.flush()
+    _populate_children(db, scenario, data)
 
+
+def _update_scenario(db, scenario: models.Scenario, data: dict) -> None:
+    _apply_scalars(scenario, data)
+    # Replace child content wholesale — demo content is server-owned and cheap
+    # to rebuild, and this keeps the scenario row (and adventure FKs) intact.
+    for card in list(scenario.story_cards):
+        db.delete(card)
+    for script in list(scenario.scripts):
+        db.delete(script)
+    scenario.scripts = []
+    db.flush()
+    _populate_children(db, scenario, data)
+
+
+def _apply_scalars(scenario: models.Scenario, data: dict) -> None:
+    for field in _SCALARS:
+        setattr(scenario, field, data.get(field, ""))
+
+
+def _populate_children(db, scenario: models.Scenario, data: dict) -> None:
     for card in data.get("story_cards") or []:
         if not isinstance(card, dict):
             continue
