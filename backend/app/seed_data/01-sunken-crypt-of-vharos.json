@@ -1,0 +1,66 @@
+{
+  "title": "[Demo] The Sunken Crypt of Vharos",
+  "description": "A short dungeon-crawl demo scenario with story cards and one of each script hook, for testing the app end to end.",
+  "prompt": "Rain hammers the moors as you descend the moss-slick steps beneath the ruined chapel. Your torch gutters in the stale air. Below, the Sunken Crypt of Vharos waits — its iron door ajar, as if someone (or something) expected you. Mira's warning rings in your ears: bring back the Ember Amulet before nightfall, or the village of Hollowmere burns.\n\nYou stand before the iron door, water pooling around your boots.",
+  "memory": "The player is an adventurer hired by Mira, blacksmith of Hollowmere, to retrieve the Ember Amulet from the Sunken Crypt of Vharos before nightfall. The crypt is flooded, dark, and haunted. Tone: classic D&D dungeon crawl, dangerous but fair.",
+  "authors_note": "Keep scenes tense and grounded; offer clear choices; consequences matter.",
+  "ai_instructions": "Write in second person, present tense. End each response at a moment where the player can act.",
+  "tags": "demo, dungeon, fantasy, short",
+  "story_cards": [
+    {
+      "type": "character",
+      "name": "Mira the Blacksmith",
+      "keys": "Mira, blacksmith",
+      "entry": "Mira is Hollowmere's blacksmith: broad-shouldered, gray-braided, practical. She hired the player and paid half up front. She knows more about the crypt than she has admitted.",
+      "notes": "Secretly a descendant of Vharos."
+    },
+    {
+      "type": "location",
+      "name": "The Sunken Crypt",
+      "keys": "crypt, tomb, Vharos",
+      "entry": "A flooded burial complex beneath a ruined chapel. Knee-deep black water, collapsed pillars, and phosphorescent moss. Three chambers: the Drowned Hall, the Ossuary, and the sealed Reliquary where the Ember Amulet rests.",
+      "notes": ""
+    },
+    {
+      "type": "item",
+      "name": "The Ember Amulet",
+      "keys": "amulet, ember",
+      "entry": "A fist-sized garnet on a bronze chain that glows like a coal. It keeps Hollowmere's protective hearth-ward burning. Touching it bare-handed brands the flesh but does no lasting harm.",
+      "notes": ""
+    }
+  ],
+  "scripts": [
+    {
+      "name": "[Demo] Dice Roller",
+      "description": "Input hook + shared library. Type '!roll 2d6' or '!roll d20' in a Do/Say/Story action and the command is replaced with the rolled result.",
+      "library_js": "// Shared library: available to every hook of this script.\nfunction rollDice(count, sides) {\n  var total = 0, rolls = [];\n  for (var i = 0; i < count; i++) {\n    var r = Math.floor(Math.random() * sides) + 1;\n    rolls.push(r);\n    total += r;\n  }\n  return { total: total, rolls: rolls };\n}\n",
+      "input_js": "const modifier = (text) => {\n  // Replace every \"!roll NdS\" (N optional) with the roll result.\n  var out = text.replace(/!roll\\s+(\\d*)d(\\d+)/gi, function (m, n, s) {\n    var count = parseInt(n || \"1\", 10);\n    var sides = parseInt(s, 10);\n    var res = rollDice(count, sides);\n    log(\"Rolled \" + count + \"d\" + sides + \": [\" + res.rolls.join(\", \") + \"] = \" + res.total);\n    return \"(rolled \" + count + \"d\" + sides + \": \" + res.total + \")\";\n  });\n  return { text: out };\n};\nmodifier(text);\n",
+      "context_js": "",
+      "output_js": ""
+    },
+    {
+      "name": "[Demo] Turn & HP Tracker",
+      "description": "Demonstrates persistent state. Counts turns; '!hp -3' or '!hp +5' in input adjusts HP (starts at 20). Current stats appear in state.message.",
+      "library_js": "",
+      "input_js": "const modifier = (text) => {\n  if (state.hp === undefined) state.hp = 20;\n  state.turns = (state.turns || 0) + 1;\n\n  var out = text.replace(/!hp\\s*([+-]\\d+)/gi, function (m, delta) {\n    state.hp += parseInt(delta, 10);\n    return \"\";\n  });\n\n  state.message = \"Turn \" + state.turns + \" | HP: \" + state.hp + \"/20\";\n  log(state.message);\n\n  if (state.hp <= 0) {\n    // stop:true ends the turn before the AI is called.\n    return { text: out + \"\\n\\nYou have fallen. (HP reached 0 — turn stopped by script.)\", stop: true };\n  }\n  return { text: out };\n};\nmodifier(text);\n",
+      "context_js": "",
+      "output_js": ""
+    },
+    {
+      "name": "[Demo] Context Inspector",
+      "description": "Context hook: logs the size of the assembled context each turn and appends a style directive. Check the logs/context in the action's context snapshot.",
+      "library_js": "",
+      "input_js": "",
+      "context_js": "const modifier = (text) => {\n  log(\"Context size: \" + text.length + \" chars, actions so far: \" + info.actionCount\n      + \", story cards: \" + storyCards.length);\n  // Anything returned here replaces what is sent to the model.\n  return { text: text + \"\\n[Style: keep the response under three paragraphs.]\" };\n};\nmodifier(text);\n",
+      "output_js": ""
+    },
+    {
+      "name": "[Demo] Output Polish + Card Discovery",
+      "description": "Output hook: trims a trailing incomplete sentence from the AI reply, and auto-creates a story card the first time the ghost Vharos is mentioned.",
+      "library_js": "",
+      "input_js": "",
+      "context_js": "",
+      "output_js": "const modifier = (text) => {\n  var out = text;\n\n  // Drop a trailing sentence fragment (no ending punctuation).\n  var m = out.match(/^([\\s\\S]*[.!?\"'\\u2026])[^.!?\"'\\u2026]*$/);\n  if (m && m[1].length > 40) {\n    if (m[1].length < out.length) log(\"Trimmed incomplete final sentence.\");\n    out = m[1];\n  }\n\n  // Demonstrate script-created story cards.\n  if (/vharos/i.test(out)) {\n    var added = addStoryCard(\n      \"Vharos, ghost, spirit\",\n      \"Vharos was the crypt's architect, now a restless ghost bound to the amulet he was buried with. He speaks in echoes and cannot lie.\",\n      \"character\"\n    );\n    if (added !== false) log(\"Vharos mentioned — story card created.\");\n  }\n\n  return { text: out };\n};\nmodifier(text);\n"
+    }
+  ]
+}

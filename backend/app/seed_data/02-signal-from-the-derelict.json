@@ -1,0 +1,33 @@
+{
+  "title": "[Demo] Signal from the Derelict",
+  "description": "A tense sci-fi mystery aboard a drifting research station. Showcases the memory and story-card context engine with no scripts required.",
+  "prompt": "The airlock cycles with a hiss, and the cold of the Meridian station folds around your suit. Six days ago it stopped answering hails; three hours ago your ship's antenna caught a single repeating pulse from inside — a heartbeat rhythm, too regular to be an accident. Emergency lighting stutters red down the corridor ahead. Your suit reads breathable air, faint traces of ozone, and no life signs.\n\nYou float at the threshold, the pulse ticking softly in your headset.",
+  "memory": "The player is a salvage contractor who boarded the derelict research station Meridian after it went silent six days ago. A repeating signal is coming from somewhere inside. The crew of nine is missing. Tone: grounded, tense sci-fi mystery — quiet dread over action.",
+  "authors_note": "Keep the atmosphere claustrophobic and quiet; reward careful investigation; make the station feel physical and specific.",
+  "ai_instructions": "Write in second person, present tense. Favor sensory detail and restraint. End each response where the player can act.",
+  "tags": "demo, sci-fi, mystery, short",
+  "story_cards": [
+    {
+      "type": "location",
+      "name": "Meridian Station",
+      "keys": "Meridian, station, ship",
+      "entry": "A mid-sized orbital research station in a decaying orbit around a gas giant. Ring layout: docking spur, crew habitat, the labs, and the sealed reactor core. Power is failing; artificial gravity is intermittent. It smells faintly of ozone and antiseptic.",
+      "notes": "Orbit decays fully in roughly 40 hours — a soft clock."
+    },
+    {
+      "type": "character",
+      "name": "Dr. Reyes",
+      "keys": "Reyes, doctor, chief scientist",
+      "entry": "Dr. Ana Reyes was Meridian's chief scientist: meticulous, secretive, protective of her work. Her personal logs are locked. The last public entry, six days ago, reads only: 'It answered back.'",
+      "notes": "Whereabouts unknown. Her lab is sealed from the inside."
+    },
+    {
+      "type": "item",
+      "name": "The Signal",
+      "keys": "signal, pulse, heartbeat",
+      "entry": "A repeating low-frequency pulse broadcasting from deep in the station, roughly one beat per second. It is not a standard distress code. The closer you get to the labs, the stronger it becomes.",
+      "notes": ""
+    }
+  ],
+  "scripts": []
+}

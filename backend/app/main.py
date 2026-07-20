@@ -11,8 +11,10 @@ from .database import engine
 from .limits import BodySizeLimitMiddleware
 from .migrations import bootstrap
 from .routers import adventures, auth, debug, scenarios, scripts, settings, story_cards
+from .seed import seed_public_scenarios
 
 bootstrap(engine)
+seed_public_scenarios(engine)
 
 # Production serves the SPA same-origin, so CORS only matters for the Vite dev
 # server; AIDND_CORS_ORIGINS overrides for any other cross-origin setup.
