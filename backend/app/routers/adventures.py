@@ -35,7 +35,11 @@ def list_adventures(db: Session = Depends(get_db), user: models.User = CurrentUs
         .outerjoin(models.Action)
         .outerjoin(models.Scenario, models.Adventure.scenario_id == models.Scenario.id)
         .filter(models.Adventure.user_id == user.id)
-        .group_by(models.Adventure.id)
+        # Group by both PKs: Postgres requires every selected column to be
+        # grouped or aggregated. Adventure.* rides on its own grouped PK, but
+        # Scenario.title comes from a joined table and must be listed too
+        # (SQLite is lax here; Postgres rejects it).
+        .group_by(models.Adventure.id, models.Scenario.title)
         .order_by(models.Adventure.updated_at.desc())
         .all()
     )
