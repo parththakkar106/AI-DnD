@@ -444,8 +444,12 @@ export default function Play() {
   }, [])
 
   useEffect(() => {
+    // Snap to the real document bottom (below the sticky composer), not to
+    // storyEndRef — that ref sits above the composer, so block:'end' would
+    // stop short and fight a reader scrolling down. Instant, not smooth: at
+    // streaming speed a queued smooth animation never settles.
     if (pinnedRef.current) {
-      storyEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+      window.scrollTo({ top: document.documentElement.scrollHeight })
     }
   }, [actions, streaming, reasoningStream])
 

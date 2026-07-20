@@ -288,6 +288,18 @@ button:disabled { opacity: 0.45; cursor: default; transform: none; box-shadow: n
 
 .play-page { display: flex; flex-direction: column; min-height: calc(100vh - 56px); }
 
+/* Keep the Plot/Memory/Scripts/Insights toggles reachable while the story
+   scrolls — pin the header just below the 56px top nav. */
+.play-page .page-header {
+  position: sticky;
+  top: 56px;
+  z-index: 5;
+  background: var(--bg);
+  margin-bottom: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+
 .story {
   flex: 1;
   font-family: var(--font-story);
