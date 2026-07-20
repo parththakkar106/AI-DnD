@@ -267,4 +267,13 @@ class OpenAICompatibleProvider(Provider):
                 f"Endpoint or model not found (HTTP 404). Check the endpoint URL and that "
                 f"model '{self.model}' exists. {detail}"
             )
+        if status == 429:
+            # OpenRouter's shared free tier has a per-day cap; distinguish it
+            # from a short-term burst limit so the message is actionable.
+            if "free-models-per-day" in detail:
+                return (
+                    "The free demo has hit its daily request limit (resets at "
+                    "00:00 UTC). Please try again later."
+                )
+            return "The AI is getting too many requests right now — wait a moment and try again."
         return f"AI endpoint returned HTTP {status}: {detail}"
