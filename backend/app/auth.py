@@ -58,6 +58,14 @@ DEMO_MODELS = [
 ] or ["google/gemma-4-26b-a4b-it:free"]
 DEMO_TURNS_PER_DAY = int(os.environ.get("AIDND_DEMO_TURNS_PER_DAY", "20") or 20)
 
+# Trusted testers (by email) who bypass the daily demo cap — unmetered turns on
+# the shared demo key. Comma-separated emails; matched case-insensitively.
+POWER_USERS = {
+    e.strip().lower()
+    for e in os.environ.get("AIDND_POWER_USERS", "").split(",")
+    if e.strip()
+}
+
 DEMO_CAP_MESSAGE = (
     f"You've used all {DEMO_TURNS_PER_DAY} free demo turns for today. "
     "Add your own API key in Settings to keep playing (it resets tomorrow)."
@@ -93,13 +101,24 @@ def _today() -> str:
     return models.utcnow().date().isoformat()
 
 
+def is_power_user(user: models.User) -> bool:
+    """Trusted testers (email allowlist) bypass the demo turn cap."""
+    return bool(user.email) and user.email.lower() in POWER_USERS
+
+
 def demo_turns_left(user: models.User) -> int:
+    # Power users are never capped; report the full cap so the banner reads
+    # "N of N" rather than a decrementing count.
+    if is_power_user(user):
+        return DEMO_TURNS_PER_DAY
     used = user.demo_turns_used if user.demo_turns_date == _today() else 0
     return max(0, DEMO_TURNS_PER_DAY - used)
 
 
 def count_demo_turn(user: models.User) -> None:
     """Record one demo turn; the caller's commit persists it."""
+    if is_power_user(user):
+        return  # unmetered — power users don't count against the cap
     today = _today()
     if user.demo_turns_date != today:
         user.demo_turns_date = today
