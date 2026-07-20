@@ -440,6 +440,45 @@ button:disabled { opacity: 0.45; cursor: default; transform: none; box-shadow: n
   animation: panel-in 0.25s ease both;
 }
 
+/* ---------- In-play script viewer ---------- */
+
+.adv-script {
+  border-bottom: 1px solid var(--border);
+  padding: 10px 0;
+}
+.adv-script-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.adv-script-desc { font-size: 0.82rem; margin-top: 4px; }
+.linklike {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--accent-bright);
+  font-size: 0.8rem;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.linklike:hover { text-decoration: underline; }
+.adv-script-code { margin-top: 8px; }
+.adv-script-hook {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+  margin: 8px 0 2px;
+}
+.adv-script-code pre {
+  margin: 0;
+  padding: 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow-x: auto;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.76rem;
+  line-height: 1.5;
+  white-space: pre;
+}
+
 /* ---------- Left status drawer (script state) ---------- */
 
 .status-drawer {

@@ -283,8 +283,16 @@ function MemoryPanel({ adventure, setAdventure, refreshKey }) {
   )
 }
 
+const SCRIPT_HOOKS = [
+  ['Shared library', 'library_js'],
+  ['onInput', 'input_js'],
+  ['onModelContext', 'context_js'],
+  ['onOutput', 'output_js'],
+]
+
 function ScriptsPanel({ advId }) {
   const [scripts, setScripts] = useState(null)
+  const [openId, setOpenId] = useState(null)
 
   useEffect(() => {
     api.listAdventureScripts(advId).then(setScripts).catch(() => setScripts([]))
@@ -306,13 +314,38 @@ function ScriptsPanel({ advId }) {
   }
   return (
     <div>
-      {scripts.map((s) => (
-        <label key={s.id} className="script-attach">
-          <input type="checkbox" checked={s.enabled} onChange={() => toggle(s)} />
-          <span>{s.name}</span>
-          <span className="dim">{s.description}</span>
-        </label>
-      ))}
+      {scripts.map((s) => {
+        const hooks = SCRIPT_HOOKS.filter(([, f]) => (s[f] || '').trim())
+        const open = openId === s.id
+        return (
+          <div key={s.id} className="adv-script">
+            <div className="adv-script-head">
+              <label className="script-attach" style={{ margin: 0 }}>
+                <input type="checkbox" checked={s.enabled} onChange={() => toggle(s)} />
+                <span>{s.name}</span>
+              </label>
+              <button className="linklike" onClick={() => setOpenId(open ? null : s.id)}>
+                {open ? 'Hide code' : 'View code'}
+              </button>
+            </div>
+            {s.description && <div className="dim adv-script-desc">{s.description}</div>}
+            {open && (
+              <div className="adv-script-code">
+                {hooks.length === 0 ? (
+                  <div className="empty">This script has no code.</div>
+                ) : (
+                  hooks.map(([label, f]) => (
+                    <div key={f}>
+                      <div className="adv-script-hook">{label}</div>
+                      <pre>{s[f]}</pre>
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }
