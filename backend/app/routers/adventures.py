@@ -354,6 +354,9 @@ async def generate_turn(
         return
 
     text = "".join(chunks).strip()
+    # The model's literal reply, kept for the Insights "Raw AI output" view —
+    # this still contains any world-state block before it gets stripped below.
+    raw_output = text
     if not text:
         # If the model streamed reasoning but no story text, it spent its whole
         # budget thinking — say so instead of a mysterious "empty response".
@@ -389,6 +392,8 @@ async def generate_turn(
         )
         adventure.world_state = new_world_state
         snapshot["world_state"] = {"delta": delta, "report": ws_report, "state": new_world_state}
+
+    snapshot["raw_output"] = raw_output
 
     ai_action = models.Action(
         adventure_id=adventure.id,

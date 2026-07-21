@@ -769,6 +769,14 @@ function InsightsPanel({ advId, inspectActionId, onClearInspect, refreshKey }) {
       ))}
       <ScriptReport script={report.script} />
       <WorldStateReport worldState={report.world_state} />
+      {report.raw_output && (
+        <div className="ctx-section">
+          <div className="ctx-header">
+            <span>Raw AI output (before state block was stripped)</span>
+          </div>
+          <pre>{report.raw_output}</pre>
+        </div>
+      )}
     </div>
   )
 }

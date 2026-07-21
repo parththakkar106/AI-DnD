@@ -130,6 +130,14 @@ def test_turn_applies_clamped_delta_and_strips_block(client):
     # The state block is not shown to the player.
     assert "```state" not in _last_ai_text(client.adv_id)
     assert "goblin's blade" in _last_ai_text(client.adv_id)
+    # ...but the raw model reply (with the block) is kept for the Insights view.
+    db = SessionLocal()
+    try:
+        snap = db.get(models.Adventure, client.adv_id).actions[-1].context_snapshot
+    finally:
+        db.close()
+    assert "```state" in snap["raw_output"]
+    assert '"player.hp": -80' in snap["raw_output"]
 
 
 def test_world_state_endpoint(client):
