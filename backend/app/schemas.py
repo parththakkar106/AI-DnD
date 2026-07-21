@@ -66,6 +66,9 @@ class ScenarioBase(BaseModel):
     authors_note: Prose = ""
     ai_instructions: Prose = ""
     tags: Tags = ""
+    # Phase 12: RPG world-state template (stat defs, bands, rules, milestones).
+    # None means no RPG layer.
+    stat_schema: dict | None = None
 
 
 class ScenarioCreate(ScenarioBase):
@@ -80,6 +83,7 @@ class ScenarioUpdate(BaseModel):
     authors_note: Prose | None = None
     ai_instructions: Prose | None = None
     tags: Tags | None = None
+    stat_schema: dict | None = None
     script_ids: list[int] | None = None
 
 

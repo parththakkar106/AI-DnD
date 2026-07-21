@@ -79,6 +79,17 @@ MIGRATIONS: list[tuple[int, str]] = [
     # action's hooks ran, enabling undo/retry to roll state back. JSON is valid
     # on both SQLite and Postgres.
     (25, "ALTER TABLE actions ADD COLUMN state_before JSON"),
+    # Phase 12: RPG world state. `stat_schema` defines the stats/bands/rules and
+    # milestones for a scenario; `world_state` holds an adventure's live values;
+    # `world_state_before` snapshots it per action for undo/retry (mirrors
+    # state_before). JSON is valid on both SQLite and Postgres.
+    (26, "ALTER TABLE scenarios ADD COLUMN stat_schema JSON"),
+    (27, "ALTER TABLE adventures ADD COLUMN world_state JSON"),
+    (28, "ALTER TABLE actions ADD COLUMN world_state_before JSON"),
+    # Raise the default context budget 4096 -> 16384 (Phase 12 injects a stat
+    # guide + world state each turn). Only bumps rows still on the old default,
+    # so anyone who picked a custom value keeps it.
+    (29, "UPDATE settings SET context_token_budget = 16384 WHERE context_token_budget = 4096"),
 ]
 
 LATEST_VERSION = max((v for v, _ in MIGRATIONS), default=1)

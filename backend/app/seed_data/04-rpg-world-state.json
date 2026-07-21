@@ -1,0 +1,68 @@
+{
+  "title": "[Demo] The Bandit Camp (RPG world state)",
+  "description": "A short RPG scene showing the built-in world-state system: the AI tracks your HP and mana, an in-game day counter, an NPC ally's health and trust, and story milestones. No scripting — the engine keeps the numbers honest. Open the World State panel on the left to watch it change.",
+  "prompt": "Dawn breaks grey over the treeline as you and Gwen crouch at the edge of the bandit camp. Smoke curls from a dying fire; three bedrolls lie empty. Somewhere ahead, the stolen caravan strongbox waits.\n\nGwen checks her bowstring and looks to you. \"Quiet, or loud?\"",
+  "memory": "The player and Gwen, a loyal ranger ally, are raiding a bandit camp to recover a stolen strongbox. The player is a capable adventurer. This is a dangerous but winnable encounter.",
+  "authors_note": "Keep it tense and consequential. Reckless moves should cost health; clever ones should pay off. Gwen reacts to how the player treats her.",
+  "ai_instructions": "Write in second person, present tense. End each reply where the player can act. Let the world state guide the fiction — if the player is badly hurt, show it.",
+  "tags": "demo, rpg, world-state, combat, short",
+  "stat_schema": {
+    "npc_card_types": ["character"],
+    "world": {
+      "day": { "type": "counter", "min": 1, "initial": 1, "desc": "Which in-game day it is; only ever counts up." }
+    },
+    "player": {
+      "hp": {
+        "desc": "The player's physical health. At 0 they fall.",
+        "min": 0, "max": 100, "initial": 100, "max_delta_per_turn": 35,
+        "bands": [[0, 1, "dead"], [1, 25, "gravely wounded"], [25, 50, "hurt"],
+                  [50, 80, "scratched"], [80, 100, "healthy"], [100, 101, "full health"]]
+      },
+      "mana": {
+        "desc": "Magical energy for spells; spent casting, restored by resting.",
+        "min": 0, "max": 50, "initial": 30, "max_delta_per_turn": 25,
+        "bands": [[0, 10, "drained"], [10, 30, "steady"], [30, 51, "brimming"]]
+      }
+    },
+    "flags": {
+      "alarm_raised": { "desc": "True once the bandits know they're under attack; stealth is blown.", "initial": false },
+      "player_hidden": { "desc": "True while the player is out of sight in cover.", "initial": true }
+    },
+    "npc": {
+      "health": {
+        "desc": "This companion's physical health.",
+        "min": 0, "max": 100, "initial": 100, "max_delta_per_turn": 35,
+        "bands": [[0, 1, "dead"], [1, 25, "gravely wounded"], [25, 50, "hurt"],
+                  [50, 80, "scratched"], [80, 101, "healthy"]]
+      },
+      "trust": {
+        "desc": "How much this companion trusts the player; rises with smart, loyal play and falls with recklessness.",
+        "min": -100, "max": 100, "initial": 20, "max_delta_per_turn": 20,
+        "bands": [[-100, -30, "hostile"], [-30, 30, "wary"], [30, 70, "friendly"],
+                  [70, 101, "devoted"]]
+      }
+    },
+    "milestones": {
+      "camp_cleared": { "desc": "Clear the bandit camp of enemies" },
+      "strongbox_found": { "desc": "Recover the stolen strongbox" },
+      "gwen_survives": { "desc": "Escape with Gwen still alive" }
+    }
+  },
+  "story_cards": [
+    {
+      "type": "character",
+      "name": "Gwen",
+      "keys": "Gwen, ranger, her",
+      "entry": "Gwen is a loyal ranger and the player's ally. Quick with a bow, dry-humoured, fiercely protective. Her trust in the player rises when they fight smart and watch her back, and falls when they are reckless with her life.",
+      "notes": ""
+    },
+    {
+      "type": "location",
+      "name": "Bandit Camp",
+      "keys": "camp, bandits, strongbox",
+      "entry": "A rough camp of bandits in a forest clearing, holding a stolen caravan strongbox.",
+      "notes": ""
+    }
+  ],
+  "scripts": []
+}

@@ -42,6 +42,9 @@ const SECTION_LABELS = {
   plot_essentials: 'Plot Essentials',
   story_summary: 'Story Summary',
   used_memories: 'Used Memories (memory bank)',
+  world_state_guide: 'World State (stat guide)',
+  world_state: 'World State (RPG)',
+  world_state_rule: 'World State (reporting rule)',
   world_lore: 'World Lore (story cards)',
   history: 'Story history',
   authors_note: "Author's Note",
@@ -481,6 +484,181 @@ function StatusDrawer({ advId, refreshKey }) {
   )
 }
 
+// Word label for a value from a stat def's bands (mirrors worldstate.band_label).
+function bandLabel(def, value) {
+  const bands = def?.bands
+  if (!Array.isArray(bands) || typeof value !== 'number') return null
+  for (const b of bands) {
+    if (Array.isArray(b) && b.length === 3 && value >= b[0] && value < b[1]) return b[2]
+  }
+  const last = bands[bands.length - 1]
+  if (last && value === last[1]) return last[2]
+  return null
+}
+
+function StatRow({ name, def, value }) {
+  const val = typeof value === 'number' ? value : (def?.initial ?? 0)
+  const { min, max } = def || {}
+  const hasRange = typeof min === 'number' && typeof max === 'number' && max > min
+  const pct = hasRange ? Math.max(0, Math.min(100, ((val - min) / (max - min)) * 100)) : null
+  const label = bandLabel(def, val)
+  return (
+    <div className="ws-stat">
+      <div className="ws-stat-head">
+        <span className="ws-stat-name" title={def?.desc || undefined}>{name}</span>
+        <span className="ws-stat-val">
+          {val}{typeof max === 'number' ? `/${max}` : ''}
+          {label ? <span className="ws-band"> · {label}</span> : null}
+        </span>
+      </div>
+      {pct != null && (
+        <div className="ws-bar"><div className="ws-bar-fill" style={{ width: `${pct}%` }} /></div>
+      )}
+    </div>
+  )
+}
+
+function StatGroup({ title, defs, values }) {
+  const entries = Object.entries(defs || {}).filter(([, d]) => d && typeof d === 'object')
+  if (entries.length === 0) return null
+  return (
+    <div className="ws-group">
+      {title && <h3 className="ws-group-title">{title}</h3>}
+      {entries.map(([name, def]) => (
+        <StatRow key={name} name={name} def={def} value={values?.[name]} />
+      ))}
+    </div>
+  )
+}
+
+// Collapsible left rail showing the RPG world state (Phase 12): world/player/NPC
+// stats with bands + bars, and a milestones checklist. Renders nothing unless
+// the adventure's scenario defines a stat_schema.
+function WorldStateDrawer({ advId, refreshKey, cards }) {
+  const [open, setOpen] = useState(false)
+  const [data, setData] = useState(null) // { state, schema }
+  const [failed, setFailed] = useState(false)
+
+  const load = useCallback(() => {
+    api.getWorldState(advId)
+      .then((r) => { setData(r); setFailed(false) })
+      .catch(() => setFailed(true))
+  }, [advId])
+
+  // Load once to learn whether there's an RPG layer, then refresh after turns.
+  useEffect(() => { load() }, [load, refreshKey])
+
+  const schema = data?.schema
+  if (!schema) return null // no RPG layer for this adventure
+
+  const state = data?.state || {}
+  const cardName = (id) =>
+    cards?.find((c) => String(c.id) === String(id))?.name || `NPC ${id}`
+  const npcState = state.npc || {}
+  const npcIds = Object.keys(npcState)
+  const flags = Object.entries(schema.flags || {})
+  const flagState = state.flags || {}
+  const milestones = Object.entries(schema.milestones || {})
+  const reached = state.milestones || {}
+
+  return (
+    <div className={`status-drawer ws-drawer ${open ? 'open' : ''}`}>
+      <button className="status-toggle" onClick={() => setOpen((o) => !o)}
+        title="RPG world state">
+        {open ? '‹' : '›'}<span className="status-toggle-label">World</span>
+      </button>
+      {open && (
+        <div className="status-body">
+          <div className="side-panel-header">
+            <h2>World State</h2>
+            <button onClick={load} title="Refresh">↻</button>
+          </div>
+          {failed ? (
+            <div className="empty">Couldn’t load world state.</div>
+          ) : (
+            <>
+              <StatGroup title={null} defs={schema.world} values={state.world} />
+              <StatGroup title="You" defs={schema.player} values={state.player} />
+              {npcIds.map((id) => (
+                <StatGroup key={id} title={cardName(id)} defs={schema.npc} values={npcState[id]} />
+              ))}
+              {flags.length > 0 && (
+                <div className="ws-group">
+                  <h3 className="ws-group-title">Flags</h3>
+                  <ul className="ws-flags">
+                    {flags.map(([fid, def]) => {
+                      const on = flagState[fid] ?? !!def.initial
+                      return (
+                        <li key={fid} title={def.desc || undefined}>
+                          <span className={`ws-flag-dot ${on ? 'on' : ''}`} />
+                          <span className="ws-flag-name">{fid}</span>
+                          <span className="ws-flag-val">{on ? 'yes' : 'no'}</span>
+                        </li>
+                      )
+                    })}
+                  </ul>
+                </div>
+              )}
+              {milestones.length > 0 && (
+                <div className="ws-group">
+                  <h3 className="ws-group-title">Milestones</h3>
+                  <ul className="ws-milestones">
+                    {milestones.map(([mid, def]) => {
+                      const done = reached[mid]?.reached
+                      return (
+                        <li key={mid} className={done ? 'done' : ''}>
+                          <span className="ws-check">{done ? '☑' : '☐'}</span>
+                          {def.desc || mid}
+                        </li>
+                      )
+                    })}
+                  </ul>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Per-turn RPG state change, shown when inspecting a past turn's snapshot.
+function WorldStateReport({ worldState }) {
+  if (!worldState) return null
+  const delta = worldState.delta || {}
+  const report = worldState.report || {}
+  const paths = Object.keys(delta)
+  const rejected = report.rejected || []
+  const clamped = new Set((report.clamped || []).map((c) => c.path))
+  if (paths.length === 0 && rejected.length === 0) {
+    return (
+      <div className="script-report">
+        <div className="ctx-header" style={{ padding: '4px 0 2px' }}><span>World State</span></div>
+        <div className="dim" style={{ fontSize: '0.82rem' }}>No changes this turn.</div>
+      </div>
+    )
+  }
+  return (
+    <div className="script-report">
+      <div className="ctx-header" style={{ padding: '4px 0 2px' }}><span>World State changes</span></div>
+      <ul className="ws-report">
+        {paths.map((p) => (
+          <li key={p}>
+            <code>{p}</code> <span className="ws-delta">{String(delta[p])}</span>
+            {clamped.has(p) && <span className="ws-flag"> clamped</span>}
+          </li>
+        ))}
+        {rejected.map((r, i) => (
+          <li key={`r${i}`} className="ws-rejected">
+            <code>{r.path}</code> rejected — {r.reason}
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
 function ScriptReport({ script }) {
   if (!script || (!script.logs?.length && !script.errors?.length && !script.context_changed)) {
     return null
@@ -591,6 +769,7 @@ function InsightsPanel({ advId, inspectActionId, onClearInspect, refreshKey }) {
         </div>
       ))}
       <ScriptReport script={report.script} />
+      <WorldStateReport worldState={report.world_state} />
     </div>
   )
 }
@@ -794,6 +973,7 @@ export default function Play() {
 
   return (
     <div className={`play-layout ${panel ? 'with-panel' : ''}`}>
+      <WorldStateDrawer advId={id} refreshKey={actions.length} cards={adventure.story_cards} />
       <StatusDrawer advId={id} refreshKey={actions.length} />
       <div className="page play-page">
         <div className="page-header">

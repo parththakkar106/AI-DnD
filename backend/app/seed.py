@@ -94,6 +94,8 @@ def _matches(scenario: models.Scenario, data: dict) -> bool:
     the write and avoid churning rows on every boot."""
     if any(getattr(scenario, f) != data.get(f, "") for f in _SCALARS):
         return False
+    if (scenario.stat_schema or None) != (data.get("stat_schema") or None):
+        return False
     have_cards = sorted(_card_tuple(c, lambda o, f: getattr(o, f)) for c in scenario.story_cards)
     want_cards = sorted(
         _card_tuple(c, lambda o, f: o.get(f, ""))
@@ -133,6 +135,8 @@ def _update_scenario(db, scenario: models.Scenario, data: dict) -> None:
 def _apply_scalars(scenario: models.Scenario, data: dict) -> None:
     for field in _SCALARS:
         setattr(scenario, field, data.get(field, ""))
+    # Phase 12: RPG world-state template (a JSON dict, not a scalar string).
+    scenario.stat_schema = data.get("stat_schema") or None
 
 
 def _populate_children(db, scenario: models.Scenario, data: dict) -> None:

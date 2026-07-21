@@ -9,6 +9,9 @@ export default function ScenarioEditor() {
   const [scenario, setScenario] = useState(null)
   const [allScripts, setAllScripts] = useState([])
   const [status, setStatus] = useState('')
+  // Raw text buffer for the stat_schema JSON editor + a live parse error.
+  const [schemaText, setSchemaText] = useState('')
+  const [schemaError, setSchemaError] = useState('')
   // One timer per field/card: a single shared timer would cancel the pending
   // save of whatever was edited previously within the debounce window.
   const saveTimers = useRef(new Map())
@@ -18,7 +21,10 @@ export default function ScenarioEditor() {
   }
 
   useEffect(() => {
-    api.getScenario(id).then(setScenario).catch(() => navigate('/scenarios'))
+    api.getScenario(id).then((s) => {
+      setScenario(s)
+      setSchemaText(s.stat_schema ? JSON.stringify(s.stat_schema, null, 2) : '')
+    }).catch(() => navigate('/scenarios'))
     api.listScripts().then(setAllScripts).catch(() => {})
   }, [id, navigate])
 
@@ -30,6 +36,39 @@ export default function ScenarioEditor() {
       setStatus('Saved')
       setTimeout(() => setStatus(''), 1500)
     })
+  }
+
+  // RPG world-state schema: edited as raw JSON, only saved when it parses to an
+  // object (empty text clears the RPG layer). Invalid JSON shows an inline error
+  // and holds off saving.
+  const setSchema = (text) => {
+    setSchemaText(text)
+    const trimmed = text.trim()
+    if (!trimmed) {
+      setSchemaError('')
+      debounceSave('stat_schema', () => saveSchema(null))
+      return
+    }
+    let parsed
+    try {
+      parsed = JSON.parse(trimmed)
+    } catch (err) {
+      setSchemaError(`Invalid JSON: ${err.message}`)
+      return
+    }
+    if (typeof parsed !== 'object' || Array.isArray(parsed)) {
+      setSchemaError('The schema must be a JSON object.')
+      return
+    }
+    setSchemaError('')
+    debounceSave('stat_schema', () => saveSchema(parsed))
+  }
+
+  const saveSchema = async (parsed) => {
+    await api.updateScenario(id, { stat_schema: parsed })
+    setScenario((s) => ({ ...s, stat_schema: parsed }))
+    setStatus('Saved')
+    setTimeout(() => setStatus(''), 1500)
   }
 
   const addCard = async () => {
@@ -151,6 +190,25 @@ export default function ScenarioEditor() {
         <StoryCardRow key={card.id} card={card}
           onChange={updateCard} onDelete={() => deleteCard(card.id)} />
       ))}
+
+      <div className="page-header" style={{ marginTop: 28 }}>
+        <h2 style={{ margin: 0, fontFamily: 'Georgia, serif', fontSize: '1.2rem' }}>World State (RPG)</h2>
+      </div>
+      <p className="dim" style={{ margin: '0 0 10px', fontSize: '0.85rem' }}>
+        Optional. Define stats (with bands and rules) and milestones as a JSON object,
+        and the AI will track them each turn — HP, mana, an NPC’s trust, quest objectives.
+        Leave blank for a plain narrative scenario. NPC stats apply to story cards of the
+        configured <code>npc_card_types</code>.
+      </p>
+      <textarea
+        className="schema-editor"
+        value={schemaText}
+        onChange={(e) => setSchema(e.target.value)}
+        rows={12}
+        spellCheck={false}
+        placeholder={'{\n  "player": { "hp": { "min": 0, "max": 100, "initial": 100 } },\n  "milestones": { "goal": { "desc": "..." } }\n}'}
+      />
+      {schemaError && <div className="schema-error">⚠ {schemaError}</div>}
 
       <div className="page-header" style={{ marginTop: 28 }}>
         <h2 style={{ margin: 0, fontFamily: 'Georgia, serif', fontSize: '1.2rem' }}>Attached Scripts</h2>

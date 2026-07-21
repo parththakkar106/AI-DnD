@@ -80,6 +80,7 @@ export const api = {
   listAdventures: () => request('/adventures'),
   getAdventure: (id) => request(`/adventures/${id}`),
   getScriptState: (id) => request(`/adventures/${id}/script-state`),
+  getWorldState: (id) => request(`/adventures/${id}/world-state`),
   createAdventure: (data) => request('/adventures', { method: 'POST', body: JSON.stringify(data) }),
   updateAdventure: (id, data) => request(`/adventures/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteAdventure: (id) => request(`/adventures/${id}`, { method: 'DELETE' }),

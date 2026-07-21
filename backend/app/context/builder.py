@@ -16,7 +16,7 @@ from dataclasses import dataclass
 
 import tiktoken
 
-from .. import models
+from .. import models, worldstate
 
 AUTHORS_NOTE_DEPTH = 3  # actions from the end of history
 CARD_BUDGET_SHARE = 0.4  # max share of non-reserved budget that story cards may take
@@ -56,6 +56,23 @@ def _script_memory(adventure: models.Adventure) -> dict:
     return memory if isinstance(memory, dict) else {}
 
 
+def _visible_npcs(adventure: models.Adventure, stat_schema: dict) -> dict[str, str]:
+    """NPC story cards (by schema-configured type) whose keys appear in the
+    recent story — the ones "in scene", so only their stats get injected."""
+    actions = [a for a in adventure.actions if a.text.strip()]
+    recent = SEPARATOR.join(a.text for a in actions[-6:]).lower()
+    types = worldstate.npc_types(stat_schema)
+    visible: dict[str, str] = {}
+    for card in adventure.story_cards:
+        if (card.type or "").lower() not in types:
+            continue
+        for key in (k.strip().lower() for k in card.keys.split(",")):
+            if key and key in recent:
+                visible[str(card.id)] = card.name or f"NPC {card.id}"
+                break
+    return visible
+
+
 def _match_cards(cards: list[models.StoryCard], window_text: str) -> list[dict]:
     """AI Dungeon trigger rules: case-insensitive, space-sensitive, partial-word
     ('boat' triggers on 'boats'). Returns one record per card with the keyword that fired."""
@@ -82,6 +99,20 @@ def build_context(
 
     # ----- Always-included components -----
     system_sections: list[Section] = [Section("narrator", settings.narrator_prompt.strip())]
+
+    # RPG world state (Phase 12): current stats/milestones + how to report changes.
+    stat_schema = adventure.scenario.stat_schema if adventure.scenario else None
+    if worldstate.has_schema(stat_schema):
+        guide = worldstate.render_reference(stat_schema)
+        if guide:
+            system_sections.append(Section("world_state_guide", guide))
+        block = worldstate.render_state_section(
+            adventure.world_state, stat_schema, _visible_npcs(adventure, stat_schema)
+        )
+        if block:
+            system_sections.append(Section("world_state", block))
+        system_sections.append(Section("world_state_rule", worldstate.EMIT_RULE))
+
     if isinstance(script_mem.get("context"), str) and script_mem["context"].strip():
         system_sections.append(Section("script_context", script_mem["context"].strip()))
     if adventure.ai_instructions.strip():

@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from .. import auth, limits, memorybank, models, schemas
+from .. import auth, limits, memorybank, models, schemas, worldstate
 from ..context import build_context
 from ..database import get_db
 from ..providers import OpenAICompatibleProvider, PromptParts, ProviderError
@@ -91,6 +91,8 @@ def create_adventure(
         memory=fill_placeholders(scenario.memory, values) if scenario else "",
         authors_note=fill_placeholders(scenario.authors_note, values) if scenario else "",
         ai_instructions=fill_placeholders(scenario.ai_instructions, values) if scenario else "",
+        # Phase 12: seed the live RPG state from the scenario's template.
+        world_state=worldstate.instantiate(scenario.stat_schema) if scenario else {},
     )
     db.add(adventure)
     db.flush()
@@ -154,10 +156,32 @@ def get_script_state(
     return {"state": state}
 
 
+@router.get("/{adventure_id}/world-state")
+def get_world_state(
+    adventure_id: int, db: Session = Depends(get_db), user: models.User = CurrentUser
+):
+    """The RPG world state (live values) plus the scenario's stat_schema, so the
+    play view can render the sheet + milestones. `schema` is null with no RPG layer."""
+    adventure = get_adventure_or_404(adventure_id, db, user)
+    schema = adventure.scenario.stat_schema if adventure.scenario else None
+    state = adventure.world_state if isinstance(adventure.world_state, dict) else {}
+    return {
+        "state": state,
+        "schema": schema if worldstate.has_schema(schema) else None,
+    }
+
+
 def snapshot_state(adventure: models.Adventure) -> dict:
     """Deep copy of the shared script_state, to staple onto an action so undo/
     retry can restore it. Independent of later hook mutations."""
     state = adventure.script_state if isinstance(adventure.script_state, dict) else {}
+    return copy.deepcopy(state)
+
+
+def snapshot_world_state(adventure: models.Adventure) -> dict:
+    """Deep copy of the RPG world_state, for the same undo/retry rollback as
+    snapshot_state (Phase 12)."""
+    state = adventure.world_state if isinstance(adventure.world_state, dict) else {}
     return copy.deepcopy(state)
 
 
@@ -269,6 +293,7 @@ async def generate_turn(
     # Scoreboard as it stands before this AI turn's context/output hooks mutate
     # it — stapled onto the AI action so retry can start over from here.
     state_before = snapshot_state(adventure)
+    world_state_before = snapshot_world_state(adventure)
     system_text, story_text, snapshot = build_context(adventure, settings, memories)
 
     # onModelContext: scripts see (and may rewrite) the whole assembled context.
@@ -331,14 +356,30 @@ async def generate_turn(
         return
     snapshot["script"] = snapshot["script"] | pipeline.report()
 
+    # RPG world state (Phase 12): pull the AI's state delta out of the reply,
+    # let the engine referee it, and strip the block from the shown text.
+    ai_index = next_index(adventure)
+    stat_schema = adventure.scenario.stat_schema if adventure.scenario else None
+    if worldstate.has_schema(stat_schema):
+        text, delta = worldstate.extract_delta(text)
+        if not text.strip():
+            yield sse({"type": "error", "detail": "The AI returned only a state update and no story text."})
+            return
+        new_world_state, ws_report = worldstate.apply_delta(
+            adventure.world_state, stat_schema, delta, ai_index
+        )
+        adventure.world_state = new_world_state
+        snapshot["world_state"] = {"delta": delta, "report": ws_report, "state": new_world_state}
+
     ai_action = models.Action(
         adventure_id=adventure.id,
-        index=next_index(adventure),
+        index=ai_index,
         type="ai",
         text=text,
         reasoning="".join(reasoning_chunks).strip() or None,
         context_snapshot=snapshot,
         state_before=state_before,
+        world_state_before=world_state_before,
     )
     db.add(ai_action)
     adventure.updated_at = models.utcnow()
@@ -377,6 +418,7 @@ async def run_player_turn(
         # Scoreboard before the input hook mutates it — the pre-turn state that
         # undo restores to (the AI action keeps its own post-input snapshot).
         state_before = snapshot_state(adventure)
+        world_state_before = snapshot_world_state(adventure)
         # onInput sees the formatted text (as in AI Dungeon: "> You ...").
         formatted = format_player_input(payload.type, payload.text)
         modified, stop = pipeline.run("input", formatted)
@@ -390,6 +432,7 @@ async def run_player_turn(
             type=payload.type,
             text=modified,
             state_before=state_before,
+            world_state_before=world_state_before,
         )
         db.add(player_action)
         db.commit()
@@ -448,6 +491,8 @@ def retry_action(
             # top of the discarded attempt. NULL for pre-migration actions.
             if last_ai.state_before is not None:
                 adventure.script_state = copy.deepcopy(last_ai.state_before)
+            if last_ai.world_state_before is not None:
+                adventure.world_state = copy.deepcopy(last_ai.world_state_before)
             db.delete(last_ai)
             db.commit()
             db.refresh(adventure)
@@ -488,6 +533,8 @@ def undo_turn(
             db.delete(first_removed)
         if first_removed.state_before is not None:
             adventure.script_state = copy.deepcopy(first_removed.state_before)
+        if first_removed.world_state_before is not None:
+            adventure.world_state = copy.deepcopy(first_removed.world_state_before)
         db.flush()  # apply deletes so pruning sees the shrunken action list
         db.expire(adventure, ["actions"])
         memorybank.prune_dangling_memories(adventure, db)
@@ -514,6 +561,7 @@ def export_adventure(
         "aiInstructions": adv.ai_instructions,
         "storySummary": adv.story_summary,
         "scriptState": adv.script_state,
+        "worldState": adv.world_state,
         "autoSummarize": adv.auto_summarize,
         "memoryBankEnabled": adv.memory_bank_enabled,
         "memoryCursor": adv.memory_cursor,
@@ -577,6 +625,7 @@ def import_adventure(
         ai_instructions=str(bundle.get("aiInstructions") or ""),
         story_summary=str(bundle.get("storySummary") or ""),
         script_state=bundle.get("scriptState") or {},
+        world_state=bundle.get("worldState") or {},
         auto_summarize=bool(bundle.get("autoSummarize", False)),
         memory_bank_enabled=bool(bundle.get("memoryBankEnabled", False)),
         memory_cursor=int(bundle.get("memoryCursor", 0)),

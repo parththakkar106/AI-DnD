@@ -62,6 +62,9 @@ class Scenario(Base):
     authors_note: Mapped[str] = mapped_column(Text, default="")
     ai_instructions: Mapped[str] = mapped_column(Text, default="")
     tags: Mapped[str] = mapped_column(String(500), default="")
+    # Phase 12: RPG world-state template — stat definitions (bands, rules) and
+    # milestones. NULL/empty means this scenario has no RPG layer.
+    stat_schema: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
@@ -88,6 +91,9 @@ class Adventure(Base):
     ai_instructions: Mapped[str] = mapped_column(Text, default="")
     story_summary: Mapped[str] = mapped_column(Text, default="")
     script_state: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Phase 12: live RPG world state (world/player/npc stats + milestones),
+    # instantiated from the scenario's stat_schema. Empty when there's no RPG layer.
+    world_state: Mapped[dict] = mapped_column(JSON, default=dict)
     # Phase 6: opt-in per adventure (extra AI calls)
     auto_summarize: Mapped[bool] = mapped_column(Boolean, default=False)
     memory_bank_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -185,6 +191,8 @@ class Action(Base):
     # script hooks ran, so undo/retry can roll the shared scoreboard back.
     # NULL for actions created before this column existed.
     state_before: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Phase 12: same idea for the RPG world_state, so undo/retry rolls it back too.
+    world_state_before: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     adventure: Mapped[Adventure] = relationship(back_populates="actions")
@@ -258,7 +266,7 @@ class Settings(Base):
     # `reasoning: {max_tokens}`); 0 = param not sent. Added on top of
     # max_output_tokens so story output keeps its full budget.
     reasoning_max_tokens: Mapped[int] = mapped_column(Integer, default=0)
-    context_token_budget: Mapped[int] = mapped_column(Integer, default=4096)
+    context_token_budget: Mapped[int] = mapped_column(Integer, default=16384)
     narrator_prompt: Mapped[str] = mapped_column(
         Text,
         default=(

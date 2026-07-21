@@ -100,3 +100,12 @@ Open questions are recorded at the top of each phase file under "Ask before impl
    serving, database decision.
 10. **[Phase 10 — Deploy & publish](10-phase-deploy.md)**: Render blueprint + deploy, seeded
     demo scenarios, live smoke test, resume/website links and blurb.
+
+## Post-launch
+
+- **[State revert + retry fix](11-state-revert-and-retry-fix.md)**: undo/retry roll the shared
+  `script_state` back; per-action `state_before` snapshots; undo concurrency lock.
+- **[Phase 12 — RPG world state](12-phase-rpg-world-state.md)**: structured world/player/NPC stats
+  + milestones per scenario (`stat_schema`); the AI proposes deltas, a Python engine clamps them
+  (min/max, per-turn cap, cooldown, sticky milestones); band descriptions keep the model honest;
+  World State drawer + Insights delta report; reuses the Phase 11 undo/retry snapshot.

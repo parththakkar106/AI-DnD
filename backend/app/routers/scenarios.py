@@ -109,6 +109,7 @@ def export_scenario(
         "authorsNote": s.authors_note,
         "aiInstructions": s.ai_instructions,
         "tags": s.tags,
+        "statSchema": s.stat_schema,
         "storyCards": [
             {"type": c.type, "name": c.name, "keys": c.keys, "entry": c.entry, "notes": c.notes}
             for c in s.story_cards
@@ -137,6 +138,7 @@ _SCENARIO_KEYS = {
     "instructions": "ai_instructions",
 }
 _IGNORED_KEYS = {"format", "storyCards", "worldInfo", "worldInformation", "scripts", "tags",
+                 "statSchema", "stat_schema",
                  "createdAt", "updatedAt", "id", "publicId", "image", "nsfw", "type", "options"}
 
 
@@ -164,6 +166,10 @@ def import_scenario(
         fields["tags"] = ", ".join(str(t) for t in tags)
     elif isinstance(tags, str):
         fields["tags"] = tags
+
+    schema = bundle.get("statSchema") or bundle.get("stat_schema")
+    if isinstance(schema, dict):
+        fields["stat_schema"] = schema
 
     scenario = models.Scenario(**fields, user_id=user.id)
     if not scenario.title:
