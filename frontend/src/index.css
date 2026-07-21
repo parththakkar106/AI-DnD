@@ -781,7 +781,8 @@ button:disabled { opacity: 0.45; cursor: default; transform: none; box-shadow: n
 }
 .se-num { display: flex; flex-direction: column; gap: 2px; }
 .se-num span { font-size: 0.7rem; color: var(--text-dim); }
-.se-num input { width: 72px; padding: 3px 6px; font-size: 0.82rem; }
+.se-num input, .se-num select { width: 72px; padding: 3px 6px; font-size: 0.82rem; border-radius: 6px; }
+.se-kind select { width: 118px; }
 .se-check {
   display: flex; align-items: center; gap: 5px;
   font-size: 0.8rem; color: var(--text-dim);

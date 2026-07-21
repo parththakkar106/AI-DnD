@@ -86,7 +86,7 @@ function StatEditor({ statKey, def, onRenameKey, onChange, onRemove }) {
           </>
         )}
         <Num label="cooldown" value={def.cooldown} onChange={(v) => set('cooldown', v)} />
-        <label className="se-num">
+        <label className="se-num se-kind">
           <span>kind</span>
           <select value={isText ? 'text' : (def.type === 'counter' ? 'counter' : 'number')}
             onChange={(e) => setType(e.target.value === 'number' ? undefined : e.target.value)}>
