@@ -26,7 +26,13 @@ EMIT_RULE = (
     "MUST record it, including the numbers, not just on/off flags. After your narration, "
     "append a fenced code block labelled `state` with a JSON object of the CHANGES ONLY, "
     "as deltas (not new totals). Update every value the scene affected this turn, not only "
-    'the obvious ones. Use the paths exactly as shown in the world state: "player.<stat>", '
+    "the obvious ones. Read the range and band labels shown for each stat and keep every "
+    "change proportionate to the moment: an ordinary or minor event nudges a value slightly, "
+    "while a large change — or reaching a stat's minimum or maximum — is reserved for a "
+    "genuinely pivotal, defining moment (a passing remark shifts a relationship a little; a "
+    "lasting act of loyalty or betrayal shifts it a lot). Do not move a value across most of "
+    'its range in a single ordinary turn. Use the paths exactly as shown in the world state: '
+    '"player.<stat>", '
     '"world.<stat>", "npc.<id>.<stat>" (use the id in parentheses, e.g. npc.gwen.trust, '
     'not the display name); "flags.<name>": true or false to toggle an on/off state; and '
     '"milestones.<id>": true when an objective is completed. Send only things that actually '
