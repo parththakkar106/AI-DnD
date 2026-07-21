@@ -660,6 +660,13 @@ button:disabled { opacity: 0.45; cursor: default; transform: none; box-shadow: n
   color: var(--danger, #e5484d);
   font-size: 0.82rem;
 }
+.schema-json-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+}
+.schema-json-actions .schema-error { margin-top: 0; }
 .schema-preview {
   margin-top: 14px;
   padding: 14px 16px;

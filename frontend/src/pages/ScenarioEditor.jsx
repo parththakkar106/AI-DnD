@@ -43,32 +43,37 @@ export default function ScenarioEditor() {
     })
   }
 
-  // RPG world-state schema: edited as raw JSON, only saved when it parses to an
-  // object (empty text clears the RPG layer). Invalid JSON shows an inline error
-  // and holds off saving.
-  const setSchema = (text) => {
+  // JSON view: typing only updates the text buffer; nothing is parsed or saved
+  // until the user clicks Save (so a half-typed edit doesn't spam errors).
+  const onJsonText = (text) => {
     setSchemaText(text)
-    const trimmed = text.trim()
+    if (schemaError) setSchemaError('')
+  }
+
+  // Parse the JSON box on demand: apply + save if valid, else show the error.
+  const commitJson = () => {
+    const trimmed = schemaText.trim()
     if (!trimmed) {
       setSchemaError('')
       setParsedSchema(null)
-      debounceSave('stat_schema', () => saveSchema(null))
+      saveSchema(null)
       return
     }
     let parsed
     try {
       parsed = JSON.parse(trimmed)
     } catch (err) {
-      setSchemaError(`Invalid JSON: ${err.message}`)  // keep last-good preview
+      setSchemaError(`Invalid JSON: ${err.message}`)
       return
     }
     if (typeof parsed !== 'object' || Array.isArray(parsed)) {
-      setSchemaError('The schema must be a JSON object.')
+      setSchemaError('The schema must be a JSON object (e.g. { "player": { … } }).')
       return
     }
     setSchemaError('')
     setParsedSchema(parsed)
-    debounceSave('stat_schema', () => saveSchema(parsed))
+    setSchemaText(JSON.stringify(parsed, null, 2))  // normalize / pretty-print
+    saveSchema(parsed)
   }
 
   const saveSchema = async (parsed) => {
@@ -230,12 +235,19 @@ export default function ScenarioEditor() {
           <textarea
             className="schema-editor"
             value={schemaText}
-            onChange={(e) => setSchema(e.target.value)}
+            onChange={(e) => onJsonText(e.target.value)}
             rows={14}
             spellCheck={false}
             placeholder={'{\n  "player": { "hp": { "min": 0, "max": 100, "initial": 100 } },\n  "npcs": {\n    "gwen": { "name": "Gwen", "keys": "Gwen, ranger", "desc": "...",\n      "stats": { "trust": { "min": -100, "max": 100, "initial": 20 } } }\n  },\n  "flags": { "has_key": { "desc": "...", "initial": false } },\n  "milestones": { "goal": { "desc": "..." } }\n}'}
           />
-          {schemaError && <div className="schema-error">⚠ {schemaError}</div>}
+          <div className="schema-json-actions">
+            <button type="button" className="primary" onClick={commitJson}>Save JSON</button>
+            {schemaError
+              ? <span className="schema-error">⚠ {schemaError}</span>
+              : <span className="dim" style={{ fontSize: '0.8rem' }}>
+                  Edits apply when you click Save.
+                </span>}
+          </div>
           <SchemaPreview schema={parsedSchema} />
         </>
       )}
