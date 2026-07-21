@@ -44,6 +44,7 @@ function StatEditor({ statKey, def, onRenameKey, onChange, onRemove }) {
     else next[field] = val
     onChange(next)
   }
+  const isText = def.type === 'text'
   const bands = Array.isArray(def.bands) ? def.bands : []
   const setBands = (nb) => set('bands', nb.length ? nb : undefined)
   const updBand = (i, j, raw) => {
@@ -52,6 +53,17 @@ function StatEditor({ statKey, def, onRenameKey, onChange, onRemove }) {
     nb[i][j] = j < 2 ? (raw === '' ? 0 : Number(raw)) : raw
     setBands(nb)
   }
+  const setType = (val) => {
+    const next = { ...def, type: val || undefined }
+    if (val === 'text') {
+      // Numeric-only fields don't apply to free text.
+      delete next.min; delete next.max; delete next.max_delta_per_turn; delete next.bands
+      if (typeof next.initial !== 'string') next.initial = ''
+    } else if (typeof next.initial === 'string') {
+      delete next.initial
+    }
+    onChange(next)
+  }
   return (
     <div className="se-stat">
       <div className="se-row-top">
@@ -59,36 +71,52 @@ function StatEditor({ statKey, def, onRenameKey, onChange, onRemove }) {
         <button type="button" className="se-remove" onClick={onRemove} title="Remove stat">✕</button>
       </div>
       <div className="se-fields">
-        <Num label="min" value={def.min} onChange={(v) => set('min', v)} />
-        <Num label="max" value={def.max} onChange={(v) => set('max', v)} />
-        <Num label="initial" value={def.initial} onChange={(v) => set('initial', v)} />
-        <Num label="±/turn" value={def.max_delta_per_turn} onChange={(v) => set('max_delta_per_turn', v)} />
+        {isText ? (
+          <label className="se-num">
+            <span>initial</span>
+            <input type="text" value={def.initial ?? ''}
+              onChange={(e) => set('initial', e.target.value)} />
+          </label>
+        ) : (
+          <>
+            <Num label="min" value={def.min} onChange={(v) => set('min', v)} />
+            <Num label="max" value={def.max} onChange={(v) => set('max', v)} />
+            <Num label="initial" value={def.initial} onChange={(v) => set('initial', v)} />
+            <Num label="±/turn" value={def.max_delta_per_turn} onChange={(v) => set('max_delta_per_turn', v)} />
+          </>
+        )}
         <Num label="cooldown" value={def.cooldown} onChange={(v) => set('cooldown', v)} />
-        <label className="se-check">
-          <input type="checkbox" checked={def.type === 'counter'}
-            onChange={(e) => set('type', e.target.checked ? 'counter' : undefined)} />
-          <span>counts up only</span>
+        <label className="se-num">
+          <span>kind</span>
+          <select value={isText ? 'text' : (def.type === 'counter' ? 'counter' : 'number')}
+            onChange={(e) => setType(e.target.value === 'number' ? undefined : e.target.value)}>
+            <option value="number">number</option>
+            <option value="counter">counts up only</option>
+            <option value="text">free text</option>
+          </select>
         </label>
       </div>
       <input className="se-text" value={def.desc || ''} placeholder="description (shown to the AI)"
         onChange={(e) => set('desc', e.target.value || undefined)} />
-      <div className="se-bands">
-        <div className="se-sub-head">Bands — low, high, label</div>
-        {bands.map((b, i) => (
-          <div key={i} className="se-band">
-            <input type="number" className="se-band-n" value={b?.[0] ?? ''}
-              onChange={(e) => updBand(i, 0, e.target.value)} />
-            <input type="number" className="se-band-n" value={b?.[1] ?? ''}
-              onChange={(e) => updBand(i, 1, e.target.value)} />
-            <input className="se-band-l" value={b?.[2] ?? ''} placeholder="label"
-              onChange={(e) => updBand(i, 2, e.target.value)} />
-            <button type="button" className="se-remove"
-              onClick={() => setBands(bands.filter((_, k) => k !== i))} title="Remove band">✕</button>
-          </div>
-        ))}
-        <button type="button" className="se-add-sm"
-          onClick={() => setBands([...bands, [0, 0, '']])}>+ band</button>
-      </div>
+      {!isText && (
+        <div className="se-bands">
+          <div className="se-sub-head">Bands — low, high, label</div>
+          {bands.map((b, i) => (
+            <div key={i} className="se-band">
+              <input type="number" className="se-band-n" value={b?.[0] ?? ''}
+                onChange={(e) => updBand(i, 0, e.target.value)} />
+              <input type="number" className="se-band-n" value={b?.[1] ?? ''}
+                onChange={(e) => updBand(i, 1, e.target.value)} />
+              <input className="se-band-l" value={b?.[2] ?? ''} placeholder="label"
+                onChange={(e) => updBand(i, 2, e.target.value)} />
+              <button type="button" className="se-remove"
+                onClick={() => setBands(bands.filter((_, k) => k !== i))} title="Remove band">✕</button>
+            </div>
+          ))}
+          <button type="button" className="se-add-sm"
+            onClick={() => setBands([...bands, [0, 0, '']])}>+ band</button>
+        </div>
+      )}
     </div>
   )
 }

@@ -35,10 +35,14 @@ EMIT_RULE = (
     '"player.<stat>", '
     '"world.<stat>", "npc.<id>.<stat>" (use the id in parentheses, e.g. npc.gwen.trust, '
     'not the display name); "flags.<name>": true or false to toggle an on/off state; and '
-    '"milestones.<id>": true when an objective is completed. Send only things that actually '
+    '"milestones.<id>": true when an objective is completed. Some stats marked (free text) in '
+    "the stat guide hold a short string instead of a number — for those, send the new value "
+    "in full (not a delta), e.g. what the player is now wearing or holding; only send it when "
+    "it actually changed. Send only things that actually "
     "changed and never restate unchanged values; if truly nothing changed, omit the block. "
     "Example:\n"
-    '```state\n{"player.hp": -15, "npc.gwen.trust": 5, "milestones.escaped": true}\n```'
+    '```state\n{"player.hp": -15, "npc.gwen.trust": 5, "milestones.escaped": true, '
+    '"player.outfit": "torn traveling cloak"}\n```'
 )
 
 # ```state { ... } ``` (also tolerates ```json or an unlabelled fence); DOTALL.
@@ -71,7 +75,7 @@ def npc_triggers(ndef: dict, key: str) -> list[str]:
 
 def _initials(defs: dict) -> dict:
     return {
-        name: d.get("initial", 0)
+        name: d.get("initial", "" if d.get("type") == "text" else 0)
         for name, d in defs.items()
         if isinstance(d, dict)
     }
@@ -222,6 +226,35 @@ def _apply_stat(container: dict, key: str, stat_def: dict, change,
         report["clamped"].append(entry)
 
 
+def _apply_text_stat(container: dict, key: str, stat_def: dict, change,
+                     path: str, action_index: int, meta: dict, report: dict) -> None:
+    """Free-text stats replace rather than add: the AI sends the new value in
+    full, not a delta. No clamping/bands apply — only an optional cooldown and
+    an optional max_length truncation."""
+    if not isinstance(change, str):
+        report["rejected"].append({"path": path, "reason": "not a string"})
+        return
+
+    cooldown = stat_def.get("cooldown") or 0
+    last = meta["last_changed"].get(path)
+    if cooldown and last is not None and action_index - last < cooldown:
+        report["rejected"].append({"path": path, "reason": "cooldown"})
+        return
+
+    new = change.strip()
+    max_len = stat_def.get("max_length")
+    if isinstance(max_len, int) and max_len > 0 and len(new) > max_len:
+        new = new[:max_len]
+
+    old = container.get(key, stat_def.get("initial", ""))
+    if new == old:
+        return  # no actual change — silent no-op
+
+    container[key] = new
+    meta["last_changed"][path] = action_index
+    report["applied"].append({"path": path, "old": old, "new": new})
+
+
 def apply_delta(world_state: dict, stat_schema: dict, delta: dict,
                 action_index: int) -> tuple[dict, dict]:
     """Validate/clamp `delta` against `stat_schema` and apply to a copy of
@@ -283,8 +316,12 @@ def apply_delta(world_state: dict, stat_schema: dict, delta: dict,
                 report["rejected"].append({"path": path, "reason": "unknown stat"})
                 continue
             container = ws.setdefault(parts[0], {})
-            _apply_stat(container, parts[1], stat_def, change, path,
-                        action_index, meta, report)
+            if stat_def.get("type") == "text":
+                _apply_text_stat(container, parts[1], stat_def, change, path,
+                                 action_index, meta, report)
+            else:
+                _apply_stat(container, parts[1], stat_def, change, path,
+                            action_index, meta, report)
             continue
 
         # npc.<npcId>.<stat>  — each NPC has its own stat defs.
@@ -300,8 +337,12 @@ def apply_delta(world_state: dict, stat_schema: dict, delta: dict,
                 continue
             npc_state = ws.setdefault("npc", {})
             container = npc_state.setdefault(parts[1], _initials(stat_defs))
-            _apply_stat(container, parts[2], stat_def, change, path,
-                        action_index, meta, report)
+            if stat_def.get("type") == "text":
+                _apply_text_stat(container, parts[2], stat_def, change, path,
+                                 action_index, meta, report)
+            else:
+                _apply_stat(container, parts[2], stat_def, change, path,
+                            action_index, meta, report)
             continue
 
         report["rejected"].append({"path": path, "reason": "unknown path"})
@@ -317,6 +358,10 @@ def _stat_line(defs: dict, values: dict) -> str:
     parts = []
     for name, d in defs.items():
         if not isinstance(d, dict):
+            continue
+        if d.get("type") == "text":
+            val = values.get(name, d.get("initial", ""))
+            parts.append(f'{name} "{val}"' if val else f"{name} (unset)")
             continue
         val = values.get(name, d.get("initial", 0))
         hi = d.get("max")
@@ -386,6 +431,9 @@ def _describe_stat(name: str, d: dict) -> str | None:
         # Fragments are joined with "; " and end with a single ".", so drop any
         # trailing period the author already put on the description.
         bits.append(desc.strip().rstrip("."))
+    if d.get("type") == "text":
+        bits.append("free text")
+        return f"{name} — {'; '.join(bits)}." if bits else None
     lo, hi = d.get("min"), d.get("max")
     if isinstance(lo, (int, float)) and isinstance(hi, (int, float)):
         bits.append(f"range {lo}–{hi}")

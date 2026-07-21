@@ -21,6 +21,10 @@
         "desc": "Magical energy for spells; spent casting, restored by resting.",
         "min": 0, "max": 50, "initial": 30, "max_delta_per_turn": 25,
         "bands": [[0, 10, "drained"], [10, 30, "steady"], [30, 51, "brimming"]]
+      },
+      "outfit": {
+        "type": "text", "initial": "worn leather armor, travel-stained",
+        "desc": "What the player is currently wearing/carrying visibly; update it when gear is gained, lost, or changed."
       }
     },
     "flags": {

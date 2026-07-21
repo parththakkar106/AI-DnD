@@ -12,6 +12,7 @@ SCHEMA = {
                "bands": [[0, 20, "very weak"], [20, 40, "hurt"],
                          [40, 60, "minor damage"], [60, 90, "healthy"],
                          [90, 100, "full health"]]},
+        "outfit": {"type": "text", "initial": "traveling clothes", "desc": "What the player is wearing"},
     },
     "npcs": {
         "gwen": {
@@ -40,10 +41,27 @@ def fresh():
 def test_instantiate_uses_initials():
     ws = fresh()
     assert ws["world"] == {"day": 1}
-    assert ws["player"] == {"hp": 100}
+    assert ws["player"] == {"hp": 100, "outfit": "traveling clothes"}
     # Each defined NPC is instantiated up front with its own stats.
     assert ws["npc"] == {"gwen": {"trust": 0}, "drake": {"ferocity": 50}}
     assert ws["milestones"] == {}
+
+
+def test_text_stat_replaces_value():
+    ws, report = w.apply_delta(fresh(), SCHEMA, {"player.outfit": "muddy cloak"}, 1)
+    assert ws["player"]["outfit"] == "muddy cloak"
+    assert report["applied"][0] == {"path": "player.outfit", "old": "traveling clothes", "new": "muddy cloak"}
+
+
+def test_text_stat_rejects_non_string():
+    ws, report = w.apply_delta(fresh(), SCHEMA, {"player.outfit": 5}, 1)
+    assert ws["player"]["outfit"] == "traveling clothes"
+    assert report["rejected"][0]["reason"] == "not a string"
+
+
+def test_text_stat_noop_when_unchanged():
+    ws, report = w.apply_delta(fresh(), SCHEMA, {"player.outfit": "traveling clothes"}, 1)
+    assert report["applied"] == []
 
 
 def test_per_npc_distinct_stats():

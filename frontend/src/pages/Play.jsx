@@ -497,6 +497,17 @@ function bandLabel(def, value) {
 }
 
 function StatRow({ name, def, value }) {
+  if (def?.type === 'text') {
+    const text = typeof value === 'string' ? value : (def?.initial ?? '')
+    return (
+      <div className="ws-stat">
+        <div className="ws-stat-head">
+          <span className="ws-stat-name" title={def?.desc || undefined}>{name}</span>
+          <span className="ws-stat-val">{text || '(unset)'}</span>
+        </div>
+      </div>
+    )
+  }
   const val = typeof value === 'number' ? value : (def?.initial ?? 0)
   const { min, max } = def || {}
   const hasRange = typeof min === 'number' && typeof max === 'number' && max > min
