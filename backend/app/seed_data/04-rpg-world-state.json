@@ -4,7 +4,7 @@
   "prompt": "Dawn breaks grey over the treeline as you and Gwen crouch at the edge of the bandit camp. Smoke curls from a dying fire; three bedrolls lie empty. Somewhere ahead, the stolen caravan strongbox waits.\n\nGwen checks her bowstring and looks to you. \"Quiet, or loud?\"",
   "memory": "The player and Gwen, a loyal ranger ally, are raiding a bandit camp to recover a stolen strongbox. The player is a capable adventurer. This is a dangerous but winnable encounter.",
   "authors_note": "Keep it tense and consequential. Reckless moves should cost health; clever ones should pay off. Gwen reacts to how the player treats her.",
-  "ai_instructions": "Write in second person, present tense. End each reply where the player can act. Let the world state guide the fiction — if the player is badly hurt, show it. In any fight, reflect the outcome in the numbers every turn: reduce the health of whoever is struck, raise the bandit leader's aggression as he is pressed, and adjust Gwen's trust based on how the player treats her.",
+  "ai_instructions": "Write in second person, present tense. End each reply where the player can act. Let the world state guide the fiction — if the player is badly hurt, show it. Reflect what happens in the numbers each turn: change health when someone is hurt or healed, shift Gwen's trust based on how the player treats her, move the leader's aggression as the situation escalates or calms, and mark milestones as they are reached.",
   "tags": "demo, rpg, world-state, combat, short",
   "stat_schema": {
     "world": {

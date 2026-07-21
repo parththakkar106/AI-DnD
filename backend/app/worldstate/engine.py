@@ -20,17 +20,18 @@ STAT_SECTIONS = ("world", "player")
 # Appended once to the system prompt so the model knows how to report changes.
 EMIT_RULE = (
     "You maintain a numeric world state. Treat your own narration as authoritative: "
-    "whenever what you write implies a change — someone takes damage or heals, time "
-    "passes, an emotion or relationship shifts, a fight intensifies, an item is gained "
-    "or lost, or an objective is completed — you MUST record it, including the numbers, "
-    "not just on/off flags. After your narration, append a fenced code block labelled "
-    "`state` with a JSON object of the CHANGES ONLY, as deltas (not new totals). Update "
-    "every stat the scene affected this turn, not only the easy ones. Use the paths "
-    'exactly as shown in the world state: "player.hp", "world.day", "npc.<id>.<stat>" '
-    '(e.g. npc.gwen.trust — use the id in parentheses, not the display name); '
-    '"flags.<name>": true or false to toggle an on/off state; and "milestones.<id>": '
-    "true when an objective is completed. Send only things that actually changed and "
-    "never restate unchanged values; if truly nothing changed, omit the block. Example:\n"
+    "whenever what you write implies a change to any tracked value — health or resources "
+    "going up or down, time passing, a relationship or mood shifting, a status turning on "
+    "or off, progress toward a goal, an item or piece of information gained or lost — you "
+    "MUST record it, including the numbers, not just on/off flags. After your narration, "
+    "append a fenced code block labelled `state` with a JSON object of the CHANGES ONLY, "
+    "as deltas (not new totals). Update every value the scene affected this turn, not only "
+    'the obvious ones. Use the paths exactly as shown in the world state: "player.<stat>", '
+    '"world.<stat>", "npc.<id>.<stat>" (use the id in parentheses, e.g. npc.gwen.trust, '
+    'not the display name); "flags.<name>": true or false to toggle an on/off state; and '
+    '"milestones.<id>": true when an objective is completed. Send only things that actually '
+    "changed and never restate unchanged values; if truly nothing changed, omit the block. "
+    "Example:\n"
     '```state\n{"player.hp": -15, "npc.gwen.trust": 5, "milestones.escaped": true}\n```'
 )
 
