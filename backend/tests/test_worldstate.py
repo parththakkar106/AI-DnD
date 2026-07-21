@@ -149,6 +149,57 @@ def test_flag_rejects_non_bool_and_unknown():
     assert ws["flags"]["has_key"] is False
 
 
+def test_override_sets_absolute_value_bypassing_cap():
+    # A manual override isn't policed by max_delta_per_turn like a turn is —
+    # it sets the value directly (still clamped to min/max).
+    ws, report = w.apply_override(fresh(), SCHEMA, {"player.hp": 10})
+    assert ws["player"]["hp"] == 10
+    assert report["applied"] == [{"path": "player.hp", "old": 100, "new": 10}]
+    ws, report = w.apply_override(ws, SCHEMA, {"player.hp": 999})
+    assert ws["player"]["hp"] == 100  # still clamps to max
+
+
+def test_override_bypasses_cooldown_and_counter_rule():
+    ws, _ = w.apply_override(fresh(), SCHEMA, {"npc.gwen.trust": 10})
+    # a second override immediately after would be blocked by cooldown under
+    # apply_delta, but override ignores cooldown entirely.
+    ws, report = w.apply_override(ws, SCHEMA, {"npc.gwen.trust": -5})
+    assert ws["npc"]["gwen"]["trust"] == -5
+    assert report["applied"]
+    # counters can be set down directly too (a correction, not a turn).
+    ws, report = w.apply_override(ws, SCHEMA, {"world.day": 1})
+    assert ws["world"]["day"] == 1
+    assert report["applied"]
+
+
+def test_override_text_stat_replaces():
+    ws, report = w.apply_override(fresh(), SCHEMA, {"player.outfit": "knight's plate"})
+    assert ws["player"]["outfit"] == "knight's plate"
+    assert report["applied"]
+
+
+def test_override_milestone_toggles_both_ways():
+    ws, _ = w.apply_override(fresh(), SCHEMA, {"milestones.rescue_gwen": True})
+    assert ws["milestones"]["rescue_gwen"]["reached"] is True
+    # unlike apply_delta, override can un-set a milestone.
+    ws, report = w.apply_override(ws, SCHEMA, {"milestones.rescue_gwen": False})
+    assert "rescue_gwen" not in ws["milestones"]
+    assert report["applied"]
+
+
+def test_override_rejects_unknown_and_bad_type():
+    ws, report = w.apply_override(fresh(), SCHEMA, {
+        "player.hp": "not a number",
+        "npc.bogus.trust": 5,
+        "flags.nope": True,
+    })
+    reasons = {r["path"]: r["reason"] for r in report["rejected"]}
+    assert reasons["player.hp"] == "not a number"
+    assert reasons["npc.bogus.trust"] == "unknown npc"
+    assert reasons["flags.nope"] == "unknown flag"
+    assert ws["player"]["hp"] == 100  # untouched
+
+
 def test_reference_includes_desc_and_bands_independently():
     guide = w.render_reference(SCHEMA)
     # hp has both a description and a band ladder.

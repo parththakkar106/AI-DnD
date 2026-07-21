@@ -4,6 +4,7 @@ module validates and clamps them against a scenario's stat_schema."""
 from .engine import (
     EMIT_RULE,
     apply_delta,
+    apply_override,
     band_label,
     extract_delta,
     has_schema,
@@ -17,6 +18,7 @@ from .engine import (
 __all__ = [
     "EMIT_RULE",
     "apply_delta",
+    "apply_override",
     "band_label",
     "extract_delta",
     "has_schema",

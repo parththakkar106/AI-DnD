@@ -645,6 +645,16 @@ button:disabled { opacity: 0.45; cursor: default; transform: none; box-shadow: n
 .ws-flag-dot.on { background: var(--accent); border-color: var(--accent); }
 .ws-flag-name { flex: 1; }
 .ws-flag-val { color: var(--text-dim); font-size: 0.8rem; }
+.ws-flag-edit { display: flex; align-items: center; gap: 8px; cursor: pointer; width: 100%; }
+
+.ws-edit-actions { display: flex; gap: 6px; }
+.ws-edit-input {
+  width: 100%;
+  margin-top: 3px;
+  padding: 4px 7px;
+  font-size: 0.82rem;
+  border-radius: 6px;
+}
 
 .schema-editor {
   width: 100%;
@@ -783,6 +793,7 @@ button:disabled { opacity: 0.45; cursor: default; transform: none; box-shadow: n
 .se-num span { font-size: 0.7rem; color: var(--text-dim); }
 .se-num input, .se-num select { width: 72px; padding: 3px 6px; font-size: 0.82rem; border-radius: 6px; }
 .se-kind select { width: 118px; }
+.se-initial-text input { width: 220px; }
 .se-check {
   display: flex; align-items: center; gap: 5px;
   font-size: 0.8rem; color: var(--text-dim);

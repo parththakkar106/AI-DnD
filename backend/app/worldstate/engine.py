@@ -255,6 +255,120 @@ def _apply_text_stat(container: dict, key: str, stat_def: dict, change,
     report["applied"].append({"path": path, "old": old, "new": new})
 
 
+def apply_override(world_state: dict, stat_schema: dict, overrides: dict) -> tuple[dict, dict]:
+    """Directly set live values — a manual author/admin edit, not an AI turn.
+
+    Unlike `apply_delta`: numeric stats are SET rather than added to, and
+    `cooldown`/`max_delta_per_turn`/the counter-can't-decrease rule are all
+    ignored (a deliberate correction, not an AI move to police). Milestones
+    can be toggled either way, not only marked reached. Values are still
+    validated against the schema (unknown path/type is rejected) and numeric
+    values still clamp to min/max."""
+    ws = copy.deepcopy(world_state) if isinstance(world_state, dict) else {}
+    if not ws:
+        ws = instantiate(stat_schema)
+    report: dict = {"applied": [], "rejected": []}
+
+    if not isinstance(overrides, dict):
+        return ws, report
+
+    milestones = stat_schema.get("milestones") or {}
+    flag_defs = stat_schema.get("flags") or {}
+    npcs = stat_schema.get("npcs") or {}
+
+    def set_stat(container: dict, key: str, stat_def: dict, value, path: str) -> None:
+        if stat_def.get("type") == "text":
+            if not isinstance(value, str):
+                report["rejected"].append({"path": path, "reason": "not a string"})
+                return
+            new = value.strip()
+            max_len = stat_def.get("max_length")
+            if isinstance(max_len, int) and max_len > 0 and len(new) > max_len:
+                new = new[:max_len]
+            old = container.get(key, stat_def.get("initial", ""))
+            container[key] = new
+            report["applied"].append({"path": path, "old": old, "new": new})
+            return
+
+        num = _coerce_number(value)
+        if num is None:
+            report["rejected"].append({"path": path, "reason": "not a number"})
+            return
+        old = container.get(key, stat_def.get("initial", 0))
+        lo, hi = stat_def.get("min"), stat_def.get("max")
+        if lo is not None and num < lo:
+            num = lo
+        if hi is not None and num > hi:
+            num = hi
+        if isinstance(old, int) and float(num).is_integer():
+            num = int(num)
+        container[key] = num
+        report["applied"].append({"path": path, "old": old, "new": num})
+
+    for raw_path, value in overrides.items():
+        path = str(raw_path)
+        parts = path.split(".")
+
+        if parts[0] == "flags" and len(parts) == 2:
+            fid = parts[1]
+            if fid not in flag_defs:
+                report["rejected"].append({"path": path, "reason": "unknown flag"})
+                continue
+            if not isinstance(value, bool):
+                report["rejected"].append({"path": path, "reason": "not a boolean"})
+                continue
+            flags = ws.setdefault("flags", {})
+            old = bool(flags.get(fid, False))
+            flags[fid] = value
+            report["applied"].append({"path": path, "old": old, "new": value})
+            continue
+
+        if parts[0] == "milestones" and len(parts) == 2:
+            mid = parts[1]
+            if mid not in milestones:
+                report["rejected"].append({"path": path, "reason": "unknown milestone"})
+                continue
+            if not isinstance(value, bool):
+                report["rejected"].append({"path": path, "reason": "not a boolean"})
+                continue
+            reached = ws.setdefault("milestones", {})
+            old = bool(reached.get(mid, {}).get("reached"))
+            if value:
+                reached[mid] = {"reached": True}
+            else:
+                reached.pop(mid, None)
+            report["applied"].append({"path": path, "old": old, "new": value})
+            continue
+
+        if parts[0] in STAT_SECTIONS and len(parts) == 2:
+            stat_def = (stat_schema.get(parts[0]) or {}).get(parts[1])
+            if not isinstance(stat_def, dict):
+                report["rejected"].append({"path": path, "reason": "unknown stat"})
+                continue
+            container = ws.setdefault(parts[0], {})
+            set_stat(container, parts[1], stat_def, value, path)
+            continue
+
+        if parts[0] == "npc" and len(parts) == 3:
+            ndef = npcs.get(parts[1])
+            if not isinstance(ndef, dict):
+                report["rejected"].append({"path": path, "reason": "unknown npc"})
+                continue
+            stat_defs = ndef.get("stats") or {}
+            stat_def = stat_defs.get(parts[2])
+            if not isinstance(stat_def, dict):
+                report["rejected"].append({"path": path, "reason": "unknown npc stat"})
+                continue
+            npc_state = ws.setdefault("npc", {})
+            container = npc_state.setdefault(parts[1], _initials(stat_defs))
+            set_stat(container, parts[2], stat_def, value, path)
+            continue
+
+        report["rejected"].append({"path": path, "reason": "unknown path"})
+
+    return ws, report
+
+
 def apply_delta(world_state: dict, stat_schema: dict, delta: dict,
                 action_index: int) -> tuple[dict, dict]:
     """Validate/clamp `delta` against `stat_schema` and apply to a copy of

@@ -163,6 +163,22 @@ def test_world_state_endpoint(client):
     assert body["state"]["player"]["hp"] == 70
 
 
+def test_override_world_state_endpoint(client):
+    r = client.put(f"/api/adventures/{client.adv_id}/world-state",
+                    json={"player.hp": 5, "flags.alarm": True, "npc.bogus.trust": 1})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["state"]["player"]["hp"] == 5
+    assert body["state"]["flags"]["alarm"] is True
+    assert body["report"]["rejected"][0]["reason"] == "unknown npc"
+    # persisted to the DB, not just the response.
+    assert _world(client.adv_id)["player"]["hp"] == 5
+
+    # bypasses max_delta_per_turn (30) — a direct correction, not a turn.
+    r = client.put(f"/api/adventures/{client.adv_id}/world-state", json={"player.hp": 100})
+    assert r.json()["state"]["player"]["hp"] == 100
+
+
 def test_undo_reverts_world_state(client):
     _play(client)
     assert _world(client.adv_id)["player"]["hp"] == 70

@@ -72,7 +72,7 @@ function StatEditor({ statKey, def, onRenameKey, onChange, onRemove }) {
       </div>
       <div className="se-fields">
         {isText ? (
-          <label className="se-num">
+          <label className="se-num se-initial-text">
             <span>initial</span>
             <input type="text" value={def.initial ?? ''}
               onChange={(e) => set('initial', e.target.value)} />

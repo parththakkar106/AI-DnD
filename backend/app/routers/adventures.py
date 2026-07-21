@@ -190,6 +190,28 @@ def get_world_state(
     }
 
 
+@router.put("/{adventure_id}/world-state")
+def override_world_state(
+    adventure_id: int,
+    overrides: dict = Body(...),
+    db: Session = Depends(get_db),
+    user: models.User = CurrentUser,
+):
+    """Directly edit the live RPG values (a manual correction, not a turn).
+    `overrides` maps paths (e.g. "player.hp", "npc.gwen.trust", "flags.x",
+    "milestones.y") to their new absolute value. Unknown paths/wrong types are
+    rejected individually; the rest still apply."""
+    adventure = get_adventure_or_404(adventure_id, db, user)
+    schema = adventure.scenario.stat_schema if adventure.scenario else None
+    if not worldstate.has_schema(schema):
+        raise HTTPException(400, "This adventure has no RPG world-state layer")
+    state = adventure.world_state if isinstance(adventure.world_state, dict) else {}
+    new_state, report = worldstate.apply_override(state, schema, overrides)
+    adventure.world_state = new_state
+    db.commit()
+    return {"state": new_state, "report": report}
+
+
 def snapshot_state(adventure: models.Adventure) -> dict:
     """Deep copy of the shared script_state, to staple onto an action so undo/
     retry can restore it. Independent of later hook mutations."""
