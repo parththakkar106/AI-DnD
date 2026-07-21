@@ -16,18 +16,18 @@ import re
 
 # stat_schema top-level sections that hold stat definitions.
 STAT_SECTIONS = ("world", "player")
-DEFAULT_NPC_TYPES = ("character", "npc")
 
 # Appended once to the system prompt so the model knows how to report changes.
 EMIT_RULE = (
     "After your narration, if and ONLY IF something in the world state changed this "
     "turn, append a fenced code block labelled `state` containing a JSON object of "
     "the CHANGES ONLY, as deltas (not new totals). Use paths like "
-    '"player.hp", "world.day", "npc.<id>.trust"; "flags.<name>": true or false to '
-    'toggle an on/off state; and "milestones.<id>": true when an objective is '
-    "completed. Send only things that actually changed; never restate unchanged "
-    "values. If nothing changed, omit the block entirely. Example:\n"
-    '```state\n{"player.hp": -15, "flags.has_key": true, "milestones.escaped": true}\n```'
+    '"player.hp", "world.day", "npc.<id>.<stat>" (use the exact npc id shown in the '
+    'world state, e.g. npc.gwen.trust); "flags.<name>": true or false to toggle an '
+    'on/off state; and "milestones.<id>": true when an objective is completed. Send '
+    "only things that actually changed; never restate unchanged values. If nothing "
+    "changed, omit the block entirely. Example:\n"
+    '```state\n{"player.hp": -15, "npc.gwen.trust": 5, "milestones.escaped": true}\n```'
 )
 
 # ```state { ... } ``` (also tolerates ```json or an unlabelled fence); DOTALL.
@@ -42,14 +42,20 @@ def has_schema(stat_schema: dict | None) -> bool:
         return False
     return any(
         isinstance(stat_schema.get(k), dict) and stat_schema[k]
-        for k in (*STAT_SECTIONS, "npc", "milestones", "flags")
+        for k in (*STAT_SECTIONS, "npcs", "milestones", "flags")
     )
 
 
-def npc_types(stat_schema: dict) -> set[str]:
-    raw = stat_schema.get("npc_card_types")
-    types = raw if isinstance(raw, list) and raw else DEFAULT_NPC_TYPES
-    return {str(t).lower() for t in types}
+def npc_name(ndef: dict, key: str) -> str:
+    name = ndef.get("name")
+    return name.strip() if isinstance(name, str) and name.strip() else key
+
+
+def npc_triggers(ndef: dict, key: str) -> list[str]:
+    """Lower-cased trigger words for detecting an NPC in scene: its `keys`
+    field, falling back to its display name."""
+    raw = ndef.get("keys") or npc_name(ndef, key)
+    return [k.strip().lower() for k in str(raw).split(",") if k.strip()]
 
 
 def _initials(defs: dict) -> dict:
@@ -67,7 +73,12 @@ def instantiate(stat_schema: dict | None) -> dict:
     ws: dict = {}
     for section in STAT_SECTIONS:
         ws[section] = _initials(stat_schema.get(section) or {})
-    ws["npc"] = {}          # per-card, filled lazily on first change
+    # Each defined NPC gets its own stat block from its own `stats` defs.
+    ws["npc"] = {
+        key: _initials(ndef.get("stats") or {})
+        for key, ndef in (stat_schema.get("npcs") or {}).items()
+        if isinstance(ndef, dict)
+    }
     ws["milestones"] = {}   # only reached ones are stored
     ws["flags"] = {
         name: bool(d.get("initial", False))
@@ -216,7 +227,7 @@ def apply_delta(world_state: dict, stat_schema: dict, delta: dict,
 
     milestones = stat_schema.get("milestones") or {}
     flag_defs = stat_schema.get("flags") or {}
-    npc_defs = stat_schema.get("npc") or {}
+    npcs = stat_schema.get("npcs") or {}
 
     for raw_path, change in delta.items():
         path = str(raw_path)
@@ -265,14 +276,19 @@ def apply_delta(world_state: dict, stat_schema: dict, delta: dict,
                         action_index, meta, report)
             continue
 
-        # npc.<cardId>.<stat>
+        # npc.<npcId>.<stat>  — each NPC has its own stat defs.
         if parts[0] == "npc" and len(parts) == 3:
-            stat_def = npc_defs.get(parts[2])
+            ndef = npcs.get(parts[1])
+            if not isinstance(ndef, dict):
+                report["rejected"].append({"path": path, "reason": "unknown npc"})
+                continue
+            stat_defs = ndef.get("stats") or {}
+            stat_def = stat_defs.get(parts[2])
             if not isinstance(stat_def, dict):
                 report["rejected"].append({"path": path, "reason": "unknown npc stat"})
                 continue
-            npcs = ws.setdefault("npc", {})
-            container = npcs.setdefault(parts[1], _initials(npc_defs))
+            npc_state = ws.setdefault("npc", {})
+            container = npc_state.setdefault(parts[1], _initials(stat_defs))
             _apply_stat(container, parts[2], stat_def, change, path,
                         action_index, meta, report)
             continue
@@ -316,13 +332,16 @@ def render_state_section(world_state: dict, stat_schema: dict,
     if player_line:
         lines.append(f"You: {player_line}.")
 
-    npc_defs = stat_schema.get("npc") or {}
+    npcs = stat_schema.get("npcs") or {}
     npc_state = ws.get("npc") or {}
-    for card_id, name in visible_npcs.items():
-        values = npc_state.get(card_id) or _initials(npc_defs)
-        npc_line = _stat_line(npc_defs, values)
+    for npc_key, name in visible_npcs.items():
+        ndef = npcs.get(npc_key) or {}
+        stat_defs = ndef.get("stats") or {}
+        values = npc_state.get(npc_key) or _initials(stat_defs)
+        npc_line = _stat_line(stat_defs, values)
         if npc_line:
-            lines.append(f"{name}: {npc_line}.")
+            # Show the id so the AI can address it as npc.<id>.<stat>.
+            lines.append(f"{name} (npc.{npc_key}): {npc_line}.")
 
     flag_defs = stat_schema.get("flags") or {}
     flag_state = ws.get("flags") or {}
@@ -380,11 +399,18 @@ def render_reference(stat_schema: dict) -> str:
                 row = _describe_stat(name, d)
                 if row:
                     lines.append(row)
-    for name, d in (stat_schema.get("npc") or {}).items():
-        if isinstance(d, dict):
-            row = _describe_stat(f"NPC {name}", d)
-            if row:
-                lines.append(row)
+    for npc_key, ndef in (stat_schema.get("npcs") or {}).items():
+        if not isinstance(ndef, dict):
+            continue
+        name = npc_name(ndef, npc_key)
+        desc = ndef.get("desc")
+        if isinstance(desc, str) and desc.strip():
+            lines.append(f"NPC {name} ({npc_key}) — {desc.strip().rstrip('.')}.")
+        for sname, sdef in (ndef.get("stats") or {}).items():
+            if isinstance(sdef, dict):
+                row = _describe_stat(f"{name} {sname}", sdef)
+                if row:
+                    lines.append(row)
     for name, d in (stat_schema.get("flags") or {}).items():
         if isinstance(d, dict):
             desc = d.get("desc")

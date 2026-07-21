@@ -8,7 +8,8 @@ from .engine import (
     extract_delta,
     has_schema,
     instantiate,
-    npc_types,
+    npc_name,
+    npc_triggers,
     render_reference,
     render_state_section,
 )
@@ -20,7 +21,8 @@ __all__ = [
     "extract_delta",
     "has_schema",
     "instantiate",
-    "npc_types",
+    "npc_name",
+    "npc_triggers",
     "render_reference",
     "render_state_section",
 ]

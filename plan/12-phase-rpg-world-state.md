@@ -18,10 +18,13 @@ deterministic dice engine. The AI proposes; Python is the referee.
 - **Band descriptions are the reliability trick.** Stats carry word ranges
   (`0–20: very weak`, `20–40: hurt`, …). The model reads "he's badly hurt" and adjusts
   down, instead of doing math it's bad at.
-- **NPCs = story cards.** No new NPC table. NPC stats live in the adventure's world
-  state keyed by story-card id; a card is treated as an NPC when its `type` is
-  character-ish (config below). Only NPCs **triggered this turn** get their stats
-  injected — reuses the existing card-trigger logic in `build_context`.
+- **Dedicated NPCs, each with its own stats.** NPCs are defined in a `npcs` section of
+  the schema, keyed by a stable id (`gwen`). Each has a `name`, `desc`, trigger `keys`,
+  and its **own** `stats` block (a dragon can have `ferocity`, a merchant `prices`) — no
+  forced shared template. On adventure creation each NPC auto-creates a story card (from
+  its name/keys/desc) so lore injection + in-scene detection keep working. Live values
+  live in `world_state["npc"]` keyed by the NPC id; only NPCs **in scene this turn** get
+  their stats injected into context. The AI addresses them as `npc.<id>.<stat>`.
 - **Schema on the scenario, live values on the adventure.** The scenario is the
   template (what stats exist, their bands + rules); the adventure holds current values.
 - **Milestones are sticky story flags.** Predefined objectives the AI marks reached via
@@ -65,10 +68,16 @@ Migration `(26, "ALTER TABLE scenarios ADD COLUMN stat_schema JSON")`.
               [40,60,"minor damage"],[60,90,"healthy"],[90,100,"full health"]] },
     "mana": { "min": 0, "max": 50, "initial": 20, "max_delta_per_turn": 15 }
   },
-  "npc": {                                   // template applied to each NPC card
-    "health": { "min": 0, "max": 100, "initial": 100, "bands": [...] },
-    "trust":  { "min": -100, "max": 100, "initial": 0, "max_delta_per_turn": 20,
-                "bands": [[-100,-30,"hostile"],[-30,30,"neutral"],[30,100,"ally"]] }
+  "npcs": {                                  // each NPC has its OWN stats
+    "gwen": {
+      "name": "Gwen", "keys": "Gwen, ranger, her",
+      "desc": "A loyal ranger and the player's ally.",
+      "stats": {
+        "health": { "min": 0, "max": 100, "initial": 100, "bands": [...] },
+        "trust":  { "min": -100, "max": 100, "initial": 20, "max_delta_per_turn": 20,
+                    "bands": [[-100,-30,"hostile"],[-30,30,"wary"],[30,100,"ally"]] }
+      }
+    }
   },
   "flags": {                                 // two-way on/off booleans
     "has_key": { "desc": "Player holds the dungeon key", "initial": false },
@@ -94,8 +103,10 @@ Milestones carry only `desc` (the objective text). They are boolean and sticky �
 engine accepts a delta of `true` only, records the action index reached, and ignores
 attempts to re-set or un-set (undo is the only way back).
 
-`npc_card_types` (scenario-level, defaults `["character","npc"]`): which story-card
-types get the NPC stat template.
+Each NPC in `npcs` carries `name`, `desc`, trigger `keys`, and its own `stats` block
+(same per-stat fields as above). All defined NPCs are instantiated up front; a story card
+is auto-created per NPC on adventure creation (skipped if a card with that name already
+exists) so descriptions inject as lore and in-scene detection works.
 
 ### Live values — `Adventure.world_state` (JSON, default `{}`)
 
@@ -105,14 +116,14 @@ Migration `(27, "ALTER TABLE adventures ADD COLUMN world_state JSON")`.
 {
   "world":  { "day": 3 },
   "player": { "hp": 55, "mana": 10 },
-  "npc":    { "12": { "health": 80, "trust": 20 } },   // keyed by story-card id
+  "npc":    { "gwen": { "health": 80, "trust": 20 } },   // keyed by NPC id
   "milestones": { "rescue_gwen": { "reached": true, "at": 7 } },
-  "_meta":  { "last_changed": { "player.hp": 7, "npc.12.trust": 6 } }  // action index
+  "_meta":  { "last_changed": { "player.hp": 7, "npc.gwen.trust": 6 } }  // action index
 }
 ```
 
-`_meta.last_changed` backs the `cooldown` rule. NPC entries are lazily created from
-the `npc` template the first time that card is triggered.
+`_meta.last_changed` backs the `cooldown` rule. NPC blocks are instantiated up front from
+each NPC's own `stats`.
 
 ### Undo/retry snapshot — `Action.world_state_before` (JSON, nullable)
 
@@ -155,7 +166,7 @@ Achieved: Rescued Gwen from the bandits.
   - end its reply with a fenced `state` block **only when something actually changed**;
   - **omit the block entirely** when nothing changed this turn (no empty `{}`);
   - include **only the stats that changed** as deltas — never restate unchanged stats,
-    never send full/absolute values, e.g. `{"player.hp": -15, "npc.12.trust": +5}`.
+    never send full/absolute values, e.g. `{"player.hp": -15, "npc.gwen.trust": +5}`.
   This keeps the emitted block tiny (saves output tokens on the free tier) and means the
   engine's clamp/cooldown logic only ever sees real changes.
 
@@ -167,7 +178,7 @@ New module `backend/app/worldstate/engine.py` (mirrors `scripting/` layout):
   block, tolerate missing/extra fences, trailing commas, `+N` numbers; return `{}` on
   parse failure (never break the turn — same philosophy as a broken script).
 - `apply_delta(adventure, delta, action_index) -> report` — for each `path: change`:
-  1. resolve `path` (`player.hp`, `world.day`, `npc.<cardId>.trust`,
+  1. resolve `path` (`player.hp`, `world.day`, `npc.<npcId>.trust`,
      `milestones.<id>`) against the schema; unknown paths ignored (logged).
   2. **milestone path** → accept only `true`, set `{reached: true, at: action_index}`,
      ignore if already reached; skip the numeric steps below.
@@ -241,8 +252,8 @@ adventure is completely unaffected.
   rule reduces but won't eliminate it. No post-narration consistency check in v1.
 - No dice / skill checks / combat resolution — this phase is stat tracking only. A
   deterministic resolver is a possible Phase 13.
-- NPC stats are keyed by story-card id; deleting a card orphans its `_meta`/`npc` entry
-  (harmless, ignored on read).
+- NPC stats are keyed by the schema NPC id; editing a scenario's `npcs` between play
+  sessions can orphan a live `npc` entry (harmless, ignored on read).
 - Cooldown/`max_delta_per_turn` are per-turn heuristics, not a full rules engine.
 
 ## Test checklist
@@ -251,7 +262,7 @@ adventure is completely unaffected.
 - `cooldown: 2` on a stat: two consecutive changes → second is rejected until 2 actions pass.
 - Counter (`day`): a negative delta is rejected; `+1` advances.
 - Milestone: `true` marks it reached with `at`; a second set is a no-op; `false` ignored.
-- NPC stat auto-instantiates from template on first trigger at `initial`.
+- Each NPC instantiates its own stats at `initial`; `npc.<id>.<stat>` resolves per-NPC.
 - Malformed / missing `state` block → turn still completes, delta `{}`, no crash.
 - A turn where nothing changes emits no `state` block (and an empty `{}` is a no-op).
 - Undo after a stat change restores the prior value; retry doesn't double-apply.

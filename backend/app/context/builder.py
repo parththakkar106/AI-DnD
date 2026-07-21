@@ -57,19 +57,16 @@ def _script_memory(adventure: models.Adventure) -> dict:
 
 
 def _visible_npcs(adventure: models.Adventure, stat_schema: dict) -> dict[str, str]:
-    """NPC story cards (by schema-configured type) whose keys appear in the
-    recent story — the ones "in scene", so only their stats get injected."""
+    """Defined NPCs whose trigger words appear in the recent story — the ones
+    "in scene", so only their stats get injected. Maps npc id -> display name."""
     actions = [a for a in adventure.actions if a.text.strip()]
     recent = SEPARATOR.join(a.text for a in actions[-6:]).lower()
-    types = worldstate.npc_types(stat_schema)
     visible: dict[str, str] = {}
-    for card in adventure.story_cards:
-        if (card.type or "").lower() not in types:
+    for npc_key, ndef in (stat_schema.get("npcs") or {}).items():
+        if not isinstance(ndef, dict):
             continue
-        for key in (k.strip().lower() for k in card.keys.split(",")):
-            if key and key in recent:
-                visible[str(card.id)] = card.name or f"NPC {card.id}"
-                break
+        if any(trigger in recent for trigger in worldstate.npc_triggers(ndef, npc_key)):
+            visible[npc_key] = worldstate.npc_name(ndef, npc_key)
     return visible
 
 

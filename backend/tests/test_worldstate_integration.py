@@ -25,17 +25,22 @@ from app.routers import adventures
 
 SCHEMA = {
     "player": {"hp": {"min": 0, "max": 100, "initial": 100, "max_delta_per_turn": 30}},
-    "npc": {"trust": {"min": -100, "max": 100, "initial": 0}},
+    "npcs": {
+        "gwen": {
+            "name": "Gwen", "keys": "Gwen",
+            "desc": "A loyal ranger ally.",
+            "stats": {"trust": {"min": -100, "max": 100, "initial": 0}},
+        },
+    },
     "flags": {"alarm": {"desc": "The enemy is alerted", "initial": False}},
     "milestones": {"win": {"desc": "Win the fight"}},
-    "npc_card_types": ["character"],
 }
 
 # The faked model narrates and appends a delta that exceeds the per-turn cap
 # (so we can see the engine clamp it), flips a flag, and completes a milestone.
 AI_REPLY = (
     "The goblin's blade bites deep and Gwen nods at your resolve.\n\n"
-    '```state\n{"player.hp": -80, "npc.9.trust": 15, "flags.alarm": true, "milestones.win": true}\n```'
+    '```state\n{"player.hp": -80, "npc.gwen.trust": 15, "flags.alarm": true, "milestones.win": true}\n```'
 )
 
 
@@ -64,11 +69,9 @@ def client(monkeypatch):
     )
     setup.add(adv)
     setup.flush()
+    # "Gwen" in the story text makes her NPC in-scene (matches the "gwen" npc's keys).
     setup.add(models.Action(adventure_id=adv.id, index=0, type="start",
                             text="You face a goblin. Gwen watches."))
-    # NPC story card so "Gwen" is in scene (matches npc.9 in the delta).
-    setup.add(models.StoryCard(adventure_id=adv.id, id=9, type="character",
-                               name="Gwen", keys="Gwen", entry="A loyal ranger."))
     setup.commit()
     adv_id, user_id = adv.id, user.id
     setup.close()
@@ -121,7 +124,7 @@ def test_turn_applies_clamped_delta_and_strips_block(client):
     _play(client)
     ws = _world(client.adv_id)
     assert ws["player"]["hp"] == 70          # -80 capped to -30
-    assert ws["npc"]["9"]["trust"] == 15
+    assert ws["npc"]["gwen"]["trust"] == 15
     assert ws["flags"]["alarm"] is True
     assert ws["milestones"]["win"]["reached"] is True
     # The state block is not shown to the player.

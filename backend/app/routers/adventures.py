@@ -98,6 +98,7 @@ def create_adventure(
     db.flush()
 
     if scenario:
+        existing_names = {(c.name or "").strip().lower() for c in scenario.story_cards}
         for card in scenario.story_cards:
             db.add(
                 models.StoryCard(
@@ -107,6 +108,24 @@ def create_adventure(
                     keys=fill_placeholders(card.keys, values),
                     entry=fill_placeholders(card.entry, values),
                     notes=card.notes,
+                )
+            )
+        # Phase 12: each defined NPC gets a story card (for its description as
+        # lore + in-scene triggering), unless a card with that name already exists.
+        for npc_key, ndef in (scenario.stat_schema or {}).get("npcs", {}).items():
+            if not isinstance(ndef, dict):
+                continue
+            name = worldstate.npc_name(ndef, npc_key)
+            if name.strip().lower() in existing_names:
+                continue
+            db.add(
+                models.StoryCard(
+                    adventure_id=adventure.id,
+                    type="character",
+                    name=name,
+                    keys=fill_placeholders(str(ndef.get("keys") or name), values),
+                    entry=fill_placeholders(str(ndef.get("desc") or ""), values),
+                    notes="",
                 )
             )
         for position, script in enumerate(scenario.scripts):

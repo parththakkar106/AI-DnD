@@ -7,7 +7,6 @@
   "ai_instructions": "Write in second person, present tense. End each reply where the player can act. Let the world state guide the fiction — if the player is badly hurt, show it.",
   "tags": "demo, rpg, world-state, combat, short",
   "stat_schema": {
-    "npc_card_types": ["character"],
     "world": {
       "day": { "type": "counter", "min": 1, "initial": 1, "desc": "Which in-game day it is; only ever counts up." }
     },
@@ -28,18 +27,43 @@
       "alarm_raised": { "desc": "True once the bandits know they're under attack; stealth is blown.", "initial": false },
       "player_hidden": { "desc": "True while the player is out of sight in cover.", "initial": true }
     },
-    "npc": {
-      "health": {
-        "desc": "This companion's physical health.",
-        "min": 0, "max": 100, "initial": 100, "max_delta_per_turn": 35,
-        "bands": [[0, 1, "dead"], [1, 25, "gravely wounded"], [25, 50, "hurt"],
-                  [50, 80, "scratched"], [80, 101, "healthy"]]
+    "npcs": {
+      "gwen": {
+        "name": "Gwen",
+        "keys": "Gwen, ranger, her",
+        "desc": "A loyal ranger and the player's ally. Quick with a bow, dry-humoured, fiercely protective. Her trust rises when the player fights smart and watches her back, and falls when they are reckless with her life.",
+        "stats": {
+          "health": {
+            "desc": "Gwen's physical health.",
+            "min": 0, "max": 100, "initial": 100, "max_delta_per_turn": 35,
+            "bands": [[0, 1, "dead"], [1, 25, "gravely wounded"], [25, 50, "hurt"],
+                      [50, 80, "scratched"], [80, 101, "healthy"]]
+          },
+          "trust": {
+            "desc": "How much Gwen trusts the player; rises with smart, loyal play and falls with recklessness.",
+            "min": -100, "max": 100, "initial": 20, "max_delta_per_turn": 20,
+            "bands": [[-100, -30, "hostile"], [-30, 30, "wary"], [30, 70, "friendly"],
+                      [70, 101, "devoted"]]
+          }
+        }
       },
-      "trust": {
-        "desc": "How much this companion trusts the player; rises with smart, loyal play and falls with recklessness.",
-        "min": -100, "max": 100, "initial": 20, "max_delta_per_turn": 20,
-        "bands": [[-100, -30, "hostile"], [-30, 30, "wary"], [30, 70, "friendly"],
-                  [70, 101, "devoted"]]
+      "bandit_leader": {
+        "name": "Bandit Leader",
+        "keys": "leader, chief, boss, scarred",
+        "desc": "The scarred leader of the bandit camp, guarding the strongbox. Fights harder the more cornered he becomes.",
+        "stats": {
+          "health": {
+            "desc": "The leader's physical health.",
+            "min": 0, "max": 120, "initial": 120, "max_delta_per_turn": 40,
+            "bands": [[0, 1, "dead"], [1, 30, "near death"], [30, 70, "bloodied"],
+                      [70, 121, "unhurt"]]
+          },
+          "aggression": {
+            "desc": "How aggressively the leader fights; climbs as the fight turns against him.",
+            "min": 0, "max": 100, "initial": 40, "max_delta_per_turn": 25,
+            "bands": [[0, 30, "cautious"], [30, 70, "fierce"], [70, 101, "berserk"]]
+          }
+        }
       }
     },
     "milestones": {
@@ -49,13 +73,6 @@
     }
   },
   "story_cards": [
-    {
-      "type": "character",
-      "name": "Gwen",
-      "keys": "Gwen, ranger, her",
-      "entry": "Gwen is a loyal ranger and the player's ally. Quick with a bow, dry-humoured, fiercely protective. Her trust in the player rises when they fight smart and watch her back, and falls when they are reckless with her life.",
-      "notes": ""
-    },
     {
       "type": "location",
       "name": "Bandit Camp",

@@ -195,10 +195,11 @@ export default function ScenarioEditor() {
         <h2 style={{ margin: 0, fontFamily: 'Georgia, serif', fontSize: '1.2rem' }}>World State (RPG)</h2>
       </div>
       <p className="dim" style={{ margin: '0 0 10px', fontSize: '0.85rem' }}>
-        Optional. Define stats (with bands and rules) and milestones as a JSON object,
-        and the AI will track them each turn — HP, mana, an NPC’s trust, quest objectives.
-        Leave blank for a plain narrative scenario. NPC stats apply to story cards of the
-        configured <code>npc_card_types</code>.
+        Optional. Define stats (with bands and rules), NPCs, flags, and milestones as a
+        JSON object, and the AI will track them each turn — HP, mana, an NPC’s trust,
+        quest objectives. Each NPC in <code>npcs</code> has its own <code>name</code>,
+        <code>desc</code>, trigger <code>keys</code>, and <code>stats</code>; a story card
+        is created for it automatically. Leave blank for a plain narrative scenario.
       </p>
       <textarea
         className="schema-editor"
@@ -206,7 +207,7 @@ export default function ScenarioEditor() {
         onChange={(e) => setSchema(e.target.value)}
         rows={12}
         spellCheck={false}
-        placeholder={'{\n  "player": { "hp": { "min": 0, "max": 100, "initial": 100 } },\n  "milestones": { "goal": { "desc": "..." } }\n}'}
+        placeholder={'{\n  "player": { "hp": { "min": 0, "max": 100, "initial": 100 } },\n  "npcs": {\n    "gwen": { "name": "Gwen", "keys": "Gwen, ranger", "desc": "...",\n      "stats": { "trust": { "min": -100, "max": 100, "initial": 20 } } }\n  },\n  "flags": { "has_key": { "desc": "...", "initial": false } },\n  "milestones": { "goal": { "desc": "..." } }\n}'}
       />
       {schemaError && <div className="schema-error">⚠ {schemaError}</div>}
 

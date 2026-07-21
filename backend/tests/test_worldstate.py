@@ -13,7 +13,18 @@ SCHEMA = {
                          [40, 60, "minor damage"], [60, 90, "healthy"],
                          [90, 100, "full health"]]},
     },
-    "npc": {"trust": {"min": -100, "max": 100, "initial": 0, "cooldown": 2}},
+    "npcs": {
+        "gwen": {
+            "name": "Gwen",
+            "keys": "Gwen, ranger",
+            "desc": "A loyal ranger",
+            "stats": {"trust": {"min": -100, "max": 100, "initial": 0, "cooldown": 2}},
+        },
+        "drake": {
+            "name": "The Drake",
+            "stats": {"ferocity": {"min": 0, "max": 100, "initial": 50}},
+        },
+    },
     "flags": {
         "has_key": {"desc": "Holds the key", "initial": False},
         "disguised": {"desc": "In disguise"},
@@ -30,7 +41,18 @@ def test_instantiate_uses_initials():
     ws = fresh()
     assert ws["world"] == {"day": 1}
     assert ws["player"] == {"hp": 100}
-    assert ws["npc"] == {} and ws["milestones"] == {}
+    # Each defined NPC is instantiated up front with its own stats.
+    assert ws["npc"] == {"gwen": {"trust": 0}, "drake": {"ferocity": 50}}
+    assert ws["milestones"] == {}
+
+
+def test_per_npc_distinct_stats():
+    ws, _ = w.apply_delta(fresh(), SCHEMA, {"npc.drake.ferocity": 20}, 1)
+    assert ws["npc"]["drake"]["ferocity"] == 70
+    # gwen has no "ferocity" stat, drake has no "trust" — cross paths are rejected.
+    ws, report = w.apply_delta(ws, SCHEMA, {"npc.gwen.ferocity": 5, "npc.bogus.trust": 5}, 2)
+    reasons = {r["reason"] for r in report["rejected"]}
+    assert reasons == {"unknown npc stat", "unknown npc"}
 
 
 def test_has_schema():
@@ -63,16 +85,16 @@ def test_counter_rejects_negative():
     assert ws["world"]["day"] == 2
 
 
-def test_npc_lazy_init_and_cooldown():
-    ws, _ = w.apply_delta(fresh(), SCHEMA, {"npc.12.trust": 10}, 7)
-    assert ws["npc"]["12"]["trust"] == 10  # instantiated from template + applied
+def test_npc_cooldown():
+    ws, _ = w.apply_delta(fresh(), SCHEMA, {"npc.gwen.trust": 10}, 7)
+    assert ws["npc"]["gwen"]["trust"] == 10
     # cooldown 2: another change at index 8 is too soon.
-    ws, report = w.apply_delta(ws, SCHEMA, {"npc.12.trust": 10}, 8)
-    assert ws["npc"]["12"]["trust"] == 10
+    ws, report = w.apply_delta(ws, SCHEMA, {"npc.gwen.trust": 10}, 8)
+    assert ws["npc"]["gwen"]["trust"] == 10
     assert report["rejected"][0]["reason"] == "cooldown"
     # far enough later, it applies.
-    ws, _ = w.apply_delta(ws, SCHEMA, {"npc.12.trust": 10}, 10)
-    assert ws["npc"]["12"]["trust"] == 20
+    ws, _ = w.apply_delta(ws, SCHEMA, {"npc.gwen.trust": 10}, 10)
+    assert ws["npc"]["gwen"]["trust"] == 20
 
 
 def test_milestone_sticky():
@@ -115,6 +137,9 @@ def test_reference_includes_desc_and_bands_independently():
     assert "very weak" in guide and "range 0–100" in guide
     # day (a counter here has no desc/bands) contributes nothing; flags show desc.
     assert "has_key (flag) — Holds the key." in guide
+    # NPCs contribute their own description and per-NPC stat lines.
+    assert "NPC Gwen (gwen) — A loyal ranger." in guide
+    assert "Gwen trust" in guide and "The Drake ferocity" in guide
 
 
 def test_unknown_paths_rejected_not_fatal():

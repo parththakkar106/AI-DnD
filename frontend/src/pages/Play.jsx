@@ -518,12 +518,12 @@ function StatRow({ name, def, value }) {
   )
 }
 
-function StatGroup({ title, defs, values }) {
+function StatGroup({ title, defs, values, desc }) {
   const entries = Object.entries(defs || {}).filter(([, d]) => d && typeof d === 'object')
   if (entries.length === 0) return null
   return (
     <div className="ws-group">
-      {title && <h3 className="ws-group-title">{title}</h3>}
+      {title && <h3 className="ws-group-title" title={desc || undefined}>{title}</h3>}
       {entries.map(([name, def]) => (
         <StatRow key={name} name={name} def={def} value={values?.[name]} />
       ))}
@@ -534,7 +534,7 @@ function StatGroup({ title, defs, values }) {
 // Collapsible left rail showing the RPG world state (Phase 12): world/player/NPC
 // stats with bands + bars, and a milestones checklist. Renders nothing unless
 // the adventure's scenario defines a stat_schema.
-function WorldStateDrawer({ advId, refreshKey, cards }) {
+function WorldStateDrawer({ advId, refreshKey }) {
   const [open, setOpen] = useState(false)
   const [data, setData] = useState(null) // { state, schema }
   const [failed, setFailed] = useState(false)
@@ -552,10 +552,8 @@ function WorldStateDrawer({ advId, refreshKey, cards }) {
   if (!schema) return null // no RPG layer for this adventure
 
   const state = data?.state || {}
-  const cardName = (id) =>
-    cards?.find((c) => String(c.id) === String(id))?.name || `NPC ${id}`
   const npcState = state.npc || {}
-  const npcIds = Object.keys(npcState)
+  const npcs = Object.entries(schema.npcs || {}) // [id, def] — each with its own stats
   const flags = Object.entries(schema.flags || {})
   const flagState = state.flags || {}
   const milestones = Object.entries(schema.milestones || {})
@@ -579,8 +577,9 @@ function WorldStateDrawer({ advId, refreshKey, cards }) {
             <>
               <StatGroup title={null} defs={schema.world} values={state.world} />
               <StatGroup title="You" defs={schema.player} values={state.player} />
-              {npcIds.map((id) => (
-                <StatGroup key={id} title={cardName(id)} defs={schema.npc} values={npcState[id]} />
+              {npcs.map(([id, def]) => (
+                <StatGroup key={id} title={def.name || id} desc={def.desc}
+                  defs={def.stats} values={npcState[id]} />
               ))}
               {flags.length > 0 && (
                 <div className="ws-group">
@@ -973,7 +972,7 @@ export default function Play() {
 
   return (
     <div className={`play-layout ${panel ? 'with-panel' : ''}`}>
-      <WorldStateDrawer advId={id} refreshKey={actions.length} cards={adventure.story_cards} />
+      <WorldStateDrawer advId={id} refreshKey={actions.length} />
       <StatusDrawer advId={id} refreshKey={actions.length} />
       <div className="page play-page">
         <div className="page-header">
