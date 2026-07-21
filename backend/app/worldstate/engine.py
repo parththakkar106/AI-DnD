@@ -19,14 +19,18 @@ STAT_SECTIONS = ("world", "player")
 
 # Appended once to the system prompt so the model knows how to report changes.
 EMIT_RULE = (
-    "After your narration, if and ONLY IF something in the world state changed this "
-    "turn, append a fenced code block labelled `state` containing a JSON object of "
-    "the CHANGES ONLY, as deltas (not new totals). Use paths like "
-    '"player.hp", "world.day", "npc.<id>.<stat>" (use the exact npc id shown in the '
-    'world state, e.g. npc.gwen.trust); "flags.<name>": true or false to toggle an '
-    'on/off state; and "milestones.<id>": true when an objective is completed. Send '
-    "only things that actually changed; never restate unchanged values. If nothing "
-    "changed, omit the block entirely. Example:\n"
+    "You maintain a numeric world state. Treat your own narration as authoritative: "
+    "whenever what you write implies a change — someone takes damage or heals, time "
+    "passes, an emotion or relationship shifts, a fight intensifies, an item is gained "
+    "or lost, or an objective is completed — you MUST record it, including the numbers, "
+    "not just on/off flags. After your narration, append a fenced code block labelled "
+    "`state` with a JSON object of the CHANGES ONLY, as deltas (not new totals). Update "
+    "every stat the scene affected this turn, not only the easy ones. Use the paths "
+    'exactly as shown in the world state: "player.hp", "world.day", "npc.<id>.<stat>" '
+    '(e.g. npc.gwen.trust — use the id in parentheses, not the display name); '
+    '"flags.<name>": true or false to toggle an on/off state; and "milestones.<id>": '
+    "true when an objective is completed. Send only things that actually changed and "
+    "never restate unchanged values; if truly nothing changed, omit the block. Example:\n"
     '```state\n{"player.hp": -15, "npc.gwen.trust": 5, "milestones.escaped": true}\n```'
 )
 
