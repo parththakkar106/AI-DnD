@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { api } from '../api'
 import { Field, StoryCardRow, downloadJSON, pickJSONFile } from '../components'
+import SchemaEditor from '../SchemaEditor'
 
 export default function ScenarioEditor() {
   const { id } = useParams()
@@ -12,6 +13,9 @@ export default function ScenarioEditor() {
   // Raw text buffer for the stat_schema JSON editor + a live parse error.
   const [schemaText, setSchemaText] = useState('')
   const [schemaError, setSchemaError] = useState('')
+  // Last successfully-parsed schema (drives the form editor + preview).
+  const [parsedSchema, setParsedSchema] = useState(null)
+  const [schemaView, setSchemaView] = useState('form') // 'form' | 'json'
   // One timer per field/card: a single shared timer would cancel the pending
   // save of whatever was edited previously within the debounce window.
   const saveTimers = useRef(new Map())
@@ -24,6 +28,7 @@ export default function ScenarioEditor() {
     api.getScenario(id).then((s) => {
       setScenario(s)
       setSchemaText(s.stat_schema ? JSON.stringify(s.stat_schema, null, 2) : '')
+      setParsedSchema(s.stat_schema || null)
     }).catch(() => navigate('/scenarios'))
     api.listScripts().then(setAllScripts).catch(() => {})
   }, [id, navigate])
@@ -46,6 +51,7 @@ export default function ScenarioEditor() {
     const trimmed = text.trim()
     if (!trimmed) {
       setSchemaError('')
+      setParsedSchema(null)
       debounceSave('stat_schema', () => saveSchema(null))
       return
     }
@@ -53,7 +59,7 @@ export default function ScenarioEditor() {
     try {
       parsed = JSON.parse(trimmed)
     } catch (err) {
-      setSchemaError(`Invalid JSON: ${err.message}`)
+      setSchemaError(`Invalid JSON: ${err.message}`)  // keep last-good preview
       return
     }
     if (typeof parsed !== 'object' || Array.isArray(parsed)) {
@@ -61,6 +67,7 @@ export default function ScenarioEditor() {
       return
     }
     setSchemaError('')
+    setParsedSchema(parsed)
     debounceSave('stat_schema', () => saveSchema(parsed))
   }
 
@@ -69,6 +76,16 @@ export default function ScenarioEditor() {
     setScenario((s) => ({ ...s, stat_schema: parsed }))
     setStatus('Saved')
     setTimeout(() => setStatus(''), 1500)
+  }
+
+  // Edits from the form editor: keep the JSON text in sync and save. An empty
+  // schema clears the RPG layer (null).
+  const applySchema = (next) => {
+    const cleaned = next && Object.keys(next).length ? next : null
+    setParsedSchema(cleaned)
+    setSchemaText(cleaned ? JSON.stringify(cleaned, null, 2) : '')
+    setSchemaError('')
+    debounceSave('stat_schema', () => saveSchema(cleaned))
   }
 
   const addCard = async () => {
@@ -193,23 +210,35 @@ export default function ScenarioEditor() {
 
       <div className="page-header" style={{ marginTop: 28 }}>
         <h2 style={{ margin: 0, fontFamily: 'Georgia, serif', fontSize: '1.2rem' }}>World State (RPG)</h2>
+        <div className="panel-toggles">
+          <button type="button" className={schemaView === 'form' ? 'active' : ''}
+            onClick={() => setSchemaView('form')}>Editor</button>
+          <button type="button" className={schemaView === 'json' ? 'active' : ''}
+            onClick={() => setSchemaView('json')}>JSON</button>
+        </div>
       </div>
       <p className="dim" style={{ margin: '0 0 10px', fontSize: '0.85rem' }}>
-        Optional. Define stats (with bands and rules), NPCs, flags, and milestones as a
-        JSON object, and the AI will track them each turn — HP, mana, an NPC’s trust,
-        quest objectives. Each NPC in <code>npcs</code> has its own <code>name</code>,
-        <code>desc</code>, trigger <code>keys</code>, and <code>stats</code>; a story card
-        is created for it automatically. Leave blank for a plain narrative scenario.
+        Optional. Define stats (with bands and rules), NPCs, flags, and milestones, and
+        the AI will track them each turn — HP, mana, an NPC’s trust, quest objectives.
+        Each NPC has its own name, trigger keys, description, and its own stats; a story
+        card is created for it automatically. Leave blank for a plain narrative scenario.
       </p>
-      <textarea
-        className="schema-editor"
-        value={schemaText}
-        onChange={(e) => setSchema(e.target.value)}
-        rows={12}
-        spellCheck={false}
-        placeholder={'{\n  "player": { "hp": { "min": 0, "max": 100, "initial": 100 } },\n  "npcs": {\n    "gwen": { "name": "Gwen", "keys": "Gwen, ranger", "desc": "...",\n      "stats": { "trust": { "min": -100, "max": 100, "initial": 20 } } }\n  },\n  "flags": { "has_key": { "desc": "...", "initial": false } },\n  "milestones": { "goal": { "desc": "..." } }\n}'}
-      />
-      {schemaError && <div className="schema-error">⚠ {schemaError}</div>}
+      {schemaView === 'form' ? (
+        <SchemaEditor schema={parsedSchema} onChange={applySchema} />
+      ) : (
+        <>
+          <textarea
+            className="schema-editor"
+            value={schemaText}
+            onChange={(e) => setSchema(e.target.value)}
+            rows={14}
+            spellCheck={false}
+            placeholder={'{\n  "player": { "hp": { "min": 0, "max": 100, "initial": 100 } },\n  "npcs": {\n    "gwen": { "name": "Gwen", "keys": "Gwen, ranger", "desc": "...",\n      "stats": { "trust": { "min": -100, "max": 100, "initial": 20 } } }\n  },\n  "flags": { "has_key": { "desc": "...", "initial": false } },\n  "milestones": { "goal": { "desc": "..." } }\n}'}
+          />
+          {schemaError && <div className="schema-error">⚠ {schemaError}</div>}
+          <SchemaPreview schema={parsedSchema} />
+        </>
+      )}
 
       <div className="page-header" style={{ marginTop: 28 }}>
         <h2 style={{ margin: 0, fontFamily: 'Georgia, serif', fontSize: '1.2rem' }}>Attached Scripts</h2>
@@ -232,6 +261,108 @@ export default function ScenarioEditor() {
         ))
       )}
       </fieldset>
+    </div>
+  )
+}
+
+// ---- Structured preview of a parsed stat_schema (read-only) ----
+
+function statMeta(def) {
+  const parts = []
+  if (def.initial !== undefined) parts.push(`start ${def.initial}`)
+  if (typeof def.min === 'number' && typeof def.max === 'number') parts.push(`${def.min}–${def.max}`)
+  if (def.type === 'counter') parts.push('counter')
+  if (typeof def.max_delta_per_turn === 'number') parts.push(`±${def.max_delta_per_turn}/turn`)
+  if (def.cooldown) parts.push(`cooldown ${def.cooldown}`)
+  return parts.join(' · ')
+}
+
+function StatDefRow({ name, def }) {
+  if (!def || typeof def !== 'object') return null
+  const bands = Array.isArray(def.bands)
+    ? def.bands.filter((b) => Array.isArray(b) && b.length === 3)
+        .map((b) => `${b[0]}–${b[1]} ${b[2]}`).join(', ')
+    : null
+  return (
+    <div className="schema-stat">
+      <div className="schema-stat-head">
+        <span className="schema-stat-name">{name}</span>
+        <span className="schema-stat-meta">{statMeta(def)}</span>
+      </div>
+      {def.desc && <div className="schema-desc">{def.desc}</div>}
+      {bands && <div className="schema-bands">bands: {bands}</div>}
+    </div>
+  )
+}
+
+function StatDefGroup({ title, defs }) {
+  const entries = Object.entries(defs || {}).filter(([, d]) => d && typeof d === 'object')
+  if (entries.length === 0) return null
+  return (
+    <div className="schema-group">
+      <div className="schema-group-title">{title}</div>
+      {entries.map(([n, d]) => <StatDefRow key={n} name={n} def={d} />)}
+    </div>
+  )
+}
+
+function SchemaPreview({ schema }) {
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return null
+  const world = schema.world || {}
+  const player = schema.player || {}
+  const npcs = schema.npcs || {}
+  const flags = schema.flags || {}
+  const milestones = schema.milestones || {}
+  const count = [world, player, npcs, flags, milestones]
+    .reduce((n, o) => n + Object.keys(o || {}).length, 0)
+  if (count === 0) return null
+
+  return (
+    <div className="schema-preview">
+      <div className="schema-preview-title">Parsed structure</div>
+      <StatDefGroup title="World" defs={world} />
+      <StatDefGroup title="Player" defs={player} />
+      {Object.entries(npcs).map(([npcId, npc]) => (
+        npc && typeof npc === 'object' ? (
+          <div key={npcId} className="schema-group">
+            <div className="schema-group-title">
+              {npc.name || npcId} <span className="schema-npc-id">npc.{npcId}</span>
+            </div>
+            {npc.keys && <div className="schema-desc">triggers: {npc.keys}</div>}
+            {npc.desc && <div className="schema-desc">{npc.desc}</div>}
+            {Object.entries(npc.stats || {}).map(([n, d]) => (
+              <StatDefRow key={n} name={n} def={d} />
+            ))}
+          </div>
+        ) : null
+      ))}
+      {Object.keys(flags).length > 0 && (
+        <div className="schema-group">
+          <div className="schema-group-title">Flags</div>
+          {Object.entries(flags).map(([fid, f]) => (
+            <div key={fid} className="schema-stat">
+              <div className="schema-stat-head">
+                <span className="schema-stat-name">{fid}</span>
+                <span className="schema-stat-meta">{f?.initial ? 'on by default' : 'off by default'}</span>
+              </div>
+              {f?.desc && <div className="schema-desc">{f.desc}</div>}
+            </div>
+          ))}
+        </div>
+      )}
+      {Object.keys(milestones).length > 0 && (
+        <div className="schema-group">
+          <div className="schema-group-title">Milestones</div>
+          {Object.entries(milestones).map(([mid, m]) => (
+            <div key={mid} className="schema-stat">
+              <div className="schema-stat-head">
+                <span className="schema-stat-name">{mid}</span>
+              </div>
+              {m?.desc && <div className="schema-desc">{m.desc}</div>}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
