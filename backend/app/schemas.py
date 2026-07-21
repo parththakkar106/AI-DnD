@@ -131,6 +131,8 @@ class ActionOut(ORMModel):
     type: str
     text: str
     reasoning: str | None = None
+    # Phase 12: compact RPG state changes for this turn (from the model property).
+    world_changes: list[dict] = []
     created_at: datetime
 
 

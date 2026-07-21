@@ -622,6 +622,28 @@ function WorldStateDrawer({ advId, refreshKey }) {
   )
 }
 
+// Compact chips shown under an AI message summarizing what state changed.
+function StateChangeChips({ changes }) {
+  if (!changes?.length) return null
+  const nice = (s) => String(s).replace(/_/g, ' ')
+  return (
+    <div className="turn-changes">
+      {changes.map((c, i) => {
+        if (c.kind === 'flag') {
+          return <span key={i} className="chg chg-flag">{nice(c.label)}: {c.on ? 'on' : 'off'}</span>
+        }
+        if (c.kind === 'milestone') {
+          return <span key={i} className="chg chg-ms">✓ {nice(c.label)}</span>
+        }
+        const d = c.delta
+        const dir = typeof d === 'number' ? (d > 0 ? 'up' : d < 0 ? 'down' : 'flat') : 'flat'
+        const txt = typeof d === 'number' ? (d > 0 ? `+${d}` : `${d}`) : `→ ${c.value}`
+        return <span key={i} className={`chg chg-stat chg-${dir}`}>{nice(c.label)} {txt}</span>
+      })}
+    </div>
+  )
+}
+
 // Per-turn RPG state change, shown when inspecting a past turn's snapshot.
 function WorldStateReport({ worldState }) {
   if (!worldState) return null
@@ -1021,6 +1043,7 @@ export default function Play() {
                 className={`action ${PLAYER_TYPES.includes(action.type) ? 'player' : ''}`}>
                 <ReasoningBlock text={action.reasoning} />
                 {renderEmphasis(action.text)}
+                {action.type === 'ai' && <StateChangeChips changes={action.world_changes} />}
                 {!busy && (
                   <span className="action-tools">
                     {action.type === 'ai' && (

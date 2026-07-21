@@ -799,6 +799,28 @@ button:disabled { opacity: 0.45; cursor: default; transform: none; box-shadow: n
 .se-band-l { flex: 1; padding: 3px 6px; font-size: 0.82rem; }
 .ws-report { list-style: none; margin: 4px 0 0; padding: 0; font-size: 0.82rem; }
 .ws-report li { padding: 2px 0; color: var(--text); }
+
+/* Inline per-turn change chips under an AI message */
+.turn-changes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.chg {
+  font-size: 0.74rem;
+  padding: 2px 8px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.chg-up { color: var(--player, #4caf82); border-color: color-mix(in srgb, var(--player, #4caf82) 40%, var(--border)); }
+.chg-down { color: var(--danger, #e5484d); border-color: color-mix(in srgb, var(--danger, #e5484d) 40%, var(--border)); }
+.chg-flag { color: var(--accent-bright); }
+.chg-ms { color: var(--accent-bright); border-color: color-mix(in srgb, var(--accent-bright) 40%, var(--border)); }
 .ws-report code { color: var(--accent-bright); }
 .ws-delta { color: var(--player); font-variant-numeric: tabular-nums; }
 .ws-flag { color: var(--text-dim); font-style: italic; }

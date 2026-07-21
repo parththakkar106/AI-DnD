@@ -140,6 +140,20 @@ def test_turn_applies_clamped_delta_and_strips_block(client):
     assert '"player.hp": -80' in snap["raw_output"]
 
 
+def test_action_world_changes_summary(client):
+    _play(client)
+    db = SessionLocal()
+    try:
+        changes = db.get(models.Adventure, client.adv_id).actions[-1].world_changes
+    finally:
+        db.close()
+    by_label = {c["label"]: c for c in changes}
+    assert by_label["hp"]["delta"] == -30           # clamped stat, signed delta
+    assert by_label["gwen trust"]["delta"] == 15     # npc.<id>.<stat> -> "id stat"
+    assert by_label["alarm"] == {"kind": "flag", "label": "alarm", "on": True}
+    assert by_label["win"]["kind"] == "milestone"
+
+
 def test_world_state_endpoint(client):
     _play(client)
     r = client.get(f"/api/adventures/{client.adv_id}/world-state")

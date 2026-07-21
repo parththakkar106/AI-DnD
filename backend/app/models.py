@@ -197,6 +197,31 @@ class Action(Base):
 
     adventure: Mapped[Adventure] = relationship(back_populates="actions")
 
+    @property
+    def world_changes(self) -> list[dict]:
+        """Compact per-turn RPG state changes (Phase 12), derived from the
+        stored snapshot, for the inline summary under an AI message. Labels are
+        path-based (no schema needed): `npc.gwen.trust` -> "gwen trust"."""
+        cs = self.context_snapshot if isinstance(self.context_snapshot, dict) else None
+        ws = cs.get("world_state") if cs else None
+        if not isinstance(ws, dict):
+            return []
+        applied = (ws.get("report") or {}).get("applied") or []
+        out: list[dict] = []
+        for entry in applied:
+            parts = str(entry.get("path", "")).split(".")
+            section, name = parts[0], parts[-1]
+            if section == "flags":
+                out.append({"kind": "flag", "label": name, "on": bool(entry.get("new"))})
+            elif section == "milestones":
+                out.append({"kind": "milestone", "label": name})
+            else:
+                label = f"{parts[1]} {parts[2]}" if section == "npc" and len(parts) == 3 else name
+                old, new = entry.get("old"), entry.get("new")
+                delta = new - old if isinstance(old, (int, float)) and isinstance(new, (int, float)) else None
+                out.append({"kind": "stat", "label": label, "delta": delta, "value": new})
+        return out
+
 
 class Script(Base):
     __tablename__ = "scripts"
