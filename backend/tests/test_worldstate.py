@@ -243,3 +243,20 @@ def test_band_label():
     assert w.band_label(d, 10) == "very weak"
     assert w.band_label(d, 55) == "minor damage"
     assert w.band_label(d, 100) == "full health"  # inclusive top edge
+
+
+def test_render_delta_block_roundtrips_through_extract():
+    # A rendered block re-injected into history must parse back to the same delta,
+    # so the model sees valid examples of its own emit format.
+    delta = {"player.hp": -15, "milestones.escaped": True}
+    block = w.render_delta_block(delta)
+    assert block.startswith("```state")
+    clean, parsed = w.extract_delta(f"You flee into the night.\n{block}")
+    assert clean == "You flee into the night."
+    assert parsed == delta
+
+
+def test_render_delta_block_empty_is_blank():
+    # No change this turn -> nothing appended to history.
+    assert w.render_delta_block({}) == ""
+    assert w.render_delta_block(None) == ""

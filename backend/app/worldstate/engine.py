@@ -45,6 +45,22 @@ EMIT_RULE = (
     '"player.outfit": "torn traveling cloak"}\n```'
 )
 
+# Short terminal reminder placed at the very end of the prompt (strongest
+# recency position) so the emit rule is fresh right where the model generates.
+EMIT_REMINDER = (
+    "[Reminder: end your reply with a ```state block of the changes this turn "
+    "(deltas only), or omit it if truly nothing changed.]"
+)
+
+
+def render_delta_block(delta: dict) -> str:
+    """Render a stored delta back into the fenced `state` block the AI emitted,
+    for re-injecting past turns into context so the model imitates the format.
+    Empty delta -> empty string (the turn legitimately changed nothing)."""
+    if not isinstance(delta, dict) or not delta:
+        return ""
+    return "```state\n" + json.dumps(delta, ensure_ascii=False) + "\n```"
+
 # ```state { ... } ``` (also tolerates ```json or an unlabelled fence); DOTALL.
 _FENCE_RE = re.compile(r"```(?:state|json)?\s*(\{.*?\})\s*```", re.DOTALL | re.IGNORECASE)
 # Fallback: a bare JSON object hugging the end of the text.

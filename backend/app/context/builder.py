@@ -56,6 +56,24 @@ def _script_memory(adventure: models.Adventure) -> dict:
     return memory if isinstance(memory, dict) else {}
 
 
+def _history_text(action: models.Action) -> str:
+    """An AI turn as the model should see it in replayed history: its narration
+    with the state block it emitted re-appended (reconstructed from the stored
+    delta). The block is stripped before storage/UI, so without this every past
+    AI turn would look like one that emitted nothing — biasing the model, by
+    imitation, to stop emitting too. Player turns and blockless turns are
+    returned unchanged."""
+    text = action.text
+    snap = action.context_snapshot if isinstance(action.context_snapshot, dict) else None
+    if snap:
+        ws = snap.get("world_state")
+        if isinstance(ws, dict):
+            block = worldstate.render_delta_block(ws.get("delta") or {})
+            if block:
+                text = f"{text}\n{block}"
+    return text
+
+
 def _visible_npcs(adventure: models.Adventure, stat_schema: dict) -> dict[str, str]:
     """Defined NPCs whose trigger words appear in the recent story — the ones
     "in scene", so only their stats get injected. Maps npc id -> display name."""
@@ -99,7 +117,8 @@ def build_context(
 
     # RPG world state (Phase 12): current stats/milestones + how to report changes.
     stat_schema = adventure.scenario.stat_schema if adventure.scenario else None
-    if worldstate.has_schema(stat_schema):
+    has_ws = worldstate.has_schema(stat_schema)
+    if has_ws:
         guide = worldstate.render_reference(stat_schema)
         if guide:
             system_sections.append(Section("world_state_guide", guide))
@@ -139,6 +158,7 @@ def build_context(
         sum(s.tokens for s in system_sections)
         + count_tokens(authors_note)
         + count_tokens(front_memory)
+        + (count_tokens(worldstate.EMIT_REMINDER) if has_ws else 0)
     )
     available = max(256, settings.context_token_budget - reserved)
 
@@ -171,7 +191,10 @@ def build_context(
     spent = 0
     oldest_truncated = False
     for action in reversed(actions):
-        tokens = count_tokens(action.text) + count_tokens(SEPARATOR)
+        # Budget on the text as it will actually appear — with the re-attached
+        # state block (B) when this adventure tracks world state.
+        rendered = _history_text(action) if has_ws else action.text
+        tokens = count_tokens(rendered) + count_tokens(SEPARATOR)
         if spent + tokens > history_budget:
             if not included_actions:
                 # Even the newest action alone is over budget: hard-truncate it.
@@ -189,7 +212,9 @@ def build_context(
     included_actions.reverse()
 
     # ----- Assemble story text with author's note near the end -----
-    texts = [a.text for a in included_actions]
+    # Re-attach each AI turn's state block (stripped before storage) so recent
+    # history shows the model its own emit pattern to imitate.
+    texts = [_history_text(a) if has_ws else a.text for a in included_actions]
     note_sections: list[Section] = []
     if authors_note:
         pos = max(0, len(texts) - AUTHORS_NOTE_DEPTH)
@@ -202,6 +227,10 @@ def build_context(
         note_sections.append(Section("history", SEPARATOR.join(texts)))
     if front_memory:
         note_sections.append(Section("front_memory", front_memory))
+    if has_ws:
+        # Terminal reminder: the emit rule sits up in the system block, far from
+        # where the model generates; repeat it last, in the strongest recency slot.
+        note_sections.append(Section("world_state_reminder", worldstate.EMIT_REMINDER))
 
     story_sections = [s for s in note_sections if s.text]
     system_text = SEPARATOR.join(s.text for s in system_sections if s.text)

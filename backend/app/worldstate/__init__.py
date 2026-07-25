@@ -2,6 +2,7 @@
 module validates and clamps them against a scenario's stat_schema."""
 
 from .engine import (
+    EMIT_REMINDER,
     EMIT_RULE,
     apply_delta,
     apply_override,
@@ -11,11 +12,13 @@ from .engine import (
     instantiate,
     npc_name,
     npc_triggers,
+    render_delta_block,
     render_reference,
     render_state_section,
 )
 
 __all__ = [
+    "EMIT_REMINDER",
     "EMIT_RULE",
     "apply_delta",
     "apply_override",
@@ -25,6 +28,7 @@ __all__ = [
     "instantiate",
     "npc_name",
     "npc_triggers",
+    "render_delta_block",
     "render_reference",
     "render_state_section",
 ]
