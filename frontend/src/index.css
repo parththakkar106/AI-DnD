@@ -94,6 +94,21 @@ a:hover { color: var(--accent-bright); }
 }
 .topnav a.navlink:hover { color: var(--text); }
 
+/* On desktop the wrapper is transparent — its children (nav links + account)
+   participate directly in the .topnav flex row, exactly as before. The mobile
+   query below turns it into a dropdown. */
+.nav-links { display: contents; }
+.nav-hamburger {
+  display: none;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 1.2rem;
+  padding: 6px 8px;
+  margin-left: auto;
+  line-height: 1;
+}
+
 /* Phase 8: account area (hosted multi-user mode only) */
 .nav-account {
   margin-left: auto;
@@ -286,7 +301,7 @@ button:disabled { opacity: 0.45; cursor: default; transform: none; box-shadow: n
 
 /* ---------- Play page ---------- */
 
-.play-page { display: flex; flex-direction: column; min-height: calc(100vh - 56px); }
+.play-page { display: flex; flex-direction: column; min-height: calc(100dvh - 56px); }
 
 /* Keep the Plot/Memory/Scripts/Insights toggles reachable while the story
    scrolls — pin the header just below the 56px top nav. */
@@ -425,7 +440,7 @@ button:disabled { opacity: 0.45; cursor: default; transform: none; box-shadow: n
 
 /* ---------- Side panel (Plot / Insights) ---------- */
 
-.play-layout { flex: 1; display: flex; min-height: calc(100vh - 56px); }
+.play-layout { flex: 1; display: flex; min-height: calc(100dvh - 56px); }
 .play-layout .play-page { max-width: 960px; }
 .play-layout.with-panel .play-page { max-width: none; }
 
@@ -443,7 +458,7 @@ button:disabled { opacity: 0.45; cursor: default; transform: none; box-shadow: n
   background: var(--bg-panel);
   padding: 20px;
   overflow-y: auto;
-  height: calc(100vh - 56px);
+  height: calc(100dvh - 56px);
   position: sticky;
   top: 56px;
   animation: panel-in 0.25s ease both;
@@ -494,7 +509,7 @@ button:disabled { opacity: 0.45; cursor: default; transform: none; box-shadow: n
   flex-shrink: 0;
   position: sticky;
   top: 56px;
-  height: calc(100vh - 56px);
+  height: calc(100dvh - 56px);
   display: flex;
   align-items: flex-start;
   border-right: 1px solid var(--border);
@@ -1130,4 +1145,112 @@ button:disabled { opacity: 0.45; cursor: default; transform: none; box-shadow: n
 @keyframes toast-in {
   from { opacity: 0; transform: translate(-50%, 12px); }
   to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+/* ============================================================
+   Mobile / narrow screens (≤ 720px)
+   The desktop Play screen is a horizontal row of up to four columns
+   (two left rails + story + right side-panel). Phones can't fit that,
+   so here we collapse to a single story column and turn the rails and
+   side-panel into full-height overlays. Everything above this query is
+   the untouched desktop design.
+   ============================================================ */
+@media (max-width: 720px) {
+
+  /* ---------- Top nav → hamburger dropdown ---------- */
+  .topnav { gap: 12px; padding: 0 16px; }
+  .nav-hamburger { display: block; }
+  .nav-links {
+    display: none;
+    position: absolute;
+    top: 56px;
+    left: 0;
+    right: 0;
+    flex-direction: column;
+    align-items: stretch;
+    background: var(--bg-panel);
+    border-bottom: 1px solid var(--border);
+    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.55);
+    padding: 4px 0;
+  }
+  .nav-links.open { display: flex; }
+  .topnav a.navlink {
+    padding: 13px 20px;
+    border-bottom: none;
+    border-left: 3px solid transparent;
+  }
+  .topnav a.navlink.active {
+    border-bottom-color: transparent;
+    border-left-color: var(--accent);
+  }
+  .nav-account {
+    margin-left: 0;
+    padding: 12px 20px;
+    border-top: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+  .account-email { max-width: 100%; }
+
+  /* ---------- Global page padding / typography ---------- */
+  .page { padding: 18px 14px; }
+  /* 16px inputs stop iOS Safari auto-zooming when a field is focused. */
+  input[type="text"], input[type="password"], input[type="number"], textarea, select {
+    font-size: 16px;
+  }
+
+  /* ---------- Play screen → single column ---------- */
+  .play-layout { flex-direction: column; }
+  .play-layout .play-page,
+  .play-layout.with-panel .play-page { max-width: 100%; }
+  .play-page .page-header h1 { font-size: 1.25rem; }
+  .panel-toggles { flex-wrap: wrap; }
+  .story { font-size: 1.06rem; }
+  /* Reserve a left gutter so the fixed World/State edge-tabs never sit on
+     top of the story text as it scrolls past them. */
+  .story, .play-page .empty { padding-left: 26px; }
+  .story .action { padding-right: 0; }
+  /* No hover on touch — keep per-action edit/delete tools visible. */
+  .story .action-tools { opacity: 1; pointer-events: auto; }
+
+  /* ---------- Left rails (World State / Script State) → edge tabs + overlay ---------- */
+  /* Closed: a compact tab pinned to the left edge instead of a full-height
+     column that steals the story's width. World State sits above Script State.
+     (World State only renders for RPG adventures, so it may be absent.) */
+  .status-drawer {
+    position: fixed;
+    left: 0;
+    z-index: 40;
+  }
+  .status-drawer:not(.open) {
+    top: 170px;
+    height: auto;
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-left: none;
+    border-radius: 0 10px 10px 0;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+  }
+  .ws-drawer:not(.open) { top: 170px; }
+  .status-drawer:not(.ws-drawer):not(.open) { top: 260px; }
+  .status-drawer:not(.open) .status-toggle { height: auto; padding: 14px 4px; }
+
+  /* Open: slide-in overlay covering most of the screen. */
+  .status-drawer.open {
+    top: 56px;
+    height: calc(100dvh - 56px);
+    width: min(88vw, 320px);
+    box-shadow: 0 0 50px rgba(0, 0, 0, 0.65);
+    border-right: 1px solid var(--border-bright);
+  }
+
+  /* ---------- Right side-panel (Plot/Memory/Scripts/Insights) → full overlay ---------- */
+  .side-panel {
+    position: fixed;
+    inset: 56px 0 0 0;
+    width: auto;
+    height: auto;
+    z-index: 45;
+    border-left: none;
+    padding: 16px;
+  }
 }
