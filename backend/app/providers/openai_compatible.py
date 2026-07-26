@@ -10,6 +10,17 @@ from .base import PromptParts, Provider, ProviderError
 # continuing prose instead of replying conversationally.
 CHAT_CONTINUE_HINT = "\n\n[Continue the story directly. Output only story text.]"
 
+# Completion endpoints have no roles, so a plain chat has to be flattened into
+# one labelled transcript that trails off on "Assistant:" for the model to continue.
+_ROLE_LABELS = {"system": "System", "user": "User", "assistant": "Assistant"}
+
+
+def flatten_messages(messages: list[dict]) -> str:
+    turns = "\n\n".join(
+        f"{_ROLE_LABELS.get(m['role'], m['role'])}: {m['content']}" for m in messages
+    )
+    return f"{turns}\n\nAssistant:"
+
 
 class OpenAICompatibleProvider(Provider):
     """Adapter for any /v1-style endpoint: Ollama, LM Studio, OpenAI, OpenRouter, vLLM, Groq…"""
@@ -110,7 +121,42 @@ class OpenAICompatibleProvider(Provider):
         if not self.model:
             raise ProviderError("No model configured — set one in Settings.")
         url, body = self._request(parts, temperature, max_tokens)
+        async for event in self._stream(url, body):
+            yield event
 
+    async def chat(
+        self, messages: list[dict], *, temperature: float, max_tokens: int
+    ) -> AsyncIterator[tuple[str, str]]:
+        """Plain multi-turn chat — no story framing, no context assembly. Takes
+        [{"role", "content"}, ...] straight to the endpoint. Used by the AI Chat
+        scratchpad; the turn engine uses generate()."""
+        if not self.model:
+            raise ProviderError("No model configured — set one in Settings.")
+        if self.api_mode == "completion":
+            url = f"{self.base_url}/completions"
+            body = {
+                "model": self.model,
+                "prompt": flatten_messages(messages),
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "stream": True,
+            }
+        else:
+            url = f"{self.base_url}/chat/completions"
+            body = {
+                "model": self.model,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "stream": True,
+            }
+        self._apply_reasoning_budget(body)
+        async for event in self._stream(url, body):
+            yield event
+
+    async def _stream(self, url: str, body: dict) -> AsyncIterator[tuple[str, str]]:
+        """Shared SSE plumbing for generate()/chat(): POST a streaming request
+        and yield ("text" | "reasoning", chunk) pairs, logging the exchange."""
         log = debuglog.start_entry(url, self.model, body)
         received: list[str] = []
         try:

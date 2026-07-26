@@ -54,6 +54,12 @@ _running: set[int] = set()
 _tasks: set[asyncio.Task] = set()
 
 
+# BYOK-only by construction: both factories below take the user's own
+# endpoint/key straight from Settings and never auth.DEMO_*, so summarization
+# and embedding can't spend the shared demo key (their call sites are also
+# skipped when using_demo). Don't "fix" this by passing a ProviderConfig in —
+# summary_model/embedding_model are free-form user input and are not on the
+# demo whitelist.
 def summary_provider(settings: models.Settings) -> OpenAICompatibleProvider:
     return OpenAICompatibleProvider(
         settings.endpoint_url,

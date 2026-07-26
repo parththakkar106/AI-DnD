@@ -81,19 +81,50 @@ def demo_enabled() -> bool:
 @dataclass
 class ProviderConfig:
     """What the turn engine should actually connect with, after the
-    BYOK-vs-demo decision."""
+    BYOK-vs-demo decision. Build these with resolve_provider_config()."""
 
     endpoint_url: str
     api_key: str
     model: str
     using_demo: bool
 
+    def __post_init__(self) -> None:
+        # Belt and braces around the shared demo key. resolve_provider_config()
+        # already pins the model, but this makes it a property of the config
+        # object itself: however it was built, and by whichever caller, the
+        # server-funded key can never be paired with an off-whitelist (i.e.
+        # possibly paid) model. Unreachable by design — a 500 here means a new
+        # code path tried to bypass the pinning, which is worth failing loudly
+        # rather than silently billing.
+        if DEMO_API_KEY and self.api_key == DEMO_API_KEY and self.model not in DEMO_MODELS:
+            raise ValueError(
+                f"Refusing to use the shared demo key with non-whitelisted model {self.model!r}"
+            )
 
-def resolve_provider_config(settings: models.Settings) -> ProviderConfig:
+
+def resolve_provider_config(
+    settings: models.Settings, *, model_override: str | None = None
+) -> ProviderConfig:
+    """BYOK when the user has their own key, the shared demo key otherwise.
+
+    THE security-relevant branch is the demo one, and it is the only place the
+    whitelist rule lives — every caller must come through here rather than
+    building a ProviderConfig itself. On the demo key:
+
+    - the model is pinned to DEMO_MODELS, so a caller-supplied override (the AI
+      Chat page) or a hand-edited Settings row cannot aim a server-funded key at
+      a paid model; anything unrecognised falls back to DEMO_MODELS[0];
+    - the endpoint is pinned to DEMO_ENDPOINT_URL, so the key itself can't be
+      redirected to a URL the user controls and harvested.
+
+    `model_override` is a per-request preference (never a grant): it's honoured
+    verbatim under BYOK, and only if whitelisted on the demo key.
+    """
     key = settings.api_key_plain
+    requested = (model_override or "").strip() or settings.model
     if key or not demo_enabled():
-        return ProviderConfig(settings.endpoint_url, key, settings.model, False)
-    model = settings.model if settings.model in DEMO_MODELS else DEMO_MODELS[0]
+        return ProviderConfig(settings.endpoint_url, key, requested, False)
+    model = requested if requested in DEMO_MODELS else DEMO_MODELS[0]
     return ProviderConfig(DEMO_ENDPOINT_URL, DEMO_API_KEY, model, True)
 
 
@@ -102,7 +133,12 @@ def _today() -> str:
 
 
 def is_power_user(user: models.User) -> bool:
-    """Trusted testers (email allowlist) bypass the demo turn cap."""
+    """Trusted testers: unmetered demo turns, plus tooling that isn't part of
+    the game (the AI Chat scratchpad). Local installs are always trusted — it's
+    the operator's own machine and their own API key, same reasoning as the
+    provider debug log being local-only."""
+    if not MULTI_USER:
+        return True
     return bool(user.email) and user.email.lower() in POWER_USERS
 
 

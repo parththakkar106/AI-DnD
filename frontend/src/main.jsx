@@ -10,6 +10,7 @@ import Play from './pages/Play.jsx'
 import Scripts from './pages/Scripts.jsx'
 import ScriptEditor from './pages/ScriptEditor.jsx'
 import Settings from './pages/Settings.jsx'
+import Chat from './pages/Chat.jsx'
 import './index.css'
 
 const router = createBrowserRouter([
@@ -25,6 +26,8 @@ const router = createBrowserRouter([
       { path: 'scripts', element: <Scripts /> },
       { path: 'scripts/:id', element: <ScriptEditor /> },
       { path: 'settings', element: <Settings /> },
+      // Power users only — the page redirects home and the API 404s otherwise.
+      { path: 'chat', element: <Chat /> },
     ],
   },
 ])

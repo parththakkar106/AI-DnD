@@ -138,6 +138,10 @@ export const api = {
   exportStoryCards: (owner) => request(`/story-cards/export?${new URLSearchParams(owner)}`),
   importStoryCards: (payload) => request('/story-cards/import', { method: 'POST', body: JSON.stringify(payload) }),
 
+  // AI Chat (power users only — 404 for everyone else)
+  getChatConfig: () => request('/chat/config'),
+  chatStream: (payload, handlers, signal) => streamSSE('/chat/stream', payload, handlers, signal),
+
   // Debug
   getDebugRequests: () => request('/debug/requests'),
 

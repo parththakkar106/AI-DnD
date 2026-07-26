@@ -10,7 +10,7 @@ from .auth import MULTI_USER
 from .database import engine
 from .limits import BodySizeLimitMiddleware
 from .migrations import bootstrap
-from .routers import adventures, auth, debug, scenarios, scripts, settings, story_cards
+from .routers import adventures, auth, chat, debug, scenarios, scripts, settings, story_cards
 from .seed import seed_public_scenarios
 
 bootstrap(engine)
@@ -88,6 +88,7 @@ app.include_router(adventures.router)
 app.include_router(story_cards.router)
 app.include_router(scripts.router)
 app.include_router(settings.router)
+app.include_router(chat.router)
 app.include_router(debug.router)
 
 

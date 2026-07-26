@@ -319,6 +319,28 @@ class SettingsOut(ORMModel):
 ScenarioOut.model_rebuild()
 
 
+# ---------- AI Chat (power users) ----------
+# A scratchpad for talking to a model directly, with no story framing. Nothing
+# is persisted server-side, so these caps are purely per-request abuse limits.
+
+CHAT_MESSAGE_MAX = 100_000   # one message
+CHAT_TOTAL_MAX = 400_000     # whole conversation sent up per request
+CHAT_MESSAGES_MAX = 200      # turns per request
+
+
+class ChatMessage(BaseModel):
+    role: Literal["system", "user", "assistant"]
+    content: Annotated[str, Field(max_length=CHAT_MESSAGE_MAX)]
+
+
+class ChatRequest(BaseModel):
+    messages: Annotated[list[ChatMessage], Field(min_length=1, max_length=CHAT_MESSAGES_MAX)]
+    # Empty/omitted = fall back to the user's configured model.
+    model: Name | None = None
+    temperature: Annotated[float, Field(ge=0, le=5)] | None = None
+    max_tokens: Annotated[int, Field(ge=1, le=100_000)] | None = None
+
+
 class SettingsUpdate(BaseModel):
     endpoint_url: Annotated[str, Field(max_length=500)] | None = None  # VARCHAR(500)
     # Encryption expands the stored value ~4/3 into the same VARCHAR(500):

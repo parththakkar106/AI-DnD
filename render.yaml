@@ -45,4 +45,10 @@ services:
       - key: AIDND_DEMO_TURNS_PER_DAY
         value: "20"
 
+      # Comma-separated emails of trusted testers: unmetered demo turns, plus
+      # the AI Chat page (hidden from everyone else). Set in the dashboard;
+      # leave unset and nobody gets it. Registered accounts only.
+      - key: AIDND_POWER_USERS
+        sync: false
+
       # CORS is unset on purpose: the SPA is served same-origin by FastAPI.

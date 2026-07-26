@@ -58,6 +58,12 @@ export default function App() {
           <NavLink to="/settings" className={({ isActive }) => `navlink${isActive ? ' active' : ''}`}>
             Settings
           </NavLink>
+          {/* Power-user tooling, not part of the game — hidden for everyone else. */}
+          {me?.power_user && (
+            <NavLink to="/chat" className={({ isActive }) => `navlink${isActive ? ' active' : ''}`}>
+              AI Chat
+            </NavLink>
+          )}
           {me?.multi_user && (
             <div className="nav-account">
               {me.is_guest ? (

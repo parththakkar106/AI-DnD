@@ -62,18 +62,9 @@ def update_settings(
     return settings
 
 
-@router.post("/test")
-async def test_connection(
-    request: Request,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(auth.get_current_user),
-):
-    """Hit the endpoint's /models listing as a cheap connectivity check.
-    Tests whatever the turn engine would actually use — including the shared
-    demo endpoint when the user has no key of their own."""
-    limits.rate_limit("connection-test", request, user)
-    settings = get_settings(db, user)
-    cfg = auth.resolve_provider_config(settings)
+async def list_endpoint_models(cfg: auth.ProviderConfig) -> dict:
+    """GET the endpoint's /models listing. Doubles as a connectivity check, so
+    failures come back as {"ok": False, "detail": ...} rather than raising."""
     url = cfg.endpoint_url.rstrip("/") + "/models"
     headers = {}
     if cfg.api_key:
@@ -94,3 +85,16 @@ async def test_connection(
     except (ValueError, AttributeError, TypeError):
         pass  # non-JSON or unexpected shape — connectivity is still confirmed
     return {"ok": True, "models": models_available}
+
+
+@router.post("/test")
+async def test_connection(
+    request: Request,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.get_current_user),
+):
+    """Cheap connectivity check against whatever the turn engine would actually
+    use — including the shared demo endpoint when the user has no key."""
+    limits.rate_limit("connection-test", request, user)
+    settings = get_settings(db, user)
+    return await list_endpoint_models(auth.resolve_provider_config(settings))

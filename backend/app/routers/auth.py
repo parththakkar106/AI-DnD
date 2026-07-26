@@ -32,6 +32,8 @@ def me_payload(user: models.User, db: Session) -> dict:
         "id": user.id,
         "email": user.email,
         "is_guest": user.is_guest,
+        # Trusted testers: unmetered demo turns, plus the AI Chat scratchpad.
+        "power_user": auth.is_power_user(user),
         "demo": {
             "enabled": auth.demo_enabled(),
             "using_demo": cfg.using_demo,

@@ -25,6 +25,7 @@ from . import auth, models
 # scope -> (max requests, window seconds)
 RATE_LIMITS: dict[str, tuple[int, int]] = {
     "turn": (10, 60),             # AI turn generation (demo key also has a daily cap)
+    "chat": (30, 60),             # AI Chat scratchpad (power users only)
     "script-test": (30, 60),      # sandboxed, but each run costs up to 2s CPU
     "connection-test": (10, 60),  # outbound HTTP to a user-supplied URL
     "import": (30, 60),           # large writes
