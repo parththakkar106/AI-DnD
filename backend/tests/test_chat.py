@@ -180,18 +180,43 @@ def test_demo_key_endpoint_cannot_be_redirected(client, monkeypatch):
     assert FakeProvider.last_key == "demo-key"
 
 
-def test_provider_config_refuses_demo_key_with_paid_model(monkeypatch):
-    """The structural backstop: even a hand-built config (a future code path
-    that forgets to go through resolve_provider_config) can't pair them."""
+def test_provider_config_refuses_server_funded_paid_model(monkeypatch):
+    """The structural backstop: a hand-built config (a future code path that
+    forgets to go through resolve_provider_config) can't run a server-funded
+    turn on an off-whitelist model."""
     monkeypatch.setattr(auth, "DEMO_API_KEY", "demo-key")
     monkeypatch.setattr(auth, "DEMO_MODELS", ["free/allowed"])
     with pytest.raises(ValueError):
         auth.ProviderConfig("http://demo", "demo-key", "expensive/paid-model", True)
-    # Mislabelling it as non-demo doesn't help: the key is what's checked.
-    with pytest.raises(ValueError):
-        auth.ProviderConfig("http://demo", "demo-key", "expensive/paid-model", False)
+    auth.ProviderConfig("http://demo", "demo-key", "free/allowed", True)  # whitelisted: fine
     # The user's own key with any model stays fine.
     auth.ProviderConfig("http://any", "sk-mine", "expensive/paid-model", False)
+
+
+def test_byok_user_may_reuse_the_demo_keys_value(client, monkeypatch):
+    """Regression: the demo key is just an OpenRouter key, so a user can paste
+    that same value into their own Settings. That's BYOK — they're paying — and
+    it must not trip the guard. It used to raise on every resolution, which
+    500'd GET /auth/me and took the whole SPA down (no nav, no chat)."""
+    monkeypatch.setattr(auth, "demo_enabled", lambda: True)
+    monkeypatch.setattr(auth, "DEMO_API_KEY", "shared-key")
+    monkeypatch.setattr(auth, "DEMO_ENDPOINT_URL", "http://demo")
+    monkeypatch.setattr(auth, "DEMO_MODELS", ["free/allowed"])
+    db = SessionLocal()
+    try:
+        settings = db.query(models.Settings).first()
+        settings.api_key = "shared-key"          # same value, but supplied by the user
+        settings.model = "expensive/paid-model"  # their spend, their choice
+        db.commit()
+    finally:
+        db.close()
+
+    assert client.get("/api/auth/me").status_code == 200
+    assert client.get("/api/chat/config").status_code == 200
+    resp = _send(client)
+    assert resp.status_code == 200, resp.text
+    assert FakeProvider.last_model == "expensive/paid-model"
+    assert FakeProvider.last_key == "shared-key"
 
 
 def test_resolve_provider_config_is_the_single_choke_point(monkeypatch):

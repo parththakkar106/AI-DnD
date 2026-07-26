@@ -89,14 +89,20 @@ class ProviderConfig:
     using_demo: bool
 
     def __post_init__(self) -> None:
-        # Belt and braces around the shared demo key. resolve_provider_config()
-        # already pins the model, but this makes it a property of the config
-        # object itself: however it was built, and by whichever caller, the
-        # server-funded key can never be paired with an off-whitelist (i.e.
-        # possibly paid) model. Unreachable by design — a 500 here means a new
-        # code path tried to bypass the pinning, which is worth failing loudly
-        # rather than silently billing.
-        if DEMO_API_KEY and self.api_key == DEMO_API_KEY and self.model not in DEMO_MODELS:
+        # Belt and braces around server-funded turns: resolve_provider_config()
+        # already pins the model, and this makes it a property of the config
+        # object too, so a future caller can't construct an unpinned one.
+        # Unreachable by design — a raise here means a new code path bypassed
+        # the pinning, which is worth failing loudly rather than billing.
+        #
+        # The test is `using_demo`, NOT `api_key == DEMO_API_KEY`. Keying it on
+        # the key value looks stricter but is wrong: the demo key is a normal
+        # OpenRouter key, so a user can legitimately paste that same key into
+        # their own Settings as BYOK — and then every resolution raised, 500ing
+        # even GET /auth/me and taking the whole SPA down with it. `using_demo`
+        # is what actually means "the server is paying", and only the demo
+        # branch below sets it.
+        if self.using_demo and self.model not in DEMO_MODELS:
             raise ValueError(
                 f"Refusing to use the shared demo key with non-whitelisted model {self.model!r}"
             )
