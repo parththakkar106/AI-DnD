@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { api } from '../api'
-import { Field, StoryCardRow, downloadJSON, pickJSONFile, useToast } from '../components'
+import { AutoTextarea, Field, StoryCardRow, downloadJSON, pickJSONFile, useToast } from '../components'
 
 const MODES = ['do', 'say', 'story']
 const PLAYER_TYPES = ['do', 'say', 'story']
@@ -156,7 +156,7 @@ function MemoryRow({ memory, onChange, onDelete }) {
     <div className={`memory-row ${memory.forgotten ? 'forgotten' : ''}`}>
       {editText !== null ? (
         <div className="action-edit" style={{ margin: 0 }}>
-          <textarea autoFocus value={editText} rows={3}
+          <AutoTextarea autoFocus value={editText} rows={3}
             onChange={(e) => setEditText(e.target.value)} />
           <div className="edit-buttons">
             <button className="primary" onClick={save}>Save</button>
@@ -1178,7 +1178,7 @@ export default function Play() {
 
             return editing?.id === action.id ? (
               <div key={action.id} className="action-edit">
-                <textarea
+                <AutoTextarea
                   autoFocus
                   value={editing.text}
                   onChange={(e) => setEditing({ ...editing, text: e.target.value })}

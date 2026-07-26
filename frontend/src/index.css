@@ -393,7 +393,18 @@ button:disabled { opacity: 0.45; cursor: default; transform: none; box-shadow: n
 .story .action-tools button:hover { color: var(--text); }
 
 .action-edit { margin-bottom: 14px; }
-.action-edit textarea { min-height: 110px; font-family: inherit; font-size: inherit; }
+/* Sized by AutoTextarea to fit the text being edited — an AI beat is usually
+   several paragraphs, and the old fixed 110px turned that into a keyhole.
+   min-height keeps a short player action from collapsing; max-height stops a
+   very long beat from pushing Save/Cancel off the screen (it scrolls instead).
+   resize stays on, so the height is a starting point, not a cage. */
+.action-edit textarea {
+  min-height: 110px;
+  max-height: 65vh;
+  overflow-y: auto;
+  font-family: inherit;
+  font-size: inherit;
+}
 .action-edit .edit-buttons { display: flex; gap: 8px; margin-top: 6px; }
 
 .play-controls {
@@ -1886,10 +1897,29 @@ button.primary.compact { padding: 3px 12px; font-size: 0.76rem; margin-left: aut
     padding: 4px 8px 0 0;
   }
 
+  /* ---------- Composers: give the typing area the full width ----------
+     Both composers are one flex row on desktop, which on a phone left the
+     textarea with a sliver: the Play bar spends ~180px on Do/Say/Story plus
+     ~75px on Send, and the chat bar ~90px on Send. Letting the row wrap and
+     moving the buttons onto their own line hands that width back to the
+     textarea, which is the part you actually type into.
+
+     Play: Do/Say/Story and Send share the top row (Send pushed to the right
+     edge), and `order` drops the textarea onto its own full-width row beneath
+     them. Two rows, and the typing area goes from ~138px to the full width —
+     measured at a 390px composer. */
+  .input-bar { flex-wrap: wrap; }
+  .mode-select button { flex: 1; padding: 7px 10px; }
+  .input-bar > button { margin-left: auto; }
+  /* min-width:0 lets a flex item shrink below its content width. */
+  .input-bar textarea { order: 1; flex: 1 0 100%; margin-top: 8px; min-width: 0; }
+
   /* ---------- AI Chat ---------- */
   /* No hover on touch, so the per-message copy/delete links stay visible. */
   .chat-msg-actions { opacity: 1; }
   .chat-msg { padding: 9px 11px 11px; }
-  .chat-composer { padding: 10px 0 14px; }
-  .chat-composer textarea { max-height: 140px; }
+  .chat-composer { padding: 10px 0 14px; flex-wrap: wrap; }
+  /* Full-width textarea; Send wraps beneath it and sits at the right edge. */
+  .chat-composer textarea { flex: 1 1 100%; max-height: 140px; }
+  .chat-composer button { margin-left: auto; }
 }

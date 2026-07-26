@@ -281,6 +281,25 @@ export function AuthModal({ mode: initialMode, onClose, onAuthed }) {
   )
 }
 
+/** A textarea that grows to fit its content instead of sitting at a fixed
+    height. Editing an AI beat means editing a few paragraphs, and a fixed box
+    made that a keyhole. CSS min/max-height still bound it (the cap scrolls),
+    so callers control the floor and ceiling from the stylesheet. */
+export function AutoTextarea({ value, ...props }) {
+  const ref = useRef(null)
+
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    // Reset first: scrollHeight only ever grows while an explicit height is set,
+    // so without this the box could never shrink back down.
+    el.style.height = 'auto'
+    el.style.height = `${el.scrollHeight}px`
+  }, [value])
+
+  return <textarea ref={ref} value={value} {...props} />
+}
+
 export function Field({ label, value, onChange, textarea, rows, placeholder }) {
   return (
     <label className="field">
