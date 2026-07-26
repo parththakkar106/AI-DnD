@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { api } from '../api'
-import { Field, StoryCardRow, downloadJSON, pickJSONFile } from '../components'
+import { Field, StoryCardRow, downloadJSON, pickJSONFile, useToast } from '../components'
 
 const MODES = ['do', 'say', 'story']
 const PLAYER_TYPES = ['do', 'say', 'story']
@@ -53,6 +53,7 @@ const SECTION_LABELS = {
 }
 
 function PlotPanel({ adventure, setAdventure }) {
+  const toast = useToast()
   // One timer per field/card: a single shared timer would cancel the pending
   // save of whatever was edited previously within the debounce window.
   const saveTimers = useRef(new Map())
@@ -100,11 +101,11 @@ function PlotPanel({ adventure, setAdventure }) {
     try {
       const parsed = await pickJSONFile()
       const cards = Array.isArray(parsed) ? parsed : (parsed.cards || parsed.storyCards)
-      if (!Array.isArray(cards)) return alert('Expected a JSON array of story cards.')
+      if (!Array.isArray(cards)) return toast('Expected a JSON array of story cards.', 'error')
       const created = await api.importStoryCards({ adventure_id: adventure.id, cards })
       setAdventure({ ...adventure, story_cards: [...adventure.story_cards, ...created] })
     } catch (err) {
-      alert(err.message)
+      toast(err.message, 'error')
     }
   }
 
@@ -949,6 +950,20 @@ export default function Play() {
   const pinnedRef = useRef(true) // autoscroll only while the reader is at the bottom
   const inputRef = useRef(null)
 
+  // The drop cap belongs to the story's first narrated beat. `start` is the
+  // scenario's opening prompt, so it's usually that; an adventure begun blank
+  // has no `start` action and the first AI reply takes it instead. Tracked by
+  // id rather than position so deleting earlier turns moves the cap correctly
+  // instead of stranding it on a removed row.
+  const firstNarrationId = useMemo(
+    () => actions.find((a) => a.type === 'start' || a.type === 'ai')?.id ?? null,
+    [actions],
+  )
+  // send() sets streaming to '' before the request goes out; reasoningStream
+  // stays null until reasoning tokens (if any) arrive. Both still at those
+  // values means the request is in flight with nothing to show yet.
+  const waitingForFirstToken = streaming === '' && reasoningStream === null
+
   // Grow the action box with its content (CSS caps it at ~4 lines, then
   // scrolls); shrinks back after send() clears the text.
   useEffect(() => {
@@ -1152,8 +1167,16 @@ export default function Play() {
           {actions.length === 0 && streaming === null && (
             <div className="empty">A blank page. Type something below to begin your story.</div>
           )}
-          {actions.map((action) =>
-            editing?.id === action.id ? (
+          {actions.map((action, i) => {
+            const isPlayer = PLAYER_TYPES.includes(action.type)
+            // A player action opens a new turn, so that's where the ornamental
+            // break belongs — never above the very first line on the page.
+            const sceneBreak = isPlayer && i > 0
+            // Drop cap goes on the first narrated beat only. `firstNarrationId`
+            // is derived once above rather than per row.
+            const opening = action.id === firstNarrationId
+
+            return editing?.id === action.id ? (
               <div key={action.id} className="action-edit">
                 <textarea
                   autoFocus
@@ -1166,26 +1189,34 @@ export default function Play() {
                 </div>
               </div>
             ) : (
-              <div key={action.id}
-                className={`action ${PLAYER_TYPES.includes(action.type) ? 'player' : ''}`}>
-                <ReasoningBlock text={action.reasoning} />
-                {renderEmphasis(action.text)}
-                {action.type === 'ai' && <StateChangeChips changes={action.world_changes} />}
-                {!busy && (
-                  <span className="action-tools">
-                    {action.type === 'ai' && (
-                      <button title="View the exact prompt that produced this"
-                        onClick={() => inspect(action.id)}>🔍</button>
-                    )}
-                    <button title="Edit"
-                      onClick={() => setEditing({ id: action.id, text: action.text })}>✎</button>
-                    <button title="Delete" onClick={() => removeAction(action.id)}>✕</button>
-                  </span>
-                )}
-              </div>
+              <Fragment key={action.id}>
+                {sceneBreak && <div className="scene-break" aria-hidden="true">❖</div>}
+                <div className={`action ${isPlayer ? 'player' : ''}${opening ? ' opening' : ''}`}>
+                  <ReasoningBlock text={action.reasoning} />
+                  {renderEmphasis(action.text)}
+                  {action.type === 'ai' && <StateChangeChips changes={action.world_changes} />}
+                  {!busy && (
+                    <span className="action-tools">
+                      {action.type === 'ai' && (
+                        <button title="View the exact prompt that produced this"
+                          onClick={() => inspect(action.id)}>🔍</button>
+                      )}
+                      <button title="Edit"
+                        onClick={() => setEditing({ id: action.id, text: action.text })}>✎</button>
+                      <button title="Delete" onClick={() => removeAction(action.id)}>✕</button>
+                    </span>
+                  )}
+                </div>
+              </Fragment>
             )
+          })}
+          {waitingForFirstToken && (
+            <div className="thinking" role="status">
+              <i /><i /><i />
+              <span>Weaving</span>
+            </div>
           )}
-          {streaming !== null && (
+          {streaming !== null && !waitingForFirstToken && (
             <div className="action streaming">
               <ReasoningBlock text={reasoningStream} streaming />
               {renderEmphasis(streaming)}
@@ -1256,7 +1287,7 @@ export default function Play() {
       )}
 
       {toast && (
-        <div className={`toast ${toast.isError ? '' : 'ok'}`}>
+        <div className={`play-toast ${toast.isError ? '' : 'ok'}`}>
           {toast.text}
           {toast.isError && (
             <button style={{ marginLeft: 12 }} onClick={retry}>Retry</button>

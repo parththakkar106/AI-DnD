@@ -28,7 +28,8 @@ logger = logging.getLogger(__name__)
 
 SEED_DIR = Path(__file__).resolve().parent / "seed_data"
 
-_SCALARS = ("description", "prompt", "memory", "authors_note", "ai_instructions", "tags")
+_SCALARS = ("description", "prompt", "memory", "authors_note", "ai_instructions", "tags",
+            "image", "icon")
 _CARD_FIELDS = ("type", "name", "keys", "entry", "notes")
 _SCRIPT_FIELDS = ("name", "library_js", "input_js", "context_js", "output_js")
 

@@ -62,6 +62,16 @@ class Scenario(Base):
     authors_note: Mapped[str] = mapped_column(Text, default="")
     ai_instructions: Mapped[str] = mapped_column(Text, default="")
     tags: Mapped[str] = mapped_column(String(500), default="")
+    # Cover art. Either an external "https://…" URL or an inline
+    # "data:image/…;base64,…" URI (the editor downscales uploads before storing
+    # one). Empty means the UI falls back to an emoji sigil or generated art.
+    # Kept in the row rather than on disk because Render's free tier has no
+    # persistent volume, and it makes export bundles self-contained.
+    image: Mapped[str] = mapped_column(Text, default="")
+    # A single emoji or glyph used when there's no `image` — cheap art for
+    # scenarios nobody wants to find a picture for. Separate from `image`
+    # because it's a character, not a locator: no fetch, no cache, no bytes.
+    icon: Mapped[str] = mapped_column(String(16), default="")
     # Phase 12: RPG world-state template — stat definitions (bands, rules) and
     # milestones. NULL/empty means this scenario has no RPG layer.
     stat_schema: Mapped[dict | None] = mapped_column(JSON, nullable=True)

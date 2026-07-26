@@ -90,6 +90,11 @@ MIGRATIONS: list[tuple[int, str]] = [
     # guide + world state each turn). Only bumps rows still on the old default,
     # so anyone who picked a custom value keeps it.
     (29, "UPDATE settings SET context_token_budget = 16384 WHERE context_token_budget = 4096"),
+    # Scenario cover art — an external URL or an inline base64 data URI. TEXT
+    # (not VARCHAR) because a downscaled data URI runs tens of kilobytes.
+    (30, "ALTER TABLE scenarios ADD COLUMN image TEXT NOT NULL DEFAULT ''"),
+    # Emoji/glyph fallback used when `image` is empty.
+    (31, "ALTER TABLE scenarios ADD COLUMN icon VARCHAR(16) NOT NULL DEFAULT ''"),
 ]
 
 LATEST_VERSION = max((v for v, _ in MIGRATIONS), default=1)

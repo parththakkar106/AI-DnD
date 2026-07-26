@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client'
 import { createBrowserRouter, RouterProvider } from 'react-router-dom'
 import App from './App.jsx'
 import Home from './pages/Home.jsx'
+import Adventures from './pages/Adventures.jsx'
 import Scenarios from './pages/Scenarios.jsx'
 import ScenarioEditor from './pages/ScenarioEditor.jsx'
 import Play from './pages/Play.jsx'
@@ -17,6 +18,7 @@ const router = createBrowserRouter([
     element: <App />,
     children: [
       { index: true, element: <Home /> },
+      { path: 'adventures', element: <Adventures /> },
       { path: 'scenarios', element: <Scenarios /> },
       { path: 'scenarios/:id', element: <ScenarioEditor /> },
       { path: 'play/:id', element: <Play /> },

@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { api } from '../api'
-import { Field, StoryCardRow, downloadJSON, pickJSONFile } from '../components'
+import { Field, StoryCardRow, downloadJSON, pickJSONFile, useToast } from '../components'
+import ArtPicker from '../ArtPicker'
 import SchemaEditor from '../SchemaEditor'
 
 export default function ScenarioEditor() {
@@ -16,6 +17,7 @@ export default function ScenarioEditor() {
   // Last successfully-parsed schema (drives the form editor + preview).
   const [parsedSchema, setParsedSchema] = useState(null)
   const [schemaView, setSchemaView] = useState('form') // 'form' | 'json'
+  const toast = useToast()
   // One timer per field/card: a single shared timer would cancel the pending
   // save of whatever was edited previously within the debounce window.
   const saveTimers = useRef(new Map())
@@ -38,6 +40,17 @@ export default function ScenarioEditor() {
     setScenario(next)
     debounceSave(field, async () => {
       await api.updateScenario(id, { [field]: value })
+      setStatus('Saved')
+      setTimeout(() => setStatus(''), 1500)
+    })
+  }
+
+  // Several fields at once, in one PATCH — the art picker sets `image` and
+  // `icon` together (choosing one clears the other, and they must not race).
+  const setFields = (patch) => {
+    setScenario((prev) => ({ ...prev, ...patch }))
+    debounceSave('art', async () => {
+      await api.updateScenario(id, patch)
       setStatus('Saved')
       setTimeout(() => setStatus(''), 1500)
     })
@@ -124,11 +137,11 @@ export default function ScenarioEditor() {
     try {
       const parsed = await pickJSONFile()
       const cards = Array.isArray(parsed) ? parsed : (parsed.cards || parsed.storyCards)
-      if (!Array.isArray(cards)) return alert('Expected a JSON array of story cards.')
+      if (!Array.isArray(cards)) return toast('Expected a JSON array of story cards.', 'error')
       const created = await api.importStoryCards({ scenario_id: Number(id), cards })
       setScenario({ ...scenario, story_cards: [...scenario.story_cards, ...created] })
     } catch (err) {
-      alert(err.message)
+      toast(err.message, 'error')
     }
   }
 
@@ -185,6 +198,13 @@ export default function ScenarioEditor() {
       <Field label="Title" value={scenario.title} onChange={(v) => setField('title', v)} />
       <Field label="Description" value={scenario.description} onChange={(v) => setField('description', v)}
         textarea placeholder="Shown in the scenario list; not sent to the AI." />
+      <ArtPicker
+        title={scenario.title}
+        image={scenario.image}
+        icon={scenario.icon}
+        disabled={readOnly}
+        onChange={setFields}
+      />
       <Field label="Opening Prompt" value={scenario.prompt} onChange={(v) => setField('prompt', v)}
         textarea rows={6} placeholder="The opening story text. Supports ${placeholders} (Phase 5)." />
       <Field label="Plot Essentials (Memory)" value={scenario.memory} onChange={(v) => setField('memory', v)}

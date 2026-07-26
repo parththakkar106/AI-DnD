@@ -1,10 +1,19 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api'
-import { extractPlaceholders, pickJSONFile, PlaceholderModal } from '../components'
+import {
+  CardSkeleton,
+  extractPlaceholders,
+  pickJSONFile,
+  PlaceholderModal,
+  ScenarioArt,
+  useToast,
+} from '../components'
 
-function splitTags(tags) {
-  return (tags || '').split(',').map((t) => t.trim()).filter(Boolean)
+function splitTags(tags, { isPublic = false } = {}) {
+  const all = (tags || '').split(',').map((t) => t.trim()).filter(Boolean)
+  // Public scenarios already carry a "demo ✦" badge; the tag would repeat it.
+  return isPublic ? all.filter((t) => t.toLowerCase() !== 'demo') : all
 }
 
 export default function Scenarios() {
@@ -13,6 +22,7 @@ export default function Scenarios() {
   const [tagFilter, setTagFilter] = useState(null)
   const [pending, setPending] = useState(null) // { scenario, names } awaiting placeholder values
   const navigate = useNavigate()
+  const toast = useToast()
 
   useEffect(() => {
     api.listScenarios().then(setScenarios).catch(() => setScenarios([]))
@@ -71,9 +81,11 @@ export default function Scenarios() {
             try {
               const bundle = await pickJSONFile()
               const { scenario, unmapped_keys } = await api.importScenario(bundle)
-              if (unmapped_keys.length) alert(`Imported. Unmapped fields ignored: ${unmapped_keys.join(', ')}`)
+              if (unmapped_keys.length) {
+                toast(`Imported. Ignored unknown fields: ${unmapped_keys.join(', ')}`)
+              }
               navigate(`/scenarios/${scenario.id}`)
-            } catch (err) { alert(err.message) }
+            } catch (err) { toast(err.message, 'error') }
           }}>Import</button>
           <button className="primary" onClick={createScenario}>+ New Scenario</button>
         </div>
@@ -102,7 +114,9 @@ export default function Scenarios() {
         )}
       </div>
 
-      {visible === null ? null : visible.length === 0 ? (
+      {visible === null ? (
+        <CardSkeleton count={6} />
+      ) : visible.length === 0 ? (
         <div className="empty">
           {scenarios.length === 0
             ? 'No scenarios yet. Create one to define a reusable story template.'
@@ -110,24 +124,34 @@ export default function Scenarios() {
         </div>
       ) : (
         <div className="card-grid">
-          {visible.map((sc) => (
-            <div key={sc.id} className="card" onClick={() => navigate(`/scenarios/${sc.id}`)}>
-              <h3>{sc.title}</h3>
-              <p>{sc.description || 'No description'}</p>
-              <div className="meta">
-                {sc.is_public && <span className="tag small" title="Shared demo scenario (read-only)">demo ✦</span>}
-                {splitTags(sc.tags).map((tag) => (
-                  <span key={tag} className="tag small">{tag}</span>
-                ))}
-                <button
-                  className="primary"
-                  style={{ float: 'right', padding: '3px 10px', fontSize: '0.78rem' }}
-                  onClick={(e) => startAdventure(e, sc.id)}
-                >
+          {visible.map((sc, i) => (
+            <article
+              key={sc.id}
+              className="card tome enter"
+              style={{ animationDelay: `${Math.min(i, 10) * 50}ms` }}
+              onClick={() => navigate(`/scenarios/${sc.id}`)}
+            >
+              <div className="card-head">
+                <ScenarioArt image={sc.image_url} icon={sc.icon} title={sc.title} />
+                <div className="card-headings">
+                  <h3>{sc.title}</h3>
+                </div>
+              </div>
+              <p className="snippet">{sc.description || 'No description yet.'}</p>
+              <footer className="card-foot">
+                <div className="tag-cluster">
+                  {sc.is_public && (
+                    <span className="tag small" title="Shared demo scenario (read-only)">demo ✦</span>
+                  )}
+                  {splitTags(sc.tags, { isPublic: sc.is_public }).slice(0, 3).map((tag) => (
+                    <span key={tag} className="tag small">{tag}</span>
+                  ))}
+                </div>
+                <button className="primary compact" onClick={(e) => startAdventure(e, sc.id)}>
                   Play
                 </button>
-              </div>
-            </div>
+              </footer>
+            </article>
           ))}
         </div>
       )}

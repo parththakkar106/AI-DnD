@@ -1124,9 +1124,11 @@ button:disabled { opacity: 0.45; cursor: default; transform: none; box-shadow: n
   overflow-y: auto;
 }
 
-/* ---------- Toast ---------- */
+/* ---------- Play screen error/success banner ----------
+   Persistent (no auto-dismiss) and can carry a Retry action, so it stays
+   separate from the transient global toasts further down this file. */
 
-.toast {
+.play-toast {
   position: fixed;
   bottom: 24px;
   left: 50%;
@@ -1141,10 +1143,493 @@ button:disabled { opacity: 0.45; cursor: default; transform: none; box-shadow: n
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
   animation: toast-in 0.25s ease both;
 }
-.toast.ok { border-color: var(--accent); box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5), 0 0 20px var(--accent-glow); }
+.play-toast.ok { border-color: var(--accent); box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5), 0 0 20px var(--accent-glow); }
 @keyframes toast-in {
   from { opacity: 0; transform: translate(-50%, 12px); }
   to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+/* ============================================================
+   Illuminated tome — ambient layer, ornament, art plates, cards
+   Everything below styles the home/library surfaces. It comes after
+   the base .card rules on purpose: several selectors here tie with
+   earlier ones on specificity and rely on source order to win.
+   ============================================================ */
+
+/* ---------- Ambient drifting motes ---------- */
+
+/* Behind every page: fixed, unclickable, and out of the stacking flow. The
+   canvas is sized in JS (see Embers.jsx); z-index 0 with the app's own
+   surfaces at 1+ keeps it under content without needing a negative index
+   (which would drop it behind the body background). */
+.embers {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.85;
+}
+/* .topnav already carries z-index 10 — deliberately not touched here, so it
+   keeps sitting above page content as well as above the canvas. */
+.page { position: relative; z-index: 1; }
+
+/* A third gradient pool warming the middle of the ground. `background` is a
+   shorthand, so background-attachment has to be restated or it resets to
+   scroll and the gradients start sliding with the page. */
+body {
+  background:
+    radial-gradient(1200px 700px at 15% -10%, rgba(212, 169, 78, 0.07), transparent 60%),
+    radial-gradient(1000px 600px at 90% 110%, rgba(88, 76, 140, 0.1), transparent 55%),
+    radial-gradient(760px 520px at 50% 42%, rgba(150, 119, 58, 0.05), transparent 62%),
+    var(--bg);
+  background-attachment: fixed;
+}
+
+/* ---------- Home banner ---------- */
+
+.hall {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 6px 0 26px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+  position: relative;
+}
+/* Gold hairline that fades out toward both ends, sat on the border above. */
+.hall::after {
+  content: '';
+  position: absolute;
+  bottom: -1px;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--accent-dim) 22%, var(--accent-dim) 78%, transparent);
+  opacity: 0.55;
+}
+.hall-eyebrow {
+  margin: 0;
+  font-size: 0.68rem;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--accent-dim);
+  font-weight: 600;
+}
+.hall-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: clamp(1.7rem, 4.6vw, 2.3rem);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  color: var(--accent-bright);
+  text-shadow: 0 0 30px var(--accent-glow);
+  text-wrap: balance;
+}
+.hall-sub {
+  margin: 0;
+  color: var(--text-dim);
+  font-family: var(--font-story);
+  font-size: 1.02rem;
+}
+
+/* ---------- Ornamental section rules ---------- */
+
+.home-section { margin-top: 34px; }
+
+.rule-head {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.rule {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 0.82rem;
+  font-weight: 600;
+  letter-spacing: 0.26em;
+  text-transform: uppercase;
+  color: var(--accent-bright);
+  white-space: nowrap;
+}
+/* Rules grow to fill whatever the label leaves — the label stays optically
+   centred in its own space without needing a fixed width. */
+.rule::before, .rule::after {
+  content: '';
+  height: 1px;
+  flex: 1;
+  background: linear-gradient(90deg, transparent, var(--accent-dim) 45%, var(--accent-dim) 55%, transparent);
+}
+.rule::before { flex: 0 0 26px; }
+.rule > span { flex: none; }
+
+button.linklike.ornate {
+  font-family: var(--font-display);
+  font-size: 0.74rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent-dim);
+  white-space: nowrap;
+  transition: color 0.15s;
+}
+button.linklike.ornate:hover { color: var(--accent-bright); text-decoration: none; }
+
+/* ---------- Art plates ---------- */
+
+.art {
+  width: 38px;
+  height: 38px;
+  flex: none;
+  border-radius: 3px;
+  border: 1px solid var(--accent-dim);
+  box-shadow: inset 0 0 0 1px rgba(10, 10, 15, 0.7);
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  line-height: 1;
+}
+.art-lg { width: 46px; height: 46px; }
+.art-photo img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.art-icon { font-size: 1.15rem; }
+.art-lg.art-icon { font-size: 1.4rem; }
+.art-mono {
+  font-family: var(--font-display);
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: rgba(232, 196, 118, 0.92);
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.65);
+}
+.art-lg.art-mono { font-size: 0.95rem; }
+
+/* ---------- Tome cards ---------- */
+
+.card-grid.wide { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
+
+.card.tome {
+  border-radius: 3px;
+  padding: 16px 17px 14px;
+  background:
+    linear-gradient(168deg, rgba(212, 169, 78, 0.05), transparent 55%),
+    var(--bg-panel);
+  /* Inner dark gutter + a gold keyline: the double-rule border of a plate in
+     an old book, done with shadows so it costs no extra element. */
+  box-shadow:
+    inset 0 0 0 1px rgba(10, 10, 15, 0.9),
+    inset 0 0 0 2px rgba(150, 119, 58, 0.22);
+}
+
+/* Filigree corner brackets. These override the base .card::before gradient
+   bar (equal specificity, later in the file wins). */
+.card.tome::before,
+.card.tome::after {
+  content: '';
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border: 1px solid var(--accent-dim);
+  opacity: 0.5;
+  transition: opacity 0.2s;
+  background: none;
+  inset: auto;
+}
+.card.tome::before {
+  top: 6px;
+  left: 6px;
+  border-right: 0;
+  border-bottom: 0;
+}
+.card.tome::after {
+  bottom: 6px;
+  right: 6px;
+  border-left: 0;
+  border-top: 0;
+}
+.card.tome:hover::before,
+.card.tome:hover::after { opacity: 1; }
+.card.tome:hover {
+  border-color: var(--accent-dim);
+  box-shadow:
+    inset 0 0 0 1px rgba(10, 10, 15, 0.9),
+    inset 0 0 0 2px rgba(212, 169, 78, 0.4),
+    0 12px 30px rgba(0, 0, 0, 0.5),
+    0 0 26px rgba(212, 169, 78, 0.08);
+}
+
+.card-head { display: flex; gap: 12px; align-items: center; margin-bottom: 10px; }
+/* Keep headings clear of the wax seal, which is absolutely positioned over
+   the card's top-right corner. Only cards that actually carry one pay the
+   indent, so scenario cards keep their full width. */
+.card.tome:has(> .seal) .card-head { padding-right: 26px; }
+.card-headings { min-width: 0; }
+.card.tome h3 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.045em;
+  color: var(--accent);
+  overflow-wrap: anywhere;
+}
+.card-from {
+  margin: 3px 0 0;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+
+/* Wax seal marking a story in progress. */
+.seal {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 34% 30%, #b8553f, #7d2f24 72%);
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.6), inset 0 -1px 3px rgba(0, 0, 0, 0.45);
+  display: grid;
+  place-items: center;
+  font-size: 0.6rem;
+  color: #f0d5b0;
+  z-index: 1;
+}
+
+.snippet {
+  margin: 0;
+  font-family: var(--font-story);
+  font-size: 0.98rem;
+  line-height: 1.5;
+  color: #b3ac9c;
+  /* Clamp so a long beat can't stretch one card taller than its row. */
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.snippet.muted { color: var(--text-dim); font-style: italic; }
+.snippet.dropcap::first-letter {
+  float: left;
+  font-family: var(--font-display);
+  font-size: 2.3rem;
+  line-height: 0.85;
+  font-weight: 700;
+  color: var(--accent);
+  padding: 3px 7px 0 0;
+}
+
+.card-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 13px;
+  padding-top: 11px;
+  border-top: 1px solid var(--border);
+  font-size: 0.74rem;
+  color: var(--text-dim);
+  flex-wrap: wrap;
+}
+.card-foot .turns { font-variant-numeric: tabular-nums; }
+.card-foot .dot { opacity: 0.5; }
+.card-foot .resume {
+  margin-left: auto;
+  color: var(--accent-dim);
+  font-family: var(--font-ui);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  font-size: 0.68rem;
+  font-weight: 600;
+  transition: color 0.15s;
+}
+.card.tome:hover .resume { color: var(--accent-bright); }
+.tag-cluster { display: flex; gap: 5px; flex-wrap: wrap; min-width: 0; }
+.card-actions { margin-left: auto; display: inline-flex; gap: 5px; }
+
+button.tiny { padding: 2px 9px; font-size: 0.72rem; }
+button.primary.compact { padding: 3px 12px; font-size: 0.76rem; margin-left: auto; }
+
+/* Staggered card entrance. The per-card delay is set inline. */
+.enter { animation: card-in 0.4s ease both; }
+@keyframes card-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* ---------- Loading skeletons ---------- */
+
+.skeleton-card {
+  cursor: default;
+  pointer-events: none;
+  animation: card-in 0.3s ease both;
+}
+.skeleton-card::before, .skeleton-card::after { content: none; }
+.skeleton-card:hover { transform: none; border-color: var(--border); box-shadow: none; }
+.sk {
+  border-radius: 3px;
+  background: linear-gradient(90deg, #1c1c2b 25%, #262639 50%, #1c1c2b 75%);
+  background-size: 220% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+}
+.sk-plate { width: 38px; height: 38px; margin-bottom: 12px; }
+.sk-title { height: 13px; width: 58%; margin-bottom: 12px; }
+.sk-line { height: 9px; margin-bottom: 8px; }
+@keyframes shimmer {
+  from { background-position: 120% 0; }
+  to { background-position: -120% 0; }
+}
+
+/* ---------- Global toasts ---------- */
+
+.toast-host {
+  position: fixed;
+  bottom: 22px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 120;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 8px;
+  align-items: center;
+  width: max-content;
+  max-width: min(92vw, 520px);
+  pointer-events: none;
+}
+.toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  text-align: left;
+  font-family: var(--font-ui);
+  font-size: 0.86rem;
+  line-height: 1.45;
+  padding: 10px 16px;
+  border-radius: 8px;
+  background: var(--bg-panel-glass);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--border-bright);
+  border-left: 3px solid var(--accent);
+  color: var(--text);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+  animation: rise 0.25s ease both;
+}
+.toast:hover { border-color: var(--accent-dim); }
+.toast-error { border-left-color: var(--danger); }
+.toast-mark { color: var(--accent); flex: none; line-height: 1.5; }
+.toast-error .toast-mark { color: var(--danger); }
+@keyframes rise {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* ---------- Story text polish ---------- */
+
+/* Drop cap opening the story's first narrated beat. */
+.story .action.opening::first-letter {
+  float: left;
+  font-family: var(--font-display);
+  font-size: 3.1rem;
+  line-height: 0.82;
+  font-weight: 700;
+  color: var(--accent);
+  padding: 5px 10px 0 2px;
+  text-shadow: 0 0 22px var(--accent-glow);
+}
+
+/* Ornamental separator between turns — a diamond flanked by fading rules.
+   Marks the beat change without the heaviness of a full <hr>. */
+.scene-break {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 4px 0 16px;
+  color: var(--accent-dim);
+  font-size: 0.6rem;
+  user-select: none;
+}
+.scene-break::before, .scene-break::after {
+  content: '';
+  height: 1px;
+  flex: 1;
+  background: linear-gradient(90deg, transparent, rgba(150, 119, 58, 0.4), transparent);
+}
+
+/* Thinking indicator — three motes pulsing in sequence. */
+.thinking {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-ui);
+  font-size: 0.78rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent-dim);
+}
+.thinking i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent-glow);
+  animation: mote 1.25s ease-in-out infinite;
+}
+.thinking i:nth-child(2) { animation-delay: 0.18s; }
+.thinking i:nth-child(3) { animation-delay: 0.36s; }
+@keyframes mote {
+  0%, 100% { opacity: 0.25; transform: scale(0.8); }
+  45% { opacity: 1; transform: scale(1.15); }
+}
+
+/* ---------- Scenario art picker (editor) ---------- */
+
+.art-picker { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+.art-preview {
+  width: 76px;
+  height: 76px;
+  flex: none;
+  border-radius: 3px;
+  border: 1px solid var(--accent-dim);
+  box-shadow: inset 0 0 0 1px rgba(10, 10, 15, 0.7);
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+}
+.art-preview img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.art-preview .glyph { font-size: 2rem; line-height: 1; }
+.art-preview .mono {
+  font-family: var(--font-display);
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: rgba(232, 196, 118, 0.92);
+}
+.art-controls { flex: 1; min-width: 220px; display: flex; flex-direction: column; gap: 9px; }
+.art-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
+.icon-row { display: flex; gap: 5px; flex-wrap: wrap; }
+.icon-row button {
+  padding: 3px 8px;
+  font-size: 1rem;
+  line-height: 1.2;
+  min-width: 34px;
+}
+.icon-row button.active { border-color: var(--accent); box-shadow: 0 0 10px var(--accent-glow); }
+.art-hint { font-size: 0.76rem; color: var(--text-dim); line-height: 1.45; margin: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  .enter, .skeleton-card, .sk, .toast, .thinking i,
+  .story .action, .page {
+    animation: none !important;
+  }
+  .card.tome:hover { transform: none; }
 }
 
 /* ============================================================
@@ -1252,5 +1737,60 @@ button:disabled { opacity: 0.45; cursor: default; transform: none; box-shadow: n
     z-index: 45;
     border-left: none;
     padding: 16px;
+  }
+
+  /* ---------- Home / library surfaces ---------- */
+
+  /* Both grids go single-column: the wide variant's 320px minimum would
+     otherwise overflow a 360px phone once card padding is counted. */
+  .card-grid, .card-grid.wide { grid-template-columns: 1fr; }
+
+  .hall { padding: 2px 0 20px; }
+  .hall-sub { font-size: 0.95rem; }
+  .home-section { margin-top: 26px; }
+
+  /* The label eats most of a narrow line, so drop the short leading rule and
+     let the trailing one take whatever space is left. */
+  .rule { letter-spacing: 0.16em; font-size: 0.76rem; gap: 10px; }
+  .rule::before { display: none; }
+  .rule-head { gap: 10px; }
+
+  /* Ornament scales down rather than crowding the corners on a small card. */
+  .card.tome { padding: 14px 15px 12px; }
+  .card.tome::before, .card.tome::after { width: 9px; height: 9px; }
+  /* Always-on filigree: there's no hover on touch. */
+  .card.tome::before, .card.tome::after { opacity: 0.8; }
+  .seal { width: 21px; height: 21px; top: 10px; right: 10px; font-size: 0.54rem; }
+  .card.tome:has(> .seal) .card-head { padding-right: 22px; }
+  .snippet { font-size: 0.94rem; -webkit-line-clamp: 4; }
+  .snippet.dropcap::first-letter { font-size: 2rem; padding-right: 6px; }
+
+  /* Motes are pure decoration — thin them out where the GPU is weakest and
+     the effect is least visible. (Embers.jsx already scales count to the
+     viewport; this drops the opacity too.) */
+  .embers { opacity: 0.55; }
+
+  /* Full-width toasts, clear of the sticky play controls. */
+  .toast-host {
+    left: 12px;
+    right: 12px;
+    bottom: 14px;
+    transform: none;
+    width: auto;
+    max-width: none;
+    align-items: stretch;
+  }
+  .toast { font-size: 0.82rem; }
+
+  /* Art picker stacks; the emoji grid stays tappable at 34px minimum. */
+  .art-picker { gap: 12px; }
+  .art-preview { width: 64px; height: 64px; }
+  .art-controls { min-width: 0; }
+
+  /* The drop cap on the opening beat competes with the edge tabs at this
+     width, so shrink it and keep it inside the 26px story inset. */
+  .story .action.opening::first-letter {
+    font-size: 2.5rem;
+    padding: 4px 8px 0 0;
   }
 }

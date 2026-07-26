@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
 import { api } from './api'
-import { AuthModal } from './components'
+import { AuthModal, ToastHost } from './components'
+import Embers from './Embers.jsx'
 
 export default function App() {
   // null until /auth/me resolves; in local mode multi_user=false hides all auth UI.
@@ -29,7 +30,8 @@ export default function App() {
   }
 
   return (
-    <>
+    <ToastHost>
+      <Embers />
       <nav className="topnav">
         <span className="brand">⚔ AI D&D</span>
         <button
@@ -42,6 +44,9 @@ export default function App() {
         </button>
         <div className={`nav-links${navOpen ? ' open' : ''}`} onClick={() => setNavOpen(false)}>
           <NavLink to="/" end className={({ isActive }) => `navlink${isActive ? ' active' : ''}`}>
+            Home
+          </NavLink>
+          <NavLink to="/adventures" className={({ isActive }) => `navlink${isActive ? ' active' : ''}`}>
             Adventures
           </NavLink>
           <NavLink to="/scenarios" className={({ isActive }) => `navlink${isActive ? ' active' : ''}`}>
@@ -75,6 +80,6 @@ export default function App() {
       {authMode && (
         <AuthModal mode={authMode} onClose={() => setAuthMode(null)} onAuthed={onAuthed} />
       )}
-    </>
+    </ToastHost>
   )
 }

@@ -6,6 +6,7 @@
   "authors_note": "Keep it tense and consequential. Reckless moves should cost health; clever ones should pay off. Gwen reacts to how the player treats her.",
   "ai_instructions": "Write in second person, present tense. End each reply where the player can act. Let the world state guide the fiction — if the player is badly hurt, show it. Reflect what happens in the numbers each turn: change health when someone is hurt or healed, shift Gwen's trust based on how the player treats her, move the leader's aggression as the situation escalates or calms, and mark milestones as they are reached.",
   "tags": "demo, rpg, world-state, combat, short",
+  "icon": "🏹",
   "stat_schema": {
     "world": {
       "day": { "type": "counter", "min": 1, "initial": 1, "desc": "Which in-game day it is; only ever counts up." }

@@ -62,5 +62,6 @@
       "context_js": "",
       "output_js": "const modifier = (text) => {\n  var out = text;\n\n  // Drop a trailing sentence fragment (no ending punctuation).\n  var m = out.match(/^([\\s\\S]*[.!?\"'\\u2026])[^.!?\"'\\u2026]*$/);\n  if (m && m[1].length > 40) {\n    if (m[1].length < out.length) log(\"Trimmed incomplete final sentence.\");\n    out = m[1];\n  }\n\n  // Demonstrate script-created story cards.\n  if (/vharos/i.test(out)) {\n    var added = addStoryCard(\n      \"Vharos, ghost, spirit\",\n      \"Vharos was the crypt's architect, now a restless ghost bound to the amulet he was buried with. He speaks in echoes and cannot lie.\",\n      \"character\"\n    );\n    if (added !== false) log(\"Vharos mentioned — story card created.\");\n  }\n\n  return { text: out };\n};\nmodifier(text);\n"
     }
-  ]
+  ],
+  "icon": "🗝"
 }

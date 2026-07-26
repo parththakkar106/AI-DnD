@@ -1,8 +1,9 @@
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
+from fastapi.responses import Response
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from .. import auth, limits, models, schemas
+from .. import auth, images, limits, models, schemas
 from ..database import get_db
 
 router = APIRouter(prefix="/api/scenarios", tags=["scenarios"])
@@ -53,6 +54,30 @@ def get_scenario(
     user: models.User = Depends(auth.get_current_user),
 ):
     return get_scenario_or_404(scenario_id, db, user)
+
+
+@router.get("/{scenario_id}/image")
+def get_scenario_image(
+    scenario_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.get_current_user),
+):
+    """Serve an uploaded cover image as real bytes.
+
+    Lists point here instead of inlining the data URI. The response is marked
+    immutable and the URL carries a `?v=<updated_at>` stamp, so browsers cache
+    it indefinitely but pick up a new picture the moment the author saves one.
+    """
+    scenario = get_scenario_or_404(scenario_id, db, user)
+    decoded = images.decode(scenario.image)
+    if decoded is None:
+        raise HTTPException(404, "This scenario has no uploaded image")
+    data, content_type = decoded
+    return Response(
+        content=data,
+        media_type=content_type,
+        headers={"Cache-Control": "private, max-age=31536000, immutable"},
+    )
 
 
 @router.patch("/{scenario_id}", response_model=schemas.ScenarioOut)
@@ -109,6 +134,8 @@ def export_scenario(
         "authorsNote": s.authors_note,
         "aiInstructions": s.ai_instructions,
         "tags": s.tags,
+        "image": s.image,
+        "icon": s.icon,
         "statSchema": s.stat_schema,
         "storyCards": [
             {"type": c.type, "name": c.name, "keys": c.keys, "entry": c.entry, "notes": c.notes}
@@ -138,8 +165,8 @@ _SCENARIO_KEYS = {
     "instructions": "ai_instructions",
 }
 _IGNORED_KEYS = {"format", "storyCards", "worldInfo", "worldInformation", "scripts", "tags",
-                 "statSchema", "stat_schema",
-                 "createdAt", "updatedAt", "id", "publicId", "image", "nsfw", "type", "options"}
+                 "statSchema", "stat_schema", "image", "icon",
+                 "createdAt", "updatedAt", "id", "publicId", "nsfw", "type", "options"}
 
 
 @router.post("/import", status_code=201)
@@ -171,13 +198,24 @@ def import_scenario(
     if isinstance(schema, dict):
         fields["stat_schema"] = schema
 
+    # AI Dungeon bundles carry an `image` too, so this is worth honouring — but
+    # it's untrusted input, hence sanitize() rather than a straight assignment.
+    image = images.sanitize(bundle.get("image"), schemas.IMAGE_MAX)
+    if image:
+        fields["image"] = image
+    icon = bundle.get("icon")
+    if isinstance(icon, str) and icon:
+        fields["icon"] = icon[:schemas.ICON_MAX]
+
     scenario = models.Scenario(**fields, user_id=user.id)
     if not scenario.title:
         scenario.title = "Imported Scenario"
     # Raw-dict import bypasses the schemas — clamp to VARCHAR widths
-    # (Postgres enforces them; see schemas.py).
+    # (Postgres enforces them; see schemas.py). Column defaults haven't been
+    # applied yet at this point (that happens at flush), so a bundle with no
+    # `tags` key leaves the attribute None — hence the `or ""`.
     scenario.title = scenario.title[:schemas.NAME_MAX]
-    scenario.tags = scenario.tags[:schemas.TAGS_MAX]
+    scenario.tags = (scenario.tags or "")[:schemas.TAGS_MAX]
     db.add(scenario)
     db.flush()
 

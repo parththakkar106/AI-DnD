@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from .. import auth, limits, memorybank, models, schemas, worldstate
+from .. import auth, images, limits, memorybank, models, schemas, worldstate
 from ..context import build_context
 from ..database import get_db
 from ..providers import OpenAICompatibleProvider, PromptParts, ProviderError
@@ -29,21 +29,89 @@ def get_adventure_or_404(
     return adventure
 
 
+# How much of the last narrative beat a Continue card shows. Long enough to
+# re-establish the scene, short enough that the card stays a card.
+SNIPPET_MAX = 220
+
+
+def _snippet(text: str) -> str:
+    """Condense stored action text into one flowing line for a card."""
+    # Stored AI text already has any world-state block stripped (see the
+    # streaming handler below), so this only has to tidy whitespace.
+    collapsed = " ".join((text or "").split())
+    if len(collapsed) <= SNIPPET_MAX:
+        return collapsed
+    # Cut on a word boundary rather than mid-word, then let CSS add the ellipsis.
+    cut = collapsed[:SNIPPET_MAX].rsplit(" ", 1)[0]
+    return f"{cut}…"
+
+
+# Action types that read as narration. `start` is the scenario's opening prompt,
+# which is the only text a freshly-created adventure has — without it a brand-new
+# story's card would claim nothing had been written yet. `do`/`say` are excluded:
+# "where you left off" should be the story's voice, not the player's.
+NARRATION_TYPES = ("ai", "story", "start")
+
+
+def _latest_narration(db: Session, adventure_ids: list[int]) -> dict[int, str]:
+    """Map adventure id -> text of its most recent narrated action.
+
+    One window-function query rather than a per-adventure lookup, so the list
+    endpoint stays at a fixed number of round trips.
+    """
+    if not adventure_ids:
+        return {}
+    ranked = (
+        db.query(
+            models.Action.adventure_id.label("adventure_id"),
+            models.Action.text.label("text"),
+            func.row_number()
+            .over(
+                partition_by=models.Action.adventure_id,
+                order_by=(models.Action.index.desc(), models.Action.id.desc()),
+            )
+            .label("rank"),
+        )
+        .filter(
+            models.Action.adventure_id.in_(adventure_ids),
+            models.Action.type.in_(NARRATION_TYPES),
+        )
+        .subquery()
+    )
+    rows = db.query(ranked.c.adventure_id, ranked.c.text).filter(ranked.c.rank == 1).all()
+    return {adventure_id: text for adventure_id, text in rows}
+
+
 @router.get("", response_model=list[schemas.AdventureListItem])
 def list_adventures(db: Session = Depends(get_db), user: models.User = CurrentUser):
     rows = (
-        db.query(models.Adventure, func.count(models.Action.id), models.Scenario.title)
+        db.query(
+            models.Adventure,
+            func.count(models.Action.id),
+            models.Scenario.title,
+            models.Scenario.image,
+            models.Scenario.icon,
+            models.Scenario.updated_at,
+        )
         .outerjoin(models.Action)
         .outerjoin(models.Scenario, models.Adventure.scenario_id == models.Scenario.id)
         .filter(models.Adventure.user_id == user.id)
         # Group by both PKs: Postgres requires every selected column to be
         # grouped or aggregated. Adventure.* rides on its own grouped PK, but
-        # Scenario.title comes from a joined table and must be listed too
+        # the Scenario columns come from a joined table and must be listed too
         # (SQLite is lax here; Postgres rejects it).
-        .group_by(models.Adventure.id, models.Scenario.title)
+        .group_by(
+            models.Adventure.id,
+            models.Scenario.id,
+            models.Scenario.title,
+            models.Scenario.image,
+            models.Scenario.icon,
+            models.Scenario.updated_at,
+        )
         .order_by(models.Adventure.updated_at.desc())
         .all()
     )
+    narration = _latest_narration(db, [adv.id for adv, *_ in rows])
     return [
         schemas.AdventureListItem(
             id=adv.id,
@@ -52,8 +120,13 @@ def list_adventures(db: Session = Depends(get_db), user: models.User = CurrentUs
             title=adv.title,
             updated_at=adv.updated_at,
             action_count=count,
+            snippet=_snippet(narration.get(adv.id, "")),
+            # The art belongs to the scenario, so the cache-busting stamp is the
+            # scenario's updated_at, not the adventure's.
+            image_url=images.public_url(adv.scenario_id, image or "", scenario_updated),
+            icon=icon or "",
         )
-        for adv, count, scenario_title in rows
+        for adv, count, scenario_title, image, icon, scenario_updated in rows
     ]
 
 

@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api'
-import { downloadJSON, pickJSONFile } from '../components'
+import { downloadJSON, pickJSONFile, useToast } from '../components'
 
 export default function Scripts() {
   const [scripts, setScripts] = useState(null)
   const navigate = useNavigate()
+  const toast = useToast()
 
   useEffect(() => {
     api.listScripts().then(setScripts).catch(() => setScripts([]))
@@ -25,7 +26,7 @@ export default function Scripts() {
       const script = await api.importScript(bundle)
       navigate(`/scripts/${script.id}`)
     } catch (err) {
-      alert(err.message)
+      toast(err.message, 'error')
     }
   }
 

@@ -1,7 +1,9 @@
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
+
+from . import images
 
 # Length caps (Phase 9). The VARCHAR ones are correctness, not just abuse
 # limits: Postgres enforces column lengths (SQLite never did), so anything
@@ -14,6 +16,12 @@ PROSE_MAX = 50_000      # memory, author's note, prompts, entries, notes...
 SCRIPT_MAX = 200_000    # one JS source
 ACTION_MAX = 20_000     # one player action
 MEMORY_TEXT_MAX = 5_000
+# A scenario cover image, stored inline as a base64 data URI. 400x300 WebP at
+# the quality the editor encodes lands around 20-40 KB; 400 KB leaves room for
+# a client that downscales less aggressively without letting anyone park a
+# multi-megabyte PNG in a row that gets read on every list request.
+IMAGE_MAX = 400_000
+ICON_MAX = 16           # one emoji/glyph — VARCHAR(16)
 
 Name = Annotated[str, Field(max_length=NAME_MAX)]
 Tags = Annotated[str, Field(max_length=TAGS_MAX)]
@@ -21,6 +29,8 @@ CardType = Annotated[str, Field(max_length=CARD_TYPE_MAX)]
 Prose = Annotated[str, Field(max_length=PROSE_MAX)]
 ScriptSource = Annotated[str, Field(max_length=SCRIPT_MAX)]
 ActionText = Annotated[str, Field(max_length=ACTION_MAX)]
+Image = Annotated[str, Field(max_length=IMAGE_MAX)]
+Icon = Annotated[str, Field(max_length=ICON_MAX)]
 
 
 class ORMModel(BaseModel):
@@ -66,6 +76,10 @@ class ScenarioBase(BaseModel):
     authors_note: Prose = ""
     ai_instructions: Prose = ""
     tags: Tags = ""
+    # Cover art — an https URL or a base64 data URI. See app/images.py.
+    image: Image = ""
+    # Emoji/glyph shown when `image` is empty.
+    icon: Icon = ""
     # Phase 12: RPG world-state template (stat defs, bands, rules, milestones).
     # None means no RPG layer.
     stat_schema: dict | None = None
@@ -83,6 +97,8 @@ class ScenarioUpdate(BaseModel):
     authors_note: Prose | None = None
     ai_instructions: Prose | None = None
     tags: Tags | None = None
+    image: Image | None = None
+    icon: Icon | None = None
     stat_schema: dict | None = None
     script_ids: list[int] | None = None
 
@@ -103,6 +119,15 @@ class ScenarioListItem(ORMModel):
     tags: str
     is_public: bool = False
     updated_at: datetime
+    # Read off the row so `image_url` can be derived, but excluded from the
+    # response: a list of base64 data URIs would be megabytes of JSON.
+    image: str = Field("", exclude=True)
+    icon: str = ""
+
+    @computed_field
+    @property
+    def image_url(self) -> str:
+        return images.public_url(self.id, self.image, self.updated_at)
 
 
 # ---------- Adventures ----------
@@ -194,6 +219,12 @@ class AdventureListItem(ORMModel):
     title: str
     updated_at: datetime
     action_count: int = 0
+    # "Where you left off" — the tail of the most recent narrative beat, so a
+    # Continue card can show the story instead of just a turn count.
+    snippet: str = ""
+    # Cover art inherited from the parent scenario (see app/images.py).
+    image_url: str = ""
+    icon: str = ""
 
 
 # ---------- Scripts ----------
