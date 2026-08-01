@@ -142,6 +142,51 @@ def fill_placeholders(text: str, values: dict[str, str]) -> str:
     )
 
 
+# Adventure fields that start as a copy of the scenario's text and so can be
+# re-copied by "Update from scenario". `title` is excluded on purpose: it is the
+# adventure's own name, which players rename, and `story_summary` is play output,
+# not scenario content.
+SCENARIO_TEXT_FIELDS = ("memory", "authors_note", "ai_instructions")
+
+# Story-card fields copied from the scenario, and compared to detect drift.
+CARD_FIELDS = ("type", "name", "keys", "entry", "notes")
+
+
+def scenario_card_specs(scenario: models.Scenario, values: dict[str, str]) -> dict[str, dict]:
+    """Every story card a scenario implies, keyed by a stable `source_ref`:
+    its own cards ("card:<id>") plus one per NPC defined in its stat_schema
+    ("npc:<key>"), with placeholders already filled in.
+
+    Shared by adventure creation and refresh so the two can't drift.
+    """
+    specs: dict[str, dict] = {}
+    existing_names = {(c.name or "").strip().lower() for c in scenario.story_cards}
+    for card in scenario.story_cards:
+        specs[f"card:{card.id}"] = {
+            "type": card.type,
+            "name": card.name,
+            "keys": fill_placeholders(card.keys, values),
+            "entry": fill_placeholders(card.entry, values),
+            "notes": card.notes,
+        }
+    # Phase 12: each defined NPC gets a story card (for its description as lore +
+    # in-scene triggering), unless a card with that name already exists.
+    for npc_key, ndef in (scenario.stat_schema or {}).get("npcs", {}).items():
+        if not isinstance(ndef, dict):
+            continue
+        name = worldstate.npc_name(ndef, npc_key)
+        if name.strip().lower() in existing_names:
+            continue
+        specs[f"npc:{npc_key}"] = {
+            "type": "character",
+            "name": name,
+            "keys": fill_placeholders(str(ndef.get("keys") or name), values),
+            "entry": fill_placeholders(str(ndef.get("desc") or ""), values),
+            "notes": "",
+        }
+    return specs
+
+
 @router.post("", response_model=schemas.AdventureOut, status_code=201)
 def create_adventure(
     payload: schemas.AdventureCreate,
@@ -166,41 +211,16 @@ def create_adventure(
         ai_instructions=fill_placeholders(scenario.ai_instructions, values) if scenario else "",
         # Phase 12: seed the live RPG state from the scenario's template.
         world_state=worldstate.instantiate(scenario.stat_schema) if scenario else {},
+        # Kept so a later "Update from scenario" can re-fill re-copied text with
+        # the same answers instead of re-injecting literal ${...} tokens.
+        placeholders=dict(values),
     )
     db.add(adventure)
     db.flush()
 
     if scenario:
-        existing_names = {(c.name or "").strip().lower() for c in scenario.story_cards}
-        for card in scenario.story_cards:
-            db.add(
-                models.StoryCard(
-                    adventure_id=adventure.id,
-                    type=card.type,
-                    name=card.name,
-                    keys=fill_placeholders(card.keys, values),
-                    entry=fill_placeholders(card.entry, values),
-                    notes=card.notes,
-                )
-            )
-        # Phase 12: each defined NPC gets a story card (for its description as
-        # lore + in-scene triggering), unless a card with that name already exists.
-        for npc_key, ndef in (scenario.stat_schema or {}).get("npcs", {}).items():
-            if not isinstance(ndef, dict):
-                continue
-            name = worldstate.npc_name(ndef, npc_key)
-            if name.strip().lower() in existing_names:
-                continue
-            db.add(
-                models.StoryCard(
-                    adventure_id=adventure.id,
-                    type="character",
-                    name=name,
-                    keys=fill_placeholders(str(ndef.get("keys") or name), values),
-                    entry=fill_placeholders(str(ndef.get("desc") or ""), values),
-                    notes="",
-                )
-            )
+        for ref, spec in scenario_card_specs(scenario, values).items():
+            db.add(models.StoryCard(adventure_id=adventure.id, source_ref=ref, **spec))
         for position, script in enumerate(scenario.scripts):
             db.add(
                 models.AdventureScript(
@@ -898,6 +918,203 @@ def update_adventure_script(
         setattr(script, field, value)
     db.commit()
     return script
+
+
+# ---------- Refresh from scenario ----------
+#
+# An adventure copies the scenario's plot text and story cards at creation so
+# later authoring never disturbs a story in progress (same reasoning as the
+# per-script "Sync from library" above). This is the explicit opt-out: pull the
+# scenario's current content back down over the copy.
+
+
+def resolve_source_scenario(
+    adventure: models.Adventure, db: Session, user: models.User
+) -> models.Scenario | None:
+    """The scenario an adventure can refresh from — the one it was started from,
+    if it still exists and is still readable (own, or a shared demo one). None
+    once the scenario is deleted (scenario_id goes NULL) or was unshared."""
+    if adventure.scenario_id is None:
+        return None
+    scenario = db.get(models.Scenario, adventure.scenario_id)
+    if scenario is None or (scenario.user_id != user.id and not scenario.is_public):
+        return None
+    return scenario
+
+
+def _placeholder_names(*texts: str) -> list[str]:
+    """Unique ${Placeholder} names across the given texts, first appearance first
+    (mirrors the frontend's extractPlaceholders)."""
+    names: list[str] = []
+    for text in texts:
+        for match in PLACEHOLDER_RE.finditer(text or ""):
+            name = match.group(1).strip()
+            if name and name not in names:
+                names.append(name)
+    return names
+
+
+def scenario_placeholder_names(scenario: models.Scenario) -> list[str]:
+    """Every placeholder the scenario's *refreshable* content asks for. The
+    opening prompt is excluded — a refresh never rewrites it."""
+    texts = [scenario.memory, scenario.authors_note, scenario.ai_instructions]
+    for card in scenario.story_cards:
+        texts += [card.keys, card.entry]
+    for ndef in (scenario.stat_schema or {}).get("npcs", {}).values():
+        if isinstance(ndef, dict):
+            texts += [str(ndef.get("keys") or ""), str(ndef.get("desc") or "")]
+    return _placeholder_names(*texts)
+
+
+def _scenario_cards(adventure: models.Adventure) -> dict[str, models.StoryCard]:
+    """The adventure's scenario-derived cards, keyed by source_ref.
+
+    Adventures created before `source_ref` existed have none, so those fall back
+    to matching the scenario's cards by name — but only when the adventure has no
+    tagged cards at all, otherwise a player-authored card that happens to share a
+    scenario card's name would be adopted and overwritten.
+    """
+    return {c.source_ref: c for c in adventure.story_cards if c.source_ref}
+
+
+def _match_legacy(
+    adventure: models.Adventure, specs: dict[str, dict]
+) -> dict[str, models.StoryCard]:
+    by_name: dict[str, models.StoryCard] = {}
+    for card in adventure.story_cards:
+        by_name.setdefault((card.name or "").strip().lower(), card)
+    matched: dict[str, models.StoryCard] = {}
+    for ref, spec in specs.items():
+        card = by_name.get((spec["name"] or "").strip().lower())
+        if card is not None:
+            matched[ref] = card
+    return matched
+
+
+def plan_refresh(
+    adventure: models.Adventure, scenario: models.Scenario, values: dict[str, str]
+) -> tuple[dict, dict, dict]:
+    """Work out what a refresh would change, without touching anything.
+
+    Returns (plan, specs, matched) — `plan` is the UI-facing summary, `specs` the
+    scenario's card specs by ref, `matched` the existing adventure card for each
+    ref that already has one.
+    """
+    fields = {
+        field: {"old": getattr(adventure, field), "new": fill_placeholders(
+            getattr(scenario, field), values)}
+        for field in SCENARIO_TEXT_FIELDS
+    }
+    changed_fields = {f: v for f, v in fields.items() if v["old"] != v["new"]}
+
+    specs = scenario_card_specs(scenario, values)
+    tagged = _scenario_cards(adventure)
+    matched = tagged or _match_legacy(adventure, specs)
+
+    added, updated = [], []
+    for ref, spec in specs.items():
+        card = matched.get(ref)
+        if card is None:
+            added.append(spec["name"])
+        elif any(getattr(card, f) != spec[f] for f in CARD_FIELDS):
+            updated.append(card.name or spec["name"])
+    # Only cards the scenario is known to have produced are removable; a
+    # player-authored card (no source_ref) is never touched.
+    removed = [c.name for ref, c in tagged.items() if ref not in specs]
+
+    _, world = worldstate.reconcile(adventure.world_state, scenario.stat_schema)
+
+    plan = {
+        "scenario_id": scenario.id,
+        "scenario_title": scenario.title,
+        "fields": changed_fields,
+        "cards": {"added": added, "updated": updated, "removed": removed},
+        "world_state": world,
+    }
+    plan["has_changes"] = bool(
+        changed_fields or added or updated or removed
+        or world["added"] or world["removed"]
+    )
+    return plan, specs, matched
+
+
+@router.get("/{adventure_id}/refresh", response_model=schemas.RefreshPlan)
+def preview_refresh(
+    adventure_id: int, db: Session = Depends(get_db), user: models.User = CurrentUser
+):
+    """What "Update from scenario" would change, for the confirm dialog."""
+    adventure = get_adventure_or_404(adventure_id, db, user)
+    scenario = resolve_source_scenario(adventure, db, user)
+    if scenario is None:
+        raise HTTPException(404, "No scenario to update from")
+    stored = adventure.placeholders if isinstance(adventure.placeholders, dict) else {}
+    plan, _, _ = plan_refresh(adventure, scenario, stored)
+    # Adventures started before placeholder answers were stored have none, and an
+    # author can add a new ${...} after the fact — either way the player is asked
+    # for the missing ones, and the answers are saved for next time.
+    plan["placeholders_needed"] = [
+        n for n in scenario_placeholder_names(scenario) if n not in stored
+    ]
+    return plan
+
+
+@router.post("/{adventure_id}/refresh", response_model=schemas.AdventureOut)
+def refresh_from_scenario(
+    adventure_id: int,
+    payload: schemas.AdventureRefresh = Body(default=schemas.AdventureRefresh()),
+    db: Session = Depends(get_db),
+    user: models.User = CurrentUser,
+):
+    """Pull the scenario's current plot text, story cards and stat schema down
+    over this adventure's copy.
+
+    Overwrites the plot fields and every scenario-derived card, adds what the
+    scenario gained and removes what it dropped. Deliberately left alone: the
+    opening `start` action (the story is built on it, and it is baked into
+    memories and the summary), the adventure's own title, its story summary, its
+    player-authored story cards, and — via `worldstate.reconcile` — the live
+    value of every stat the schema still defines.
+    """
+    adventure = get_adventure_or_404(adventure_id, db, user)
+    scenario = resolve_source_scenario(adventure, db, user)
+    if scenario is None:
+        raise HTTPException(404, "No scenario to update from")
+
+    values = {**(adventure.placeholders if isinstance(adventure.placeholders, dict) else {}),
+              **payload.placeholders}
+
+    # A refresh rewrites the same state a turn is mid-way through mutating, so it
+    # takes the turn slot rather than racing the generator.
+    acquire_turn_lock(adventure_id)
+    try:
+        _, specs, matched = plan_refresh(adventure, scenario, values)
+
+        for field in SCENARIO_TEXT_FIELDS:
+            setattr(adventure, field, fill_placeholders(getattr(scenario, field), values))
+
+        for ref, spec in specs.items():
+            card = matched.get(ref)
+            if card is None:
+                db.add(models.StoryCard(adventure_id=adventure.id, source_ref=ref, **spec))
+                continue
+            for field in CARD_FIELDS:
+                setattr(card, field, spec[field])
+            # Adopt the ref so a name-matched legacy card syncs by id next time.
+            card.source_ref = ref
+        for ref, card in _scenario_cards(adventure).items():
+            if ref not in specs:
+                db.delete(card)
+
+        adventure.world_state, _ = worldstate.reconcile(
+            adventure.world_state, scenario.stat_schema
+        )
+        adventure.placeholders = values
+        db.commit()
+    finally:
+        _active_turns.discard(adventure_id)
+
+    db.refresh(adventure)
+    return adventure
 
 
 # ---------- Insights ----------

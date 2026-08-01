@@ -98,6 +98,12 @@ export const api = {
   importAdventure: (bundle) => request('/adventures/import', { method: 'POST', body: JSON.stringify(bundle) }),
   undo: (advId) => request(`/adventures/${advId}/undo`, { method: 'POST' }),
   getAdventureContext: (advId) => request(`/adventures/${advId}/context`),
+  // "Update from scenario": GET describes what would change, POST applies it.
+  previewRefresh: (advId) => request(`/adventures/${advId}/refresh`),
+  refreshFromScenario: (advId, placeholders = {}) =>
+    request(`/adventures/${advId}/refresh`, {
+      method: 'POST', body: JSON.stringify({ placeholders }),
+    }),
   getActionContext: (advId, actionId) => request(`/adventures/${advId}/actions/${actionId}/context`),
 
   // Memory bank

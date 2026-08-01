@@ -1090,6 +1090,36 @@ button:disabled { opacity: 0.45; cursor: default; transform: none; box-shadow: n
 .modal .modal-hint { margin: 0 0 18px; color: var(--text-dim); font-size: 0.88rem; }
 .modal .modal-buttons { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
 
+/* "Update from scenario" — a wider modal, since it lists a diff. */
+.refresh-modal { width: min(620px, calc(100vw - 40px)); }
+.refresh-changes {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  font-size: 0.86rem;
+}
+.refresh-change + .refresh-change {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.refresh-old, .refresh-new { margin-top: 3px; font-family: var(--font-mono, monospace); font-size: 0.8rem; }
+.refresh-old { text-decoration: line-through; }
+.refresh-new { color: var(--accent-bright); }
+/* The button sits above the plot fields it would overwrite. */
+.plot-source {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.82rem;
+}
+.plot-source .linklike { flex-shrink: 0; }
+
 /* ---------- Debug log (Settings) ---------- */
 
 .debug-entry {

@@ -95,6 +95,15 @@ MIGRATIONS: list[tuple[int, str]] = [
     (30, "ALTER TABLE scenarios ADD COLUMN image TEXT NOT NULL DEFAULT ''"),
     # Emoji/glyph fallback used when `image` is empty.
     (31, "ALTER TABLE scenarios ADD COLUMN icon VARCHAR(16) NOT NULL DEFAULT ''"),
+    # The ${Placeholder} answers given when the adventure was started. Kept so
+    # "Update from scenario" can re-fill re-copied text; NULL for adventures
+    # created before this column, which re-prompt for them on first refresh.
+    (32, "ALTER TABLE adventures ADD COLUMN placeholders JSON"),
+    # Which piece of the scenario a copied story card came from ("card:<id>" or
+    # "npc:<key>"), so a refresh can update/remove exactly the scenario-derived
+    # cards and leave player-authored ones alone. NULL = player-authored, or a
+    # copy predating this column (matched by name once, then adopted).
+    (33, "ALTER TABLE story_cards ADD COLUMN source_ref VARCHAR(64)"),
 ]
 
 LATEST_VERSION = max((v for v, _ in MIGRATIONS), default=1)

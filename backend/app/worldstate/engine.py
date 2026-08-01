@@ -120,6 +120,111 @@ def instantiate(stat_schema: dict | None) -> dict:
     return ws
 
 
+def reconcile(world_state: dict | None, stat_schema: dict | None) -> tuple[dict, dict]:
+    """Bring a live world_state back in line with an edited schema.
+
+    Deliberately NOT `instantiate`: a value the schema still defines keeps
+    whatever it has reached in play (re-instantiating would heal the player to
+    full and wipe their milestones). Only the difference is applied — stats,
+    NPCs, flags and milestones the schema gained appear at their initial value,
+    and ones it no longer defines are dropped, along with their `last_changed`
+    bookkeeping. Returns (new_state, report) where the report lists paths under
+    `added` / `removed` so the UI can show what a refresh would do.
+
+    Note the additions are mostly cosmetic: rendering and delta-application both
+    fall back to a stat def's `initial` when the live state has no value for it,
+    so a newly added stat already behaves correctly. This materialises it (and,
+    unlike those read-through paths, actually cleans up removals).
+    """
+    report: dict = {"added": [], "removed": []}
+    if not has_schema(stat_schema):
+        # The scenario dropped its RPG layer entirely — so does the adventure.
+        stale = bool(world_state)
+        if stale:
+            report["removed"].append("(all world state)")
+        return {}, report
+
+    ws = copy.deepcopy(world_state) if isinstance(world_state, dict) else {}
+    if not ws:
+        return instantiate(stat_schema), report
+
+    def sync_section(container: dict, defs: dict, prefix: str) -> dict:
+        out = {}
+        for name, d in defs.items():
+            if not isinstance(d, dict):
+                continue
+            if name in container:
+                out[name] = container[name]
+            else:
+                out[name] = d.get("initial", "" if d.get("type") == "text" else 0)
+                report["added"].append(f"{prefix}.{name}")
+        for name in container:
+            if name not in out:
+                report["removed"].append(f"{prefix}.{name}")
+        return out
+
+    for section in STAT_SECTIONS:
+        ws[section] = sync_section(
+            ws.get(section) if isinstance(ws.get(section), dict) else {},
+            stat_schema.get(section) or {},
+            section,
+        )
+
+    npc_defs = stat_schema.get("npcs") or {}
+    old_npcs = ws.get("npc") if isinstance(ws.get("npc"), dict) else {}
+    new_npcs = {}
+    for key, ndef in npc_defs.items():
+        if not isinstance(ndef, dict):
+            continue
+        old = old_npcs.get(key) if isinstance(old_npcs.get(key), dict) else {}
+        new_npcs[key] = sync_section(old, ndef.get("stats") or {}, f"npc.{key}")
+    for key in old_npcs:
+        if key not in new_npcs:
+            report["removed"].append(f"npc.{key}")
+    ws["npc"] = new_npcs
+
+    flag_defs = stat_schema.get("flags") or {}
+    old_flags = ws.get("flags") if isinstance(ws.get("flags"), dict) else {}
+    new_flags = {}
+    for name, d in flag_defs.items():
+        if not isinstance(d, dict):
+            continue
+        if name in old_flags:
+            new_flags[name] = bool(old_flags[name])
+        else:
+            new_flags[name] = bool(d.get("initial", False))
+            report["added"].append(f"flags.{name}")
+    for name in old_flags:
+        if name not in new_flags:
+            report["removed"].append(f"flags.{name}")
+    ws["flags"] = new_flags
+
+    # Milestones store only the ones reached, so there is nothing to add here —
+    # an unreached milestone is simply absent. Drop reached ones the scenario
+    # no longer defines, or they'd sit in "Achieved" forever with no label.
+    milestone_defs = stat_schema.get("milestones") or {}
+    reached = ws.get("milestones") if isinstance(ws.get("milestones"), dict) else {}
+    ws["milestones"] = {k: v for k, v in reached.items() if k in milestone_defs}
+    for k in reached:
+        if k not in milestone_defs:
+            report["removed"].append(f"milestones.{k}")
+
+    # Cooldown bookkeeping for paths that no longer exist would never be read,
+    # but it accumulates in every stored snapshot — prune it with the rest.
+    meta = ws.setdefault("_meta", {})
+    last_changed = meta.get("last_changed")
+    if isinstance(last_changed, dict):
+        removed = set(report["removed"])
+        meta["last_changed"] = {
+            path: at for path, at in last_changed.items()
+            if not any(path == r or path.startswith(f"{r}.") for r in removed)
+        }
+    else:
+        meta["last_changed"] = {}
+
+    return ws, report
+
+
 def band_label(stat_def: dict, value) -> str | None:
     """The word label for `value` from a stat def's bands, if any.
 

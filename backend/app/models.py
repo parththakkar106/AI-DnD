@@ -104,6 +104,10 @@ class Adventure(Base):
     # Phase 12: live RPG world state (world/player/npc stats + milestones),
     # instantiated from the scenario's stat_schema. Empty when there's no RPG layer.
     world_state: Mapped[dict] = mapped_column(JSON, default=dict)
+    # The ${Placeholder} answers collected when this adventure was started, kept
+    # so "Update from scenario" can re-fill freshly copied scenario text with the
+    # same values. NULL for adventures created before this column existed.
+    placeholders: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # Phase 6: opt-in per adventure (extra AI calls)
     auto_summarize: Mapped[bool] = mapped_column(Boolean, default=False)
     memory_bank_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -181,6 +185,11 @@ class StoryCard(Base):
     keys: Mapped[str] = mapped_column(Text, default="")  # comma-separated triggers
     entry: Mapped[str] = mapped_column(Text, default="")
     notes: Mapped[str] = mapped_column(Text, default="")
+    # Adventure copies only: which piece of the scenario this card came from —
+    # "card:<scenario_card_id>" or "npc:<npc_key>". "Update from scenario"
+    # refreshes/removes exactly these; NULL means player-authored (left alone),
+    # or a copy predating the column (matched by name, then adopted).
+    source_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     scenario: Mapped[Scenario | None] = relationship(back_populates="story_cards")
     adventure: Mapped[Adventure | None] = relationship(back_populates="story_cards")

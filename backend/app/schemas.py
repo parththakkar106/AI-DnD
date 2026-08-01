@@ -149,6 +149,31 @@ class AdventureUpdate(BaseModel):
     memory_bank_enabled: bool | None = None
 
 
+class AdventureRefresh(BaseModel):
+    """Body for "Update from scenario". `placeholders` supplies answers the
+    adventure has no stored value for (see AdventureCreate.placeholders); they
+    are merged over the stored ones and saved."""
+
+    placeholders: dict[str, str] = {}
+
+
+class RefreshPlan(BaseModel):
+    """What a refresh would change — drives the confirm dialog."""
+
+    scenario_id: int
+    scenario_title: str
+    has_changes: bool
+    # field name -> {"old": ..., "new": ...}, only for fields that differ.
+    fields: dict[str, dict] = {}
+    # {"added"|"updated"|"removed": [card name, ...]}
+    cards: dict[str, list[str]] = {}
+    # {"added"|"removed": [stat path, ...]} — live values are otherwise kept.
+    world_state: dict[str, list[str]] = {}
+    # ${Placeholder} names the scenario asks for that the adventure has no
+    # stored answer to; the client must collect these and send them back.
+    placeholders_needed: list[str] = []
+
+
 class ActionOut(ORMModel):
     id: int
     adventure_id: int
