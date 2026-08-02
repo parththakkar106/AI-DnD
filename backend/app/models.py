@@ -212,6 +212,13 @@ class Action(Base):
     state_before: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # Phase 12: same idea for the RPG world_state, so undo/retry rolls it back too.
     world_state_before: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Retry history (AI actions): every attempt made for this turn, oldest
+    # first, INCLUDING the active one. NULL/empty means never retried — the row
+    # is its own only version. `variant_index` says which entry `text`,
+    # `reasoning` and `context_snapshot` currently mirror; retry appends and
+    # points here instead of deleting the row, so nothing is lost.
+    variants: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    variant_index: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     adventure: Mapped[Adventure] = relationship(back_populates="actions")
@@ -240,6 +247,12 @@ class Action(Base):
                 delta = new - old if isinstance(old, (int, float)) and isinstance(new, (int, float)) else None
                 out.append({"kind": "stat", "label": label, "delta": delta, "value": new})
         return out
+
+    @property
+    def variant_count(self) -> int:
+        """How many attempts exist for this turn. 0 (not 1) when the action was
+        never retried — the UI shows its pager only above 1 either way."""
+        return len(self.variants) if isinstance(self.variants, list) else 0
 
 
 class Script(Base):

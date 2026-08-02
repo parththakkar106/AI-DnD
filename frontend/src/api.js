@@ -90,6 +90,14 @@ export const api = {
     request(`/adventures/${advId}/actions/${actionId}`, { method: 'PATCH', body: JSON.stringify({ text }) }),
   deleteAction: (advId, actionId) =>
     request(`/adventures/${advId}/actions/${actionId}`, { method: 'DELETE' }),
+  // Retry history. The adventure payload carries only the counts, so the
+  // attempts themselves are fetched when the reader actually pages through.
+  listVariants: (advId, actionId) =>
+    request(`/adventures/${advId}/actions/${actionId}/variants`),
+  selectVariant: (advId, actionId, index) =>
+    request(`/adventures/${advId}/actions/${actionId}/variant`, {
+      method: 'POST', body: JSON.stringify({ index }),
+    }),
 
   sendAction: (advId, payload, handlers, signal) =>
     streamSSE(`/adventures/${advId}/actions`, payload, handlers, signal),

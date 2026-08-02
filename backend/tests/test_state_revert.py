@@ -178,8 +178,8 @@ def test_snapshot_state_handles_non_dict(db):
 # ---------------------------------------------------------------- retry
 
 def test_retry_restores_state_before_regenerating(db, monkeypatch):
-    # Retry deletes the last AI action and must roll the scoreboard back to that
-    # action's snapshot so regeneration doesn't stack output mutations.
+    # Retry must roll the scoreboard back to the AI action's snapshot so
+    # regeneration doesn't stack output mutations on the discarded attempt.
     user, adv = _make_adventure(db, {"gold": 20})  # 20 = double-applied bug value
     _add(db, adv, 0, "start")
     _add(db, adv, 1, "do", state_before={"gold": 0})
@@ -197,5 +197,11 @@ def test_retry_restores_state_before_regenerating(db, monkeypatch):
     adventures.retry_action(adv.id, request=None, db=db, user=user)
 
     assert adv.script_state == {"gold": 10}
-    assert [a.type for a in adv.actions] == ["start", "do"]
+    # The row survives now (it used to be deleted) so the discarded attempt
+    # stays readable — it's kept as variant 0.
+    assert [a.type for a in adv.actions] == ["start", "do", "ai"]
+    last = adv.actions[-1]
+    assert len(last.variants) == 1
+    assert last.variant_index == 0
+    assert last.variants[0]["script_state"] == {"gold": 20}  # the attempt's outcome
     adventures._active_turns.discard(adv.id)

@@ -319,6 +319,63 @@ def snapshot_world_state(adventure: models.Adventure) -> dict:
     return copy.deepcopy(state)
 
 
+# ---------- Retry history (variants) ----------
+#
+# Retry used to delete the AI action and generate a replacement. Now the row
+# survives and every attempt is appended to `Action.variants`, with
+# `variant_index` naming the live one. A variant carries only the parts that
+# actually differ between attempts — the narration and the state it produced —
+# never the assembled prompt, which is identical across attempts of one turn
+# and is by far the biggest thing in `context_snapshot`.
+
+# The per-attempt slices of context_snapshot. Everything else in the snapshot
+# (system/story/memories) is shared by every attempt at the same turn.
+VARIANT_SNAPSHOT_KEYS = ("world_state", "script", "raw_output")
+
+
+def variant_of(action: models.Action, adventure: models.Adventure) -> dict:
+    """Freeze an action's *current* content as a variant entry.
+
+    `adventure` supplies the resulting script/world state, so this must be
+    called before any rollback — those live values are this attempt's outcome.
+    """
+    snapshot = action.context_snapshot if isinstance(action.context_snapshot, dict) else {}
+    entry = {
+        "text": action.text,
+        "reasoning": action.reasoning,
+        "script_state": snapshot_state(adventure),
+        "created_at": action.created_at.isoformat() if action.created_at else None,
+    }
+    for key in VARIANT_SNAPSHOT_KEYS:
+        if key in snapshot:
+            entry[key] = copy.deepcopy(snapshot[key])
+    return entry
+
+
+def apply_variant(action: models.Action, adventure: models.Adventure, index: int) -> None:
+    """Make variant `index` the live one: its text onto the action, its
+    outcome back onto the adventure."""
+    entry = action.variants[index]
+    action.text = entry.get("text", "")
+    action.reasoning = entry.get("reasoning")
+    snapshot = dict(action.context_snapshot) if isinstance(action.context_snapshot, dict) else {}
+    for key in VARIANT_SNAPSHOT_KEYS:
+        if key in entry:
+            snapshot[key] = copy.deepcopy(entry[key])
+        else:
+            snapshot.pop(key, None)
+    action.context_snapshot = snapshot
+    action.variant_index = index
+    if isinstance(entry.get("script_state"), dict):
+        adventure.script_state = copy.deepcopy(entry["script_state"])
+    # The world state this attempt left behind lives inside its own snapshot
+    # slice; absent for adventures with no RPG layer, where there's nothing to
+    # restore anyway.
+    world_state = (entry.get("world_state") or {}).get("state")
+    if isinstance(world_state, dict):
+        adventure.world_state = copy.deepcopy(world_state)
+
+
 @router.patch("/{adventure_id}", response_model=schemas.AdventureOut)
 def update_adventure(
     adventure_id: int,
@@ -409,9 +466,44 @@ async def generate_turn(
     db: Session,
     pipeline: ScriptPipeline,
     user: models.User,
+    retry_of: models.Action | None = None,
 ):
     """SSE generator: streams the AI continuation through the context/output
-    script hooks, then stores the result."""
+    script hooks, then stores the result.
+
+    With `retry_of`, the result is appended as a new variant of that existing
+    AI action rather than stored as a new one — the discarded attempt stays
+    readable. The caller must have seeded `retry_of.variants` and rolled the
+    adventure back first (see `retry_action`); if this generator ends without
+    saving, that rollback is undone so state can't drift from the text still
+    on screen."""
+    saved = False
+    try:
+        async for event in _generate_turn(adventure, db, pipeline, user, retry_of):
+            if event is _SAVED:
+                saved = True
+                continue
+            yield event
+    finally:
+        if retry_of is not None and not saved:
+            # Provider error, empty reply, a script stop, or the client hanging
+            # up: put the attempt we rolled away from back in charge.
+            apply_variant(retry_of, adventure, retry_of.variant_index)
+            db.commit()
+
+
+# Sentinel yielded by _generate_turn once the action is committed, so the
+# wrapper above knows the rollback must stand rather than be reversed.
+_SAVED = object()
+
+
+async def _generate_turn(
+    adventure: models.Adventure,
+    db: Session,
+    pipeline: ScriptPipeline,
+    user: models.User,
+    retry_of: models.Action | None = None,
+):
     settings = get_settings(db, user)
     cfg = auth.resolve_provider_config(settings)
     if cfg.using_demo:
@@ -495,7 +587,9 @@ async def generate_turn(
 
     # RPG world state (Phase 12): pull the AI's state delta out of the reply,
     # let the engine referee it, and strip the block from the shown text.
-    ai_index = next_index(adventure)
+    # A retry re-runs the *same* turn, so it keeps that turn's index — using
+    # next_index here would advance the clock the cooldown rules run on.
+    ai_index = retry_of.index if retry_of is not None else next_index(adventure)
     stat_schema = adventure.scenario.stat_schema if adventure.scenario else None
     if worldstate.has_schema(stat_schema):
         text, delta = worldstate.extract_delta(text)
@@ -510,17 +604,34 @@ async def generate_turn(
 
     snapshot["raw_output"] = raw_output
 
-    ai_action = models.Action(
-        adventure_id=adventure.id,
-        index=ai_index,
-        type="ai",
-        text=text,
-        reasoning="".join(reasoning_chunks).strip() or None,
-        context_snapshot=snapshot,
-        state_before=state_before,
-        world_state_before=world_state_before,
-    )
-    db.add(ai_action)
+    reasoning = "".join(reasoning_chunks).strip() or None
+    if retry_of is not None:
+        # Same row, one more attempt. Writing text/reasoning/snapshot through
+        # the variant list keeps the row and its history in step.
+        ai_action = retry_of
+        ai_action.context_snapshot = snapshot
+        history = list(ai_action.variants or [])
+        history.append({
+            "text": text,
+            "reasoning": reasoning,
+            "script_state": snapshot_state(adventure),
+            "created_at": models.utcnow().isoformat(),
+            **{k: copy.deepcopy(snapshot[k]) for k in VARIANT_SNAPSHOT_KEYS if k in snapshot},
+        })
+        ai_action.variants = history
+        apply_variant(ai_action, adventure, len(history) - 1)
+    else:
+        ai_action = models.Action(
+            adventure_id=adventure.id,
+            index=ai_index,
+            type="ai",
+            text=text,
+            reasoning=reasoning,
+            context_snapshot=snapshot,
+            state_before=state_before,
+            world_state_before=world_state_before,
+        )
+        db.add(ai_action)
     adventure.updated_at = models.utcnow()
     if cfg.using_demo:
         # Successful demo turns count against the daily cap (checked up front
@@ -528,6 +639,7 @@ async def generate_turn(
         auth.count_demo_turn(user)
     db.commit()
     db.refresh(ai_action)
+    yield _SAVED
     yield sse({"type": "done", "action": action_json(ai_action), "script": pipeline.report()})
     # Phase 6: fire-and-forget summarization/embedding (opens its own DB
     # session). Skipped on the demo key — background AI calls would be
@@ -617,14 +729,26 @@ def retry_action(
     db: Session = Depends(get_db),
     user: models.User = CurrentUser,
 ):
-    """Delete the last AI action and regenerate from the same input."""
+    """Regenerate the last AI action, keeping the discarded attempt.
+
+    The row survives: its current content is frozen as a variant, the shared
+    script/world state rolls back to the pre-turn snapshot, and the new attempt
+    is appended as the next variant. Nothing the AI wrote is ever thrown away.
+    """
     adventure = get_adventure_or_404(adventure_id, db, user)
     limits.rate_limit("turn", request, user)
     check_demo_cap(db, user)
     acquire_turn_lock(adventure_id)
+    last_ai = None
     try:
         if adventure.actions and adventure.actions[-1].type == "ai":
             last_ai = adventure.actions[-1]
+            # First retry: the row has no history yet, so record what's on
+            # screen as variant 0 before anything is rolled back — the live
+            # script/world state is precisely that attempt's outcome.
+            if not last_ai.variants:
+                last_ai.variants = [variant_of(last_ai, adventure)]
+                last_ai.variant_index = 0
             # Roll the scoreboard back to before this AI turn's hooks ran, so
             # regenerating starts fresh instead of stacking output mutations on
             # top of the discarded attempt. NULL for pre-migration actions.
@@ -632,7 +756,6 @@ def retry_action(
                 adventure.script_state = copy.deepcopy(last_ai.state_before)
             if last_ai.world_state_before is not None:
                 adventure.world_state = copy.deepcopy(last_ai.world_state_before)
-            db.delete(last_ai)
             db.commit()
             db.refresh(adventure)
     except BaseException:
@@ -641,11 +764,85 @@ def retry_action(
     return StreamingResponse(
         with_turn_lock(
             adventure_id,
-            generate_turn(adventure, db, ScriptPipeline(adventure, db), user),
+            generate_turn(
+                adventure, db, ScriptPipeline(adventure, db), user, retry_of=last_ai
+            ),
         ),
         media_type="text/event-stream",
         headers=SSE_HEADERS,
     )
+
+
+@router.get(
+    "/{adventure_id}/actions/{action_id}/variants",
+    response_model=list[schemas.VariantOut],
+)
+def list_variants(
+    adventure_id: int,
+    action_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = CurrentUser,
+):
+    """Every attempt made for one AI turn. Fetched on demand — the adventure
+    payload carries only the counts, so old narration doesn't ride along on
+    every page load."""
+    get_adventure_or_404(adventure_id, db, user)
+    action = db.get(models.Action, action_id)
+    if action is None or action.adventure_id != adventure_id:
+        raise HTTPException(404, "Action not found")
+    variants = action.variants if isinstance(action.variants, list) else []
+    return [
+        schemas.VariantOut(
+            index=i,
+            text=entry.get("text", ""),
+            reasoning=entry.get("reasoning"),
+            created_at=entry.get("created_at"),
+            active=(i == action.variant_index),
+        )
+        for i, entry in enumerate(variants)
+    ]
+
+
+@router.post(
+    "/{adventure_id}/actions/{action_id}/variant", response_model=schemas.ActionOut
+)
+def select_variant(
+    adventure_id: int,
+    action_id: int,
+    payload: schemas.VariantSelect,
+    db: Session = Depends(get_db),
+    user: models.User = CurrentUser,
+):
+    """Make an earlier attempt the live one again, restoring the script/world
+    state it produced.
+
+    Only the last action can be switched: the turns after an older one were
+    written as a continuation of the text that's currently active, so swapping
+    it out from underneath them would leave the story contradicting itself.
+    Earlier turns' attempts stay readable through `list_variants`.
+    """
+    adventure = get_adventure_or_404(adventure_id, db, user)
+    action = db.get(models.Action, action_id)
+    if action is None or action.adventure_id != adventure_id:
+        raise HTTPException(404, "Action not found")
+    variants = action.variants if isinstance(action.variants, list) else []
+    if not 0 <= payload.index < len(variants):
+        raise HTTPException(400, "No such attempt for this action")
+    if not adventure.actions or adventure.actions[-1].id != action.id:
+        raise HTTPException(
+            400,
+            "Only the latest message can be switched — the story has already "
+            "continued from this one.",
+        )
+    acquire_turn_lock(adventure_id)
+    try:
+        apply_variant(action, adventure, payload.index)
+        adventure.updated_at = models.utcnow()
+        db.commit()
+        db.refresh(action)
+        return action
+    finally:
+        _active_turns.discard(adventure_id)
 
 
 @router.post("/{adventure_id}/undo", response_model=list[schemas.ActionOut])
@@ -730,6 +927,15 @@ def export_adventure(
             {
                 "index": a.index, "type": a.type, "text": a.text,
                 "reasoning": a.reasoning,
+                # Retry history, narration only — a bundle carries no context
+                # snapshots, so the per-attempt script/world state it would
+                # restore isn't there to export either.
+                "variants": [
+                    {"text": v.get("text", ""), "reasoning": v.get("reasoning"),
+                     "createdAt": v.get("created_at")}
+                    for v in (a.variants or [])
+                ] or None,
+                "variantIndex": a.variant_index,
                 "createdAt": a.created_at.isoformat(),
             }
             for a in adv.actions
@@ -812,12 +1018,22 @@ def import_adventure(
 
     for i, a in enumerate(bundle.get("actions") or []):
         if isinstance(a, dict) and str(a.get("text") or ""):
+            variants = [
+                {"text": str(v.get("text") or ""), "reasoning": v.get("reasoning"),
+                 "created_at": v.get("createdAt")}
+                for v in (a.get("variants") or [])
+                if isinstance(v, dict)
+            ]
             db.add(models.Action(
                 adventure_id=adventure.id,
                 index=int(a.get("index", i)),
                 type=str(a.get("type") or "story")[:20],  # VARCHAR(20)
                 text=str(a["text"]),
                 reasoning=str(a["reasoning"]) if a.get("reasoning") else None,
+                variants=variants or None,
+                # Clamped: a bundle could name an index its variant list
+                # doesn't have, which would make the pager point at nothing.
+                variant_index=min(max(int(a.get("variantIndex", 0)), 0), max(len(variants) - 1, 0)),
             ))
 
     db.commit()
@@ -1246,6 +1462,13 @@ def update_action(
     if action is None or action.adventure_id != adventure_id:
         raise HTTPException(404, "Action not found")
     action.text = payload.text
+    # Keep the live variant in step, or paging away and back would silently
+    # revert the edit.
+    variants = action.variants if isinstance(action.variants, list) else []
+    if 0 <= action.variant_index < len(variants):
+        history = copy.deepcopy(variants)
+        history[action.variant_index]["text"] = payload.text
+        action.variants = history
     db.commit()
     return action
 

@@ -920,6 +920,59 @@ function WorldStateDrawer({ advId, refreshKey }) {
   )
 }
 
+// ChatGPT-style ‹ 2/3 › pager under an AI message that has been retried.
+//
+// The last message can actually be switched (the server restores the stats that
+// attempt produced); earlier ones are read-only, because the turns after them
+// were written as a continuation of whatever is active now. Browsing an
+// earlier one is a local preview, so `onPreview` hands the text up to the story
+// renderer rather than the pager drawing it.
+function VariantPager({ advId, action, isLast, busy, previewIndex, onPreview, onSwitched, onError }) {
+  const [variants, setVariants] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const count = action.variant_count
+  const current = previewIndex ?? action.variant_index
+
+  async function go(delta) {
+    const next = current + delta
+    if (next < 0 || next >= count || loading || busy) return
+    setLoading(true)
+    try {
+      if (isLast) {
+        onPreview(null)
+        onSwitched(await api.selectVariant(advId, action.id, next))
+      } else {
+        // Fetched once per message, then cached — paging back and forth
+        // shouldn't re-hit the server.
+        const list = variants || await api.listVariants(advId, action.id)
+        if (!variants) setVariants(list)
+        onPreview(next === action.variant_index
+          ? null
+          : { actionId: action.id, index: next, text: list[next].text, reasoning: list[next].reasoning })
+      }
+    } catch (err) {
+      onError(err.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="variant-pager">
+      <button type="button" onClick={() => go(-1)} disabled={current === 0 || busy || loading}
+        title="Previous attempt">‹</button>
+      <span className="variant-count">{current + 1}/{count}</span>
+      <button type="button" onClick={() => go(1)} disabled={current === count - 1 || busy || loading}
+        title="Next attempt">›</button>
+      {previewIndex !== null && (
+        <span className="variant-note">
+          earlier attempt — the story continued from {action.variant_index + 1}
+        </span>
+      )}
+    </div>
+  )
+}
+
 // Compact chips shown under an AI message summarizing what state changed.
 function StateChangeChips({ changes }) {
   if (!changes?.length) return null
@@ -1118,6 +1171,9 @@ export default function Play() {
   // (currently "Update from scenario"), which no action count would reflect.
   const [stateKey, setStateKey] = useState(0)
   const [inspectActionId, setInspectActionId] = useState(null)
+  // Read-only browsing of an earlier attempt at a past turn (see VariantPager).
+  // One at a time; null when every message is showing its active version.
+  const [preview, setPreview] = useState(null)
   const storyEndRef = useRef(null)
   const abortRef = useRef(null)
   const pinnedRef = useRef(true) // autoscroll only while the reader is at the bottom
@@ -1243,6 +1299,7 @@ export default function Play() {
   }
 
   function retry() {
+    setPreview(null)
     setActions((prev) =>
       prev.length && prev[prev.length - 1].type === 'ai' ? prev.slice(0, -1) : prev)
     runTurn(async (signal) => {
@@ -1259,6 +1316,7 @@ export default function Play() {
 
   async function undo() {
     setToast(null)
+    setPreview(null)
     try {
       setActions(await api.undo(id))
     } catch (err) {
@@ -1348,6 +1406,9 @@ export default function Play() {
             // Drop cap goes on the first narrated beat only. `firstNarrationId`
             // is derived once above rather than per row.
             const opening = action.id === firstNarrationId
+            // Non-null while the reader is browsing an older attempt of this
+            // message without making it active (earlier turns only).
+            const previewing = preview?.actionId === action.id ? preview : null
 
             return editing?.id === action.id ? (
               <div key={action.id} className="action-edit">
@@ -1365,9 +1426,27 @@ export default function Play() {
               <Fragment key={action.id}>
                 {sceneBreak && <div className="scene-break" aria-hidden="true">❖</div>}
                 <div className={`action ${isPlayer ? 'player' : ''}${opening ? ' opening' : ''}`}>
-                  <ReasoningBlock text={action.reasoning} />
-                  {renderEmphasis(action.text)}
-                  {action.type === 'ai' && <StateChangeChips changes={action.world_changes} />}
+                  <ReasoningBlock text={previewing ? previewing.reasoning : action.reasoning} />
+                  {renderEmphasis(previewing ? previewing.text : action.text)}
+                  {/* The chips describe the *active* attempt's state changes,
+                      which a previewed one didn't make — so they're hidden
+                      rather than shown against the wrong text. */}
+                  {action.type === 'ai' && !previewing && (
+                    <StateChangeChips changes={action.world_changes} />
+                  )}
+                  {action.type === 'ai' && action.variant_count > 1 && (
+                    <VariantPager
+                      advId={id}
+                      action={action}
+                      isLast={i === actions.length - 1}
+                      busy={busy}
+                      previewIndex={previewing ? previewing.index : null}
+                      onPreview={setPreview}
+                      onSwitched={(updated) =>
+                        setActions((prev) => prev.map((a) => (a.id === updated.id ? updated : a)))}
+                      onError={(message) => setToast({ text: message, isError: true })}
+                    />
+                  )}
                   {!busy && (
                     <span className="action-tools">
                       {action.type === 'ai' && (

@@ -104,6 +104,12 @@ MIGRATIONS: list[tuple[int, str]] = [
     # cards and leave player-authored ones alone. NULL = player-authored, or a
     # copy predating this column (matched by name once, then adopted).
     (33, "ALTER TABLE story_cards ADD COLUMN source_ref VARCHAR(64)"),
+    # Retry history: every attempt made for an AI turn, oldest first, so retry
+    # can append instead of deleting. NULL = never retried (the row is its own
+    # only version), which is also the correct reading for every action that
+    # predates this column.
+    (34, "ALTER TABLE actions ADD COLUMN variants JSON"),
+    (35, "ALTER TABLE actions ADD COLUMN variant_index INTEGER NOT NULL DEFAULT 0"),
 ]
 
 LATEST_VERSION = max((v for v, _ in MIGRATIONS), default=1)

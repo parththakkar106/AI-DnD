@@ -183,7 +183,24 @@ class ActionOut(ORMModel):
     reasoning: str | None = None
     # Phase 12: compact RPG state changes for this turn (from the model property).
     world_changes: list[dict] = []
+    # Retry history: how many attempts exist for this turn (0 = never retried)
+    # and which one is live. The attempts themselves come from
+    # GET /actions/{id}/variants so this payload stays small.
+    variant_count: int = 0
+    variant_index: int = 0
     created_at: datetime
+
+
+class VariantOut(BaseModel):
+    index: int
+    text: str
+    reasoning: str | None = None
+    created_at: str | None = None
+    active: bool = False
+
+
+class VariantSelect(BaseModel):
+    index: int = Field(ge=0)
 
 
 class ActionUpdate(BaseModel):

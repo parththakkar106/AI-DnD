@@ -392,6 +392,43 @@ button:disabled { opacity: 0.45; cursor: default; transform: none; box-shadow: n
 }
 .story .action-tools button:hover { color: var(--text); }
 
+/* Retry-history pager under an AI beat. Stays quiet until hovered — it's a
+   footnote on the message, not part of the prose. */
+.variant-pager {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+  font-family: var(--font-ui);
+  opacity: 0.45;
+  transition: opacity 0.15s;
+}
+.story .action:hover .variant-pager,
+.variant-pager:focus-within { opacity: 1; }
+.variant-pager button {
+  padding: 0 7px;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid transparent;
+}
+.variant-pager button:hover:not(:disabled) { color: var(--accent-bright); border-color: var(--border); }
+.variant-pager button:disabled { opacity: 0.35; cursor: default; }
+.variant-count {
+  font-size: 0.74rem;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  min-width: 30px;
+  text-align: center;
+}
+.variant-note {
+  margin-left: 4px;
+  font-size: 0.72rem;
+  font-style: italic;
+  color: var(--accent-dim);
+}
+
 .action-edit { margin-bottom: 14px; }
 /* Sized by AutoTextarea to fit the text being edited — an AI beat is usually
    several paragraphs, and the old fixed 110px turned that into a keyhole.
