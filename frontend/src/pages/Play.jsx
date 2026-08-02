@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import { createPortal } from 'react-dom'
 import { useNavigate, useParams } from 'react-router-dom'
 import { api } from '../api'
-import { AutoTextarea, Field, StoryCardRow, downloadJSON, pickJSONFile, useToast } from '../components'
+import { AutoTextarea, Field, StoryCardRow, downloadJSON, npcInitials, pickJSONFile, useToast } from '../components'
 
 const MODES = ['do', 'say', 'story']
 const PLAYER_TYPES = ['do', 'say', 'story']
@@ -703,11 +703,16 @@ function StatRow({ name, def, value, editing, onChange }) {
 
 // `values`/`draft` are both plain {statName: value} maps — `draft` (edit mode)
 // is a slice of the drawer's flat path->value map for this group's prefix.
-function StatGroup({ title, defs, values, desc, editing, draft, onEdit }) {
+// `nested` = the caller already drew a heading (an NPC card), so this drops the
+// group's own spacing and says "nothing here" rather than vanishing and leaving
+// that heading dangling over empty space.
+function StatGroup({ title, defs, values, desc, editing, draft, onEdit, nested }) {
   const entries = Object.entries(defs || {}).filter(([, d]) => d && typeof d === 'object')
-  if (entries.length === 0) return null
+  if (entries.length === 0) {
+    return nested ? <div className="ws-none">No tracked stats.</div> : null
+  }
   return (
-    <div className="ws-group">
+    <div className={nested ? 'ws-stats' : 'ws-group'}>
       {title && <h3 className="ws-group-title" title={desc || undefined}>{title}</h3>}
       {entries.map(([name, def]) => (
         <StatRow key={name} name={name} def={def}
@@ -835,12 +840,25 @@ function WorldStateDrawer({ advId, refreshKey }) {
               <StatGroup title="You" defs={schema.player} values={state.player}
                 editing={editing} draft={sliceDraft(draft, 'player')}
                 onEdit={(name, v) => setPath(`player.${name}`, v)} />
-              {npcs.map(([id, def]) => (
-                <StatGroup key={id} title={def.name || id} desc={def.desc}
-                  defs={def.stats} values={npcState[id]}
-                  editing={editing} draft={sliceDraft(draft, `npc.${id}`)}
-                  onEdit={(name, v) => setPath(`npc.${id}.${name}`, v)} />
-              ))}
+              {npcs.length > 0 && (
+                <div className="ws-group">
+                  <h3 className="ws-group-title">Cast</h3>
+                  {npcs.map(([id, def]) => (
+                    <div key={id} className="ws-npc">
+                      <div className="ws-npc-head" title={def.desc || undefined}>
+                        <span className="ws-npc-avatar" aria-hidden="true">
+                          {npcInitials(def.name, id)}
+                        </span>
+                        <span className="ws-npc-name">{def.name || id}</span>
+                      </div>
+                      <StatGroup defs={def.stats} values={npcState[id]}
+                        editing={editing} draft={sliceDraft(draft, `npc.${id}`)}
+                        onEdit={(name, v) => setPath(`npc.${id}.${name}`, v)}
+                        nested />
+                    </div>
+                  ))}
+                </div>
+              )}
               {flags.length > 0 && (
                 <div className="ws-group">
                   <h3 className="ws-group-title">Flags</h3>

@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { api } from '../api'
 import { Field, StoryCardRow, downloadJSON, pickJSONFile, useToast } from '../components'
 import ArtPicker from '../ArtPicker'
-import SchemaEditor from '../SchemaEditor'
+import SchemaEditor, { NpcEditor, addNpc } from '../SchemaEditor'
 
 export default function ScenarioEditor() {
   const { id } = useParams()
@@ -104,6 +104,15 @@ export default function ScenarioEditor() {
     setSchemaText(cleaned ? JSON.stringify(cleaned, null, 2) : '')
     setSchemaError('')
     debounceSave('stat_schema', () => saveSchema(cleaned))
+  }
+
+  // NPCs live in the same stat_schema, but are edited in their own page
+  // section — so this is just the `npcs` slice of the same save path.
+  const setNpcs = (npcs) => {
+    const next = { ...(parsedSchema || {}) }
+    if (npcs && Object.keys(npcs).length) next.npcs = npcs
+    else delete next.npcs
+    applySchema(next)
   }
 
   const addCard = async () => {
@@ -243,10 +252,10 @@ export default function ScenarioEditor() {
         </div>
       </div>
       <p className="dim" style={{ margin: '0 0 10px', fontSize: '0.85rem' }}>
-        Optional. Define stats (with bands and rules), NPCs, flags, and milestones, and
-        the AI will track them each turn — HP, mana, an NPC’s trust, quest objectives.
-        Each NPC has its own name, trigger keys, description, and its own stats; a story
-        card is created for it automatically. Leave blank for a plain narrative scenario.
+        Optional. Define stats (with bands and rules), flags, and milestones, and the AI
+        will track them each turn — HP, mana, a raised alarm, quest objectives. NPCs are
+        part of this same schema but have their own section below. Leave blank for a plain
+        narrative scenario.
       </p>
       {schemaView === 'form' ? (
         <SchemaEditor schema={parsedSchema} onChange={applySchema} />
@@ -270,6 +279,27 @@ export default function ScenarioEditor() {
           </div>
           <SchemaPreview schema={parsedSchema} />
         </>
+      )}
+
+      <div className="page-header" style={{ marginTop: 28 }}>
+        <h2 style={{ margin: 0, fontFamily: 'Georgia, serif', fontSize: '1.2rem' }}>Cast &amp; NPCs</h2>
+        {schemaView === 'form' && (
+          <button onClick={() => setNpcs(addNpc(parsedSchema?.npcs))}>+ Add NPC</button>
+        )}
+      </div>
+      <p className="dim" style={{ margin: '0 0 10px', fontSize: '0.85rem' }}>
+        Characters the AI tracks by name. Each has its own trigger words, description and
+        stats — a dragon’s <em>ferocity</em>, a ranger’s <em>trust</em> — addressed as
+        <code> npc.&lt;id&gt;.&lt;stat&gt;</code>. Adding one here also creates a story card
+        for it when an adventure starts.
+      </p>
+      {schemaView === 'form' ? (
+        <NpcEditor npcs={parsedSchema?.npcs || {}} onChange={setNpcs} />
+      ) : (
+        <div className="empty" style={{ padding: '20px 0' }}>
+          NPCs are part of the schema JSON above — switch to <strong>Editor</strong> to edit
+          them as cards.
+        </div>
       )}
 
       <div className="page-header" style={{ marginTop: 28 }}>

@@ -68,6 +68,18 @@ function monogram(title) {
   return letters.join('').toUpperCase()
 }
 
+/** Initials for an NPC's avatar disc — "Bandit Leader" → BL, "gwen" → GW.
+ *
+ * Deliberately not `monogram`: that one drops short words, which is right for
+ * scenario titles and wrong for names, and it has no id to fall back on.
+ */
+export function npcInitials(name, id) {
+  const src = String(name || id || '?').trim() || '?'
+  const words = src.split(/[\s_-]+/).filter(Boolean)
+  const letters = words.length > 1 ? words[0][0] + words[1][0] : src.slice(0, 2)
+  return letters.toUpperCase()
+}
+
 /** A scenario's plate: uploaded picture, else emoji, else generated art.
  *
  * `large` is for the Continue cards, where the plate carries more weight. The
