@@ -375,7 +375,8 @@ class SettingsUpdate(BaseModel):
     api_mode: Annotated[str, Field(max_length=20)] | None = None
     temperature: Annotated[float, Field(ge=0, le=5)] | None = None
     max_output_tokens: Annotated[int, Field(ge=1, le=100_000)] | None = None
-    reasoning_max_tokens: Annotated[int, Field(ge=0, le=100_000)] | None = None
+    # -1 = explicitly off (sends `reasoning: {effort: none}`); 0 = send nothing.
+    reasoning_max_tokens: Annotated[int, Field(ge=-1, le=100_000)] | None = None
     context_token_budget: Annotated[int, Field(ge=256, le=200_000)] | None = None
     narrator_prompt: Prose | None = None
     stream: bool | None = None

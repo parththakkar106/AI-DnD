@@ -167,12 +167,15 @@ export default function Settings() {
       </div>
       <label className="field">
         <span className="label">Reasoning budget (tokens)</span>
-        <input type="number" min="0" value={settings.reasoning_max_tokens}
-          onChange={(e) => setField('reasoning_max_tokens', Number(e.target.value))} />
+        <input type="number" min="-1" value={settings.reasoning_max_tokens}
+          onChange={(e) => setField(
+            'reasoning_max_tokens', Math.max(-1, Number(e.target.value)))} />
         <span className="label" style={{ marginTop: 4 }}>
           For reasoning models: separate thinking budget on top of max output tokens,
-          and thinking is shown collapsed above each response. 0 = off (nothing extra
-          is sent — keep 0 for endpoints/models without reasoning support).
+          and thinking is shown collapsed above each response. 0 = nothing extra is
+          sent (keep 0 for endpoints without reasoning support, e.g. Ollama).
+          −1 = actively turn reasoning off, for models that think by default
+          (DeepSeek V4 Flash) — saves the thinking tokens rather than just hiding them.
         </span>
       </label>
 

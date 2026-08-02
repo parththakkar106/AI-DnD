@@ -39,7 +39,8 @@ class OpenAICompatibleProvider(Provider):
         self.api_mode = api_mode  # "chat" | "completion"
         # Thinking budget for reasoning models, on top of max_tokens. 0 = the
         # `reasoning` param is not sent (endpoints that don't know it may
-        # reject unknown fields).
+        # reject unknown fields); negative = explicitly ask the endpoint to
+        # turn reasoning off.
         self.reasoning_max_tokens = reasoning_max_tokens
 
     def _headers(self) -> dict:
@@ -50,8 +51,18 @@ class OpenAICompatibleProvider(Provider):
 
     def _apply_reasoning_budget(self, body: dict) -> None:
         """Give reasoning models their own thinking budget (OpenRouter-style),
-        raising max_tokens so the actual output keeps its full budget."""
-        if self.reasoning_max_tokens > 0 and self.api_mode == "chat":
+        raising max_tokens so the actual output keeps its full budget.
+
+        A negative budget means the opposite: send `effort: "none"` to switch
+        reasoning off on models that do it by default (DeepSeek V4 Flash, say).
+        That's distinct from `exclude: true`, which still thinks — and bills —
+        but hides the trace. Zero stays "send nothing at all" so endpoints that
+        reject unknown fields (Ollama) keep working."""
+        if self.api_mode != "chat":
+            return
+        if self.reasoning_max_tokens < 0:
+            body["reasoning"] = {"effort": "none"}
+        elif self.reasoning_max_tokens > 0:
             body["reasoning"] = {"max_tokens": self.reasoning_max_tokens}
             body["max_tokens"] += self.reasoning_max_tokens
 
