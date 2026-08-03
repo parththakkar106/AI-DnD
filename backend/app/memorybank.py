@@ -4,7 +4,9 @@
 After each turn, a fire-and-forget task (`run_post_turn`) runs with its own DB
 session:
   - every MEMORY_INTERVAL actions (starting at MEMORY_START), each uncovered
-    block of actions is summarized into a short "memory";
+    block of actions is summarized into a short "memory". Summarization only
+    ever reads *settled* actions (see settled_story_actions) — the newest action
+    is held back one turn because it is still retryable;
   - every SUMMARY_INTERVAL actions, the Story Summary is rewritten folding in
     the new memories (the user-edited text is always the base, never clobbered);
   - new memories are embedded (OpenAI-compatible /v1/embeddings) and the bank
@@ -23,7 +25,7 @@ import math
 from sqlalchemy.orm import Session
 
 from . import models
-from .context import truncate_to_last_tokens
+from .context import story_actions, truncate_to_last_tokens
 from .database import SessionLocal
 from .providers import OpenAICompatibleProvider, ProviderError
 
@@ -86,22 +88,78 @@ def cosine(a: list[float], b: list[float]) -> float:
     return dot / norm if norm else 0.0
 
 
-def story_actions(adventure: models.Adventure) -> list[models.Action]:
-    return [a for a in adventure.actions if a.text.strip()]
+def settled_story_actions(adventure: models.Adventure) -> list[models.Action]:
+    """Story actions old enough to summarize: everything but the newest one.
+
+    Only the *last* action can be retried, so once an action has another action
+    after it, its text is final. Summarizing right up to the newest action meant
+    a memory could describe an attempt the player then retried away — the
+    memory's cursor has already advanced, so it is never regenerated, leaving a
+    memory (and, downstream, a story summary) describing narration that is no
+    longer in the story. Holding one action back costs a turn of latency and
+    makes that unreachable.
+
+    The result is always a prefix of story_actions(), so memory_cursor and
+    summary_cursor stay valid positions and no action is ever skipped.
+    """
+    return story_actions(adventure)[:-1]
+
+
+def _rewind_cursors_to_index(adventure: models.Adventure, index: int) -> None:
+    """Move both cursors back to the position of Action.index `index`.
+
+    The cursors are *positions* into story_actions() while Memory.source_* are
+    Action.index values, so the two spaces have to be translated between (they
+    diverge as soon as any action is deleted).
+    """
+    actions = story_actions(adventure)
+    position = next((i for i, a in enumerate(actions) if a.index >= index), len(actions))
+    adventure.memory_cursor = min(adventure.memory_cursor, position)
+    adventure.summary_cursor = min(adventure.summary_cursor, position)
+
+
+def note_action_removed(adventure: models.Adventure, action: models.Action) -> None:
+    """Keep the cursors pointing at the same actions when one is deleted from
+    *before* them. Call BEFORE the delete, while the action is still in the list.
+
+    memory_cursor counts actions from the start of the story, so removing an
+    earlier action slides every later one down a slot — without this, an action
+    that was never summarized shifts into the "already covered" range and is
+    skipped forever.
+    """
+    actions = story_actions(adventure)
+    position = next((i for i, a in enumerate(actions) if a.id == action.id), None)
+    if position is None:
+        return
+    if position < adventure.memory_cursor:
+        adventure.memory_cursor -= 1
+    if position < adventure.summary_cursor:
+        adventure.summary_cursor -= 1
 
 
 def prune_dangling_memories(adventure: models.Adventure, db: Session) -> int:
     """Delete memories that summarized actions which no longer exist (e.g. after
     undo). source_start/source_end are Action.index values; a memory is dangling
     if any covered action is past the current end of the story. Returns the count
-    removed. Cursors are self-healing in run_post_turn, so this is cleanup only."""
+    removed.
+
+    Throwing a memory away is not enough on its own: the actions it covered are
+    still behind memory_cursor, so they would read as summarized with nothing
+    describing them. Rewind to where the earliest discarded memory began, so
+    those actions are summarized again.
+    """
     max_index = max((a.index for a in adventure.actions), default=-1)
     dangling = [
         m for m in adventure.memories
         if m.source_end is not None and m.source_end > max_index
     ]
+    if not dangling:
+        return 0
+    starts = [m.source_start for m in dangling if m.source_start is not None]
     for m in dangling:
         db.delete(m)
+    if starts:
+        _rewind_cursors_to_index(adventure, min(starts))
     return len(dangling)
 
 
@@ -112,11 +170,13 @@ async def retrieve_memories(
     settings: models.Settings,
     *,
     update_stats: bool,
+    exclude_action_id: int | None = None,
 ) -> dict | None:
     """Returns {"used": [{id, text, similarity, pinned}], "error": str|None},
     or None when the memory bank is off for this adventure. `update_stats`
-    bumps use counters (real turns only, not Insights dry runs); the caller's
-    commit persists them."""
+    bumps use counters (real turns only, not Insights dry runs).
+    `exclude_action_id` drops the action being retried from the similarity
+    query, so the discarded attempt can't steer which memories come back."""
     if not adventure.memory_bank_enabled:
         return None
     if not settings.embedding_model.strip():
@@ -126,7 +186,7 @@ async def retrieve_memories(
     if not candidates:
         return {"used": [], "error": None}
 
-    actions = story_actions(adventure)
+    actions = story_actions(adventure, exclude_action_id)
     query = truncate_to_last_tokens(
         "\n\n".join(a.text for a in actions[-4:]), RETRIEVAL_WINDOW_TOKENS
     )
@@ -198,6 +258,12 @@ async def run_post_turn(adventure_id: int) -> None:
             return
         # Undo/retry can shrink the action list below a stored cursor, which
         # would stall summarization until the story grew past it again.
+        # Deliberately the FULL count, not the settled one: an adventure that
+        # was caught up under the old rule can have a cursor equal to the action
+        # count, and clamping to settled would rewind it one step, re-covering
+        # an already-summarized action in the next block. Both consumers below
+        # read settled actions and bail on a negative remainder, so a cursor
+        # briefly sitting one past the settled end is harmless.
         count = len(story_actions(adventure))
         adventure.memory_cursor = min(adventure.memory_cursor, count)
         adventure.summary_cursor = min(adventure.summary_cursor, count)
@@ -215,7 +281,7 @@ async def run_post_turn(adventure_id: int) -> None:
 async def _create_due_memories(
     adventure: models.Adventure, settings: models.Settings, db: Session
 ) -> None:
-    actions = story_actions(adventure)
+    actions = settled_story_actions(adventure)
     provider = summary_provider(settings)
     for _ in range(MAX_MEMORIES_PER_RUN):
         cursor = adventure.memory_cursor
@@ -246,7 +312,7 @@ async def _create_due_memories(
 async def _update_story_summary(
     adventure: models.Adventure, settings: models.Settings, db: Session
 ) -> None:
-    actions = story_actions(adventure)
+    actions = settled_story_actions(adventure)
     if len(actions) - adventure.summary_cursor < SUMMARY_INTERVAL:
         return
 

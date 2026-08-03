@@ -506,6 +506,11 @@ async def _generate_turn(
 ):
     settings = get_settings(db, user)
     cfg = auth.resolve_provider_config(settings)
+    # On a retry the row being regenerated is still attached to the adventure
+    # (it carries the variant history), so it has to be filtered out of the
+    # context — otherwise the model is shown the attempt it is replacing as if
+    # it were established story, and writes a continuation of it.
+    replacing_id = retry_of.id if retry_of is not None else None
     if cfg.using_demo:
         # No embedding/summarization calls on the server-funded key: memory
         # retrieval is skipped (with a visible note when the bank is on).
@@ -515,12 +520,16 @@ async def _generate_turn(
             else None
         )
     else:
-        memories = await memorybank.retrieve_memories(adventure, settings, update_stats=True)
+        memories = await memorybank.retrieve_memories(
+            adventure, settings, update_stats=True, exclude_action_id=replacing_id
+        )
     # Scoreboard as it stands before this AI turn's context/output hooks mutate
     # it — stapled onto the AI action so retry can start over from here.
     state_before = snapshot_state(adventure)
     world_state_before = snapshot_world_state(adventure)
-    system_text, story_text, snapshot = build_context(adventure, settings, memories)
+    system_text, story_text, snapshot = build_context(
+        adventure, settings, memories, exclude_action_id=replacing_id
+    )
 
     # onModelContext: scripts see (and may rewrite) the whole assembled context.
     combined = f"{system_text}\n\n{story_text}" if system_text else story_text
@@ -863,9 +872,11 @@ def undo_turn(
         last = actions.pop()
         # The earliest action removed in this turn holds the pre-turn scoreboard.
         first_removed = last
+        memorybank.note_action_removed(adventure, last)
         db.delete(last)
         if last.type == "ai" and actions and actions[-1].type in ("do", "say", "story"):
             first_removed = actions.pop()
+            memorybank.note_action_removed(adventure, first_removed)
             db.delete(first_removed)
         if first_removed.state_before is not None:
             adventure.script_state = copy.deepcopy(first_removed.state_before)
@@ -1480,9 +1491,15 @@ def delete_action(
     db: Session = Depends(get_db),
     user: models.User = CurrentUser,
 ):
-    get_adventure_or_404(adventure_id, db, user)
+    adventure = get_adventure_or_404(adventure_id, db, user)
     action = db.get(models.Action, action_id)
     if action is None or action.adventure_id != adventure_id:
         raise HTTPException(404, "Action not found")
+    # Cursor bookkeeping, same as undo: slide the cursors down if this action
+    # sits before them, then drop any memory left describing a deleted action.
+    memorybank.note_action_removed(adventure, action)
     db.delete(action)
+    db.flush()  # apply the delete so pruning sees the shrunken action list
+    db.expire(adventure, ["actions"])
+    memorybank.prune_dangling_memories(adventure, db)
     db.commit()

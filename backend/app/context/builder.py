@@ -74,10 +74,24 @@ def _history_text(action: models.Action) -> str:
     return text
 
 
-def _visible_npcs(adventure: models.Adventure, stat_schema: dict) -> dict[str, str]:
+def story_actions(
+    adventure: models.Adventure, exclude_action_id: int | None = None
+) -> list[models.Action]:
+    """The adventure's non-empty actions, as the model should see them.
+
+    `exclude_action_id` drops one action from the story — used by retry, where
+    the row being regenerated is still attached to the adventure (it holds the
+    variant history) but must not appear in the context assembled to replace it.
+    """
+    return [
+        a for a in adventure.actions
+        if a.text.strip() and (exclude_action_id is None or a.id != exclude_action_id)
+    ]
+
+
+def _visible_npcs(actions: list[models.Action], stat_schema: dict) -> dict[str, str]:
     """Defined NPCs whose trigger words appear in the recent story — the ones
     "in scene", so only their stats get injected. Maps npc id -> display name."""
-    actions = [a for a in adventure.actions if a.text.strip()]
     recent = SEPARATOR.join(a.text for a in actions[-6:]).lower()
     visible: dict[str, str] = {}
     for npc_key, ndef in (stat_schema.get("npcs") or {}).items():
@@ -107,10 +121,13 @@ def build_context(
     adventure: models.Adventure,
     settings: models.Settings,
     memory_bank: dict | None = None,
+    exclude_action_id: int | None = None,
 ) -> tuple[str, str, dict]:
     """Returns (system_text, story_text, context_report). `memory_bank` is the
-    result of memorybank.retrieve_memories (None when the bank is off)."""
+    result of memorybank.retrieve_memories (None when the bank is off);
+    `exclude_action_id` omits one action from the story (see story_actions)."""
     script_mem = _script_memory(adventure)
+    actions = story_actions(adventure, exclude_action_id)
 
     # ----- Always-included components -----
     system_sections: list[Section] = [Section("narrator", settings.narrator_prompt.strip())]
@@ -123,7 +140,7 @@ def build_context(
         if guide:
             system_sections.append(Section("world_state_guide", guide))
         block = worldstate.render_state_section(
-            adventure.world_state, stat_schema, _visible_npcs(adventure, stat_schema)
+            adventure.world_state, stat_schema, _visible_npcs(actions, stat_schema)
         )
         if block:
             system_sections.append(Section("world_state", block))
@@ -163,7 +180,6 @@ def build_context(
     available = max(256, settings.context_token_budget - reserved)
 
     # ----- Story cards: triggered by recent story text (the window history could fill) -----
-    actions = [a for a in adventure.actions if a.text.strip()]
     trigger_window = truncate_to_last_tokens(SEPARATOR.join(a.text for a in actions), available)
     triggered = _match_cards(adventure.story_cards, trigger_window)
 

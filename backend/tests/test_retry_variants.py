@@ -39,6 +39,7 @@ class ScriptedProvider:
     """Streams the next canned reply each call, so successive retries differ."""
     replies: list = []
     calls = 0
+    prompts: list = []  # every assembled (system, story) pair, for context assertions
 
     def __init__(self, *a, **k):
         pass
@@ -46,6 +47,7 @@ class ScriptedProvider:
     async def generate(self, parts: PromptParts, *, temperature, max_tokens):
         index = min(ScriptedProvider.calls, len(ScriptedProvider.replies) - 1)
         ScriptedProvider.calls += 1
+        ScriptedProvider.prompts.append((parts.system, parts.story))
         reply = ScriptedProvider.replies[index]
         if isinstance(reply, Exception):
             raise reply
@@ -79,6 +81,7 @@ def client(monkeypatch):
 
     ScriptedProvider.replies = ["Attempt one."]
     ScriptedProvider.calls = 0
+    ScriptedProvider.prompts = []
     monkeypatch.setattr(adventures, "OpenAICompatibleProvider", ScriptedProvider)
     monkeypatch.setattr(auth, "resolve_provider_config", lambda s: auth.ProviderConfig(
         "http://fake", "k", "test-model", False))
@@ -144,6 +147,35 @@ def test_retry_keeps_the_discarded_attempt(client):
     assert r.status_code == 200, r.text
     assert [v["text"] for v in r.json()] == ["Attempt one.", "Attempt two."]
     assert [v["active"] for v in r.json()] == [False, True]
+
+
+def test_retry_context_excludes_the_attempt_being_replaced(client):
+    """The whole point of a retry is a fresh take on the *same* turn. The row
+    now survives the retry (it holds the variant history), so it is still in
+    `adventure.actions` while the replacement context is assembled — it must be
+    filtered out, or the model is asked to continue *past* the attempt it is
+    supposed to be replacing and writes a sequel that blends both."""
+    ScriptedProvider.replies = ["Attempt one.", "Attempt two."]
+    _play(client)
+    _retry(client)
+
+    retry_story = ScriptedProvider.prompts[-1][1]
+    assert "Attempt one." not in retry_story
+    # The turn's own player action must still be there — it's what to respond to.
+    assert "look around" in retry_story
+    assert "You enter a cave." in retry_story
+
+
+def test_retry_context_keeps_earlier_ai_turns(client):
+    """Only the action being retried is dropped, not AI history in general."""
+    ScriptedProvider.replies = ["First turn.", "Second turn.", "Second, again."]
+    _play(client, "go north")
+    _play(client, "go south")
+    _retry(client)
+
+    retry_story = ScriptedProvider.prompts[-1][1]
+    assert "First turn." in retry_story
+    assert "Second turn." not in retry_story
 
 
 def test_never_retried_action_has_no_variants(client):
