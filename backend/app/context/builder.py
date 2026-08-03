@@ -62,15 +62,17 @@ def _history_text(action: models.Action) -> str:
     delta). The block is stripped before storage/UI, so without this every past
     AI turn would look like one that emitted nothing — biasing the model, by
     imitation, to stop emitting too. Player turns and blockless turns are
-    returned unchanged."""
+    returned unchanged.
+
+    Reads `world_delta`, not `context_snapshot`: this runs for every action in
+    the replayed history, and the snapshot is deferred precisely so a turn
+    never drags the prompt archive out of the database."""
     text = action.text
-    snap = action.context_snapshot if isinstance(action.context_snapshot, dict) else None
-    if snap:
-        ws = snap.get("world_state")
-        if isinstance(ws, dict):
-            block = worldstate.render_delta_block(ws.get("delta") or {})
-            if block:
-                text = f"{text}\n{block}"
+    wd = action.world_delta if isinstance(action.world_delta, dict) else None
+    if wd:
+        block = worldstate.render_delta_block(wd.get("delta") or {})
+        if block:
+            text = f"{text}\n{block}"
     return text
 
 

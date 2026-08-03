@@ -205,13 +205,30 @@ class Action(Base):
     text: Mapped[str] = mapped_column(Text, default="")
     # Reasoning-model "thinking" that preceded the text (AI actions only).
     reasoning: Mapped[str | None] = mapped_column(Text, nullable=True)
-    context_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # The full assembled prompt for this turn, for the Insights viewer. By far
+    # the biggest column in the database (~74 KB/row in production), and needed
+    # by exactly one endpoint, one action at a time — so it is deferred: never
+    # loaded unless something actually touches the attribute. Bulk readers must
+    # NOT touch it; that is what `world_delta` below exists for.
+    context_snapshot: Mapped[dict | None] = mapped_column(
+        JSON, nullable=True, deferred=True
+    )
+    # The small slice of the snapshot that IS needed in bulk: this turn's RPG
+    # state changes, for the inline chips under an AI message (world_changes)
+    # and for re-attaching the emit block when replaying history to the model.
+    # Mirrors the active variant, same as text/reasoning/context_snapshot.
+    world_delta: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # Copy of Adventure.script_state as it was immediately BEFORE this action's
     # script hooks ran, so undo/retry can roll the shared scoreboard back.
-    # NULL for actions created before this column existed.
-    state_before: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # NULL for actions created before this column existed. Deferred: only ever
+    # read for the one action being undone or retried.
+    state_before: Mapped[dict | None] = mapped_column(
+        JSON, nullable=True, deferred=True
+    )
     # Phase 12: same idea for the RPG world_state, so undo/retry rolls it back too.
-    world_state_before: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    world_state_before: Mapped[dict | None] = mapped_column(
+        JSON, nullable=True, deferred=True
+    )
     # Retry history (AI actions): every attempt made for this turn, oldest
     # first, INCLUDING the active one. NULL/empty means never retried — the row
     # is its own only version. `variant_index` says which entry `text`,
@@ -225,14 +242,17 @@ class Action(Base):
 
     @property
     def world_changes(self) -> list[dict]:
-        """Compact per-turn RPG state changes (Phase 12), derived from the
-        stored snapshot, for the inline summary under an AI message. Labels are
-        path-based (no schema needed): `npc.gwen.trust` -> "gwen trust"."""
-        cs = self.context_snapshot if isinstance(self.context_snapshot, dict) else None
-        ws = cs.get("world_state") if cs else None
-        if not isinstance(ws, dict):
+        """Compact per-turn RPG state changes (Phase 12), for the inline summary
+        under an AI message. Labels are path-based (no schema needed):
+        `npc.gwen.trust` -> "gwen trust".
+
+        Reads `world_delta`, never `context_snapshot` — this runs for every
+        action in a list response, and touching the deferred snapshot here
+        would drag the whole prompt archive out of the database."""
+        wd = self.world_delta if isinstance(self.world_delta, dict) else None
+        if wd is None:
             return []
-        applied = (ws.get("report") or {}).get("applied") or []
+        applied = wd.get("applied") or []
         out: list[dict] = []
         for entry in applied:
             parts = str(entry.get("path", "")).split(".")

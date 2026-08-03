@@ -333,6 +333,22 @@ def snapshot_world_state(adventure: models.Adventure) -> dict:
 VARIANT_SNAPSHOT_KEYS = ("world_state", "script", "raw_output")
 
 
+def world_delta_of(snapshot: dict | None) -> dict | None:
+    """The bulk-read slice of a context snapshot, for Action.world_delta.
+
+    context_snapshot is deferred (it holds the whole assembled prompt), so the
+    two things that ARE needed for every action — the world-change chips and
+    the emit block replayed into history — get their own small column. Keep
+    this in step with the snapshot wherever one is written."""
+    ws = (snapshot or {}).get("world_state")
+    if not isinstance(ws, dict):
+        return None
+    return {
+        "delta": ws.get("delta") or {},
+        "applied": (ws.get("report") or {}).get("applied") or [],
+    }
+
+
 def variant_of(action: models.Action, adventure: models.Adventure) -> dict:
     """Freeze an action's *current* content as a variant entry.
 
@@ -365,6 +381,7 @@ def apply_variant(action: models.Action, adventure: models.Adventure, index: int
         else:
             snapshot.pop(key, None)
     action.context_snapshot = snapshot
+    action.world_delta = world_delta_of(snapshot)
     action.variant_index = index
     if isinstance(entry.get("script_state"), dict):
         adventure.script_state = copy.deepcopy(entry["script_state"])
@@ -637,6 +654,7 @@ async def _generate_turn(
             text=text,
             reasoning=reasoning,
             context_snapshot=snapshot,
+            world_delta=world_delta_of(snapshot),
             state_before=state_before,
             world_state_before=world_state_before,
         )

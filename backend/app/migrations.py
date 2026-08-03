@@ -110,9 +110,48 @@ MIGRATIONS: list[tuple[int, str]] = [
     # predates this column.
     (34, "ALTER TABLE actions ADD COLUMN variants JSON"),
     (35, "ALTER TABLE actions ADD COLUMN variant_index INTEGER NOT NULL DEFAULT 0"),
+    # Egress: context_snapshot holds the whole assembled prompt (~74 KB/row) and
+    # was being loaded in bulk for two tiny things — the world-change chips and
+    # the emit block replayed into history. Lift just that slice into its own
+    # column so the snapshot can be deferred. Backfilled by _backfill_world_delta.
+    (36, "ALTER TABLE actions ADD COLUMN world_delta JSON"),
 ]
 
 LATEST_VERSION = max((v for v, _ in MIGRATIONS), default=1)
+
+# Migrations that need a data pass after their DDL, keyed by version.
+WORLD_DELTA_VERSION = 36
+
+
+def _backfill_world_delta(conn) -> None:
+    """Populate actions.world_delta from the existing context_snapshot.
+
+    Runs entirely server-side: the snapshots are the reason this change exists,
+    so pulling ~40 MB of them into Python to rewrite a slice would defeat the
+    point. Dialect-specific because SQLite and Postgres spell JSON access
+    differently, and both have to work (SQLite locally and in tests).
+    """
+    if conn.dialect.name == "sqlite":
+        sql = """
+            UPDATE actions SET world_delta = json_object(
+                'delta',   json_extract(context_snapshot, '$.world_state.delta'),
+                'applied', json_extract(context_snapshot, '$.world_state.report.applied')
+            )
+            WHERE world_delta IS NULL
+              AND context_snapshot IS NOT NULL
+              AND json_extract(context_snapshot, '$.world_state') IS NOT NULL
+        """
+    else:
+        sql = """
+            UPDATE actions SET world_delta = jsonb_build_object(
+                'delta',   context_snapshot::jsonb #> '{world_state,delta}',
+                'applied', context_snapshot::jsonb #> '{world_state,report,applied}'
+            )
+            WHERE world_delta IS NULL
+              AND context_snapshot IS NOT NULL
+              AND jsonb_exists(context_snapshot::jsonb, 'world_state')
+        """
+    conn.execute(text(sql))
 
 
 def _get_version(conn) -> int:
@@ -153,6 +192,8 @@ def bootstrap(engine: Engine) -> None:
         for version, sql in MIGRATIONS:
             if version > current:
                 conn.execute(text(sql))
+                if version == WORLD_DELTA_VERSION:
+                    _backfill_world_delta(conn)
                 current = version
         _set_version(conn, current)
         _encrypt_plaintext_api_keys(conn)
