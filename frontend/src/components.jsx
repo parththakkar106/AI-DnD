@@ -238,18 +238,34 @@ export function AuthModal({ mode: initialMode, onClose, onAuthed }) {
   const [mode, setMode] = useState(initialMode || 'register')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [reveal, setReveal] = useState(false)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const registering = mode === 'register'
+
+  // Esc dismisses, like the overlay click already does.
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  const switchTo = (next) => {
+    if (next === mode) return
+    setMode(next)
+    setError('')
+    setReveal(false)
+  }
 
   const submit = async (e) => {
     e.preventDefault()
     setBusy(true)
     setError('')
     try {
+      const address = email.trim()
       const me = registering
-        ? await api.register(email, password)
-        : await api.login(email, password)
+        ? await api.register(address, password)
+        : await api.login(address, password)
       onAuthed(me, mode)
     } catch (err) {
       setError(err.message)
@@ -259,34 +275,54 @@ export function AuthModal({ mode: initialMode, onClose, onAuthed }) {
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <form className="modal" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
-        <h2>{registering ? 'Create an account' : 'Log in'}</h2>
-        <p className="modal-hint">
+      <form className="modal auth-modal" onClick={(e) => e.stopPropagation()} onSubmit={submit}
+        aria-labelledby="auth-title">
+        <div className="auth-crest" aria-hidden="true">❖</div>
+        <h2 id="auth-title">{registering ? 'Create an account' : 'Welcome back'}</h2>
+        <p className="modal-hint auth-hint">
           {registering
             ? 'Everything you’ve played as a guest stays with your new account, and you can pick it up from any device.'
-            : 'Welcome back — log in to reach your adventures.'}
+            : 'Log in to reach your adventures.'}
         </p>
+
+        <div className="auth-tabs" role="tablist">
+          <button type="button" role="tab" aria-selected={!registering}
+            className={`auth-tab${registering ? '' : ' active'}`}
+            onClick={() => switchTo('login')}>Log in</button>
+          <button type="button" role="tab" aria-selected={registering}
+            className={`auth-tab${registering ? ' active' : ''}`}
+            onClick={() => switchTo('register')}>Sign up</button>
+        </div>
+
         <label className="field">
           <span className="label">Email</span>
           <input type="email" autoFocus required value={email}
+            autoComplete="email" placeholder="you@example.com"
             onChange={(e) => setEmail(e.target.value)} />
         </label>
         <label className="field">
-          <span className="label">Password{registering ? ' (at least 8 characters)' : ''}</span>
-          <input type="password" required minLength={registering ? 8 : undefined} value={password}
-            onChange={(e) => setPassword(e.target.value)} />
-        </label>
-        {error && <div className="test-error" style={{ marginTop: 4 }}>{error}</div>}
-        <div className="modal-buttons" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
-          <button type="button" className="linklike" onClick={() => { setMode(registering ? 'login' : 'register'); setError('') }}>
-            {registering ? 'Have an account? Log in' : 'New here? Create an account'}
-          </button>
-          <div style={{ display: 'flex', gap: 10 }}>
-            <button type="button" onClick={onClose}>Cancel</button>
-            <button type="submit" className="primary" disabled={busy}>
-              {busy ? '…' : registering ? 'Sign up' : 'Log in'}
+          <span className="label">Password</span>
+          <div className="auth-password">
+            <input type={reveal ? 'text' : 'password'} required
+              minLength={registering ? 8 : undefined} value={password}
+              autoComplete={registering ? 'new-password' : 'current-password'}
+              onChange={(e) => setPassword(e.target.value)} />
+            <button type="button" className="auth-reveal" tabIndex={-1}
+              aria-label={reveal ? 'Hide password' : 'Show password'}
+              onClick={() => setReveal((r) => !r)}>
+              {reveal ? 'Hide' : 'Show'}
             </button>
           </div>
+          {registering && <span className="auth-help">At least 8 characters.</span>}
+        </label>
+
+        {error && <div className="auth-error" role="alert">{error}</div>}
+
+        <div className="modal-buttons">
+          <button type="button" onClick={onClose}>Cancel</button>
+          <button type="submit" className="primary" disabled={busy}>
+            {busy ? 'Please wait…' : registering ? 'Sign up' : 'Log in'}
+          </button>
         </div>
       </form>
     </div>
