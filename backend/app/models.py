@@ -234,7 +234,15 @@ class Action(Base):
     # is its own only version. `variant_index` says which entry `text`,
     # `reasoning` and `context_snapshot` currently mirror; retry appends and
     # points here instead of deleting the row, so nothing is lost.
-    variants: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    #
+    # Deferred for the same reason as context_snapshot: a list response only
+    # ever needs the *count* (see variant_count below), but the column holds
+    # every discarded attempt's full narration, so loading it in bulk made each
+    # retry a permanent tax on every later page load of that adventure.
+    variants: Mapped[list | None] = mapped_column(JSON, nullable=True, deferred=True)
+    # len(variants), maintained on write by set_variants() so the deferred
+    # column above never has to be fetched just to count it. 0 = never retried.
+    variant_count: Mapped[int] = mapped_column(Integer, default=0)
     variant_index: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
@@ -267,12 +275,6 @@ class Action(Base):
                 delta = new - old if isinstance(old, (int, float)) and isinstance(new, (int, float)) else None
                 out.append({"kind": "stat", "label": label, "delta": delta, "value": new})
         return out
-
-    @property
-    def variant_count(self) -> int:
-        """How many attempts exist for this turn. 0 (not 1) when the action was
-        never retried — the UI shows its pager only above 1 either way."""
-        return len(self.variants) if isinstance(self.variants, list) else 0
 
 
 class Script(Base):

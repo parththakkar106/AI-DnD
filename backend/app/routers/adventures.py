@@ -6,10 +6,11 @@ import threading
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, undefer
 
 from .. import auth, images, limits, memorybank, models, schemas, worldstate
 from ..context import build_context
+from ..context import history as context_history
 from ..database import get_db
 from ..providers import OpenAICompatibleProvider, PromptParts, ProviderError
 from ..scripting import ScriptPipeline
@@ -349,6 +350,18 @@ def world_delta_of(snapshot: dict | None) -> dict | None:
     }
 
 
+def set_variants(action: models.Action, entries: list[dict]) -> None:
+    """The ONLY way to write Action.variants.
+
+    `variants` is deferred (it holds every discarded attempt's narration), so
+    `variant_count` exists to answer "how many attempts?" without fetching it.
+    Writing the list anywhere else would let the two drift and the pager would
+    lie about how many takes a turn has.
+    """
+    action.variants = entries
+    action.variant_count = len(entries)
+
+
 def variant_of(action: models.Action, adventure: models.Adventure) -> dict:
     """Freeze an action's *current* content as a variant entry.
 
@@ -475,7 +488,19 @@ def action_json(action: models.Action) -> dict:
 
 
 def next_index(adventure: models.Adventure) -> int:
-    return max((a.index for a in adventure.actions), default=-1) + 1
+    return context_history.max_action_index(adventure) + 1
+
+
+def last_action(adventure: models.Adventure, db: Session) -> models.Action | None:
+    """The newest action of any kind, or None. A query rather than
+    `adventure.actions[-1]`, which would load the entire story to look at
+    one row."""
+    return (
+        db.query(models.Action)
+        .filter(models.Action.adventure_id == adventure.id)
+        .order_by(models.Action.index.desc())
+        .first()
+    )
 
 
 async def generate_turn(
@@ -644,7 +669,7 @@ async def _generate_turn(
             "created_at": models.utcnow().isoformat(),
             **{k: copy.deepcopy(snapshot[k]) for k in VARIANT_SNAPSHOT_KEYS if k in snapshot},
         })
-        ai_action.variants = history
+        set_variants(ai_action, history)
         apply_variant(ai_action, adventure, len(history) - 1)
     else:
         ai_action = models.Action(
@@ -768,13 +793,14 @@ def retry_action(
     acquire_turn_lock(adventure_id)
     last_ai = None
     try:
-        if adventure.actions and adventure.actions[-1].type == "ai":
-            last_ai = adventure.actions[-1]
+        newest = last_action(adventure, db)
+        if newest is not None and newest.type == "ai":
+            last_ai = newest
             # First retry: the row has no history yet, so record what's on
             # screen as variant 0 before anything is rolled back — the live
             # script/world state is precisely that attempt's outcome.
-            if not last_ai.variants:
-                last_ai.variants = [variant_of(last_ai, adventure)]
+            if not last_ai.variant_count:
+                set_variants(last_ai, [variant_of(last_ai, adventure)])
                 last_ai.variant_index = 0
             # Roll the scoreboard back to before this AI turn's hooks ran, so
             # regenerating starts fresh instead of stacking output mutations on
@@ -855,7 +881,8 @@ def select_variant(
     variants = action.variants if isinstance(action.variants, list) else []
     if not 0 <= payload.index < len(variants):
         raise HTTPException(400, "No such attempt for this action")
-    if not adventure.actions or adventure.actions[-1].id != action.id:
+    newest = last_action(adventure, db)
+    if newest is None or newest.id != action.id:
         raise HTTPException(
             400,
             "Only the latest message can be switched — the story has already "
@@ -884,16 +911,25 @@ def undo_turn(
     adventure = get_adventure_or_404(adventure_id, db, user)
     acquire_turn_lock(adventure_id)
     try:
-        actions = list(adventure.actions)
-        if not actions or actions[-1].type == "start":
+        # Only the last turn is ever removed, so fetch the two actions it can
+        # consist of rather than the whole story.
+        newest = (
+            db.query(models.Action)
+            .filter(models.Action.adventure_id == adventure.id)
+            .order_by(models.Action.index.desc())
+            .limit(2)
+            .all()
+        )
+        if not newest or newest[0].type == "start":
             raise HTTPException(400, "Nothing to undo")
-        last = actions.pop()
+        last = newest[0]
+        preceding = newest[1] if len(newest) > 1 else None
         # The earliest action removed in this turn holds the pre-turn scoreboard.
         first_removed = last
         memorybank.note_action_removed(adventure, last)
         db.delete(last)
-        if last.type == "ai" and actions and actions[-1].type in ("do", "say", "story"):
-            first_removed = actions.pop()
+        if last.type == "ai" and preceding is not None and preceding.type in ("do", "say", "story"):
+            first_removed = preceding
             memorybank.note_action_removed(adventure, first_removed)
             db.delete(first_removed)
         if first_removed.state_before is not None:
@@ -918,6 +954,16 @@ def export_adventure(
 ):
     """Full backup: plot components, story cards, scripts (+state), every action."""
     adv = get_adventure_or_404(adventure_id, db, user)
+    # Export is the one read that genuinely wants every attempt, so it asks for
+    # the deferred `variants` column up front — iterating adv.actions instead
+    # would lazy-load it one row at a time.
+    exported_actions = (
+        db.query(models.Action)
+        .filter(models.Action.adventure_id == adv.id)
+        .options(undefer(models.Action.variants))
+        .order_by(models.Action.index)
+        .all()
+    )
     return {
         "format": "ai-dnd-adventure-v1",
         "title": adv.title,
@@ -967,7 +1013,7 @@ def export_adventure(
                 "variantIndex": a.variant_index,
                 "createdAt": a.created_at.isoformat(),
             }
-            for a in adv.actions
+            for a in exported_actions
         ],
     }
 
@@ -1060,6 +1106,7 @@ def import_adventure(
                 text=str(a["text"]),
                 reasoning=str(a["reasoning"]) if a.get("reasoning") else None,
                 variants=variants or None,
+                variant_count=len(variants),
                 # Clamped: a bundle could name an index its variant list
                 # doesn't have, which would make the pager point at nothing.
                 variant_index=min(max(int(a.get("variantIndex", 0)), 0), max(len(variants) - 1, 0)),
@@ -1493,11 +1540,12 @@ def update_action(
     action.text = payload.text
     # Keep the live variant in step, or paging away and back would silently
     # revert the edit.
-    variants = action.variants if isinstance(action.variants, list) else []
-    if 0 <= action.variant_index < len(variants):
-        history = copy.deepcopy(variants)
-        history[action.variant_index]["text"] = payload.text
-        action.variants = history
+    if action.variant_count:
+        variants = action.variants if isinstance(action.variants, list) else []
+        if 0 <= action.variant_index < len(variants):
+            history = copy.deepcopy(variants)
+            history[action.variant_index]["text"] = payload.text
+            set_variants(action, history)
     db.commit()
     return action
 

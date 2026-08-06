@@ -25,7 +25,7 @@ import math
 from sqlalchemy.orm import Session
 
 from . import models
-from .context import story_actions, truncate_to_last_tokens
+from .context import history, story_actions, truncate_to_last_tokens
 from .database import SessionLocal
 from .providers import OpenAICompatibleProvider, ProviderError
 
@@ -35,6 +35,7 @@ SUMMARY_INTERVAL = 15  # actions between Story Summary updates
 MAX_MEMORIES_PER_RUN = 5  # cap catch-up work (e.g. imported adventures) per turn
 MAX_EMBED_BATCH = 32
 RETRIEVAL_WINDOW_TOKENS = 600  # recent story text used as the similarity query
+RETRIEVAL_WINDOW_ACTIONS = 4  # ...taken from this many of the newest actions
 SUMMARY_MAX_WORDS = 250
 
 MEMORY_SYSTEM_PROMPT = (
@@ -88,8 +89,30 @@ def cosine(a: list[float], b: list[float]) -> float:
     return dot / norm if norm else 0.0
 
 
+def settled_count(adventure: models.Adventure) -> int:
+    """How many story actions are old enough to summarize: all but the newest.
+
+    See settled_story_actions for why one action is held back. Counting rather
+    than listing keeps the post-turn pass off the whole story.
+    """
+    return max(history.count(adventure) - 1, 0)
+
+
+def settled_slice(adventure: models.Adventure, start: int, length: int) -> list[models.Action]:
+    """Settled story actions at positions [start, start + length).
+
+    Callers must already have checked against `settled_count()`; this only
+    fetches, it does not re-clamp.
+    """
+    return history.slice_(adventure, start, length)
+
+
 def settled_story_actions(adventure: models.Adventure) -> list[models.Action]:
     """Story actions old enough to summarize: everything but the newest one.
+
+    The plain-list form of the rule. The passes below use `settled_count` and
+    `settled_slice` instead, which express the same thing without reading the
+    whole story; this stays as the statement of what they must agree with.
 
     Only the *last* action can be retried, so once an action has another action
     after it, its text is final. Summarizing right up to the newest action meant
@@ -112,8 +135,7 @@ def _rewind_cursors_to_index(adventure: models.Adventure, index: int) -> None:
     Action.index values, so the two spaces have to be translated between (they
     diverge as soon as any action is deleted).
     """
-    actions = story_actions(adventure)
-    position = next((i for i, a in enumerate(actions) if a.index >= index), len(actions))
+    position = history.position_of_index(adventure, index)
     adventure.memory_cursor = min(adventure.memory_cursor, position)
     adventure.summary_cursor = min(adventure.summary_cursor, position)
 
@@ -127,10 +149,11 @@ def note_action_removed(adventure: models.Adventure, action: models.Action) -> N
     that was never summarized shifts into the "already covered" range and is
     skipped forever.
     """
-    actions = story_actions(adventure)
-    position = next((i for i, a in enumerate(actions) if a.id == action.id), None)
-    if position is None:
-        return
+    if not history.is_story_text(action.text):
+        return  # not in the list the cursors count, so nothing shifts
+    # Actions are ordered by index, so "how many come before it" is exactly
+    # "how many have a lower index" — no need to walk the list to find it.
+    position = history.position_of_index(adventure, action.index)
     if position < adventure.memory_cursor:
         adventure.memory_cursor -= 1
     if position < adventure.summary_cursor:
@@ -148,7 +171,7 @@ def prune_dangling_memories(adventure: models.Adventure, db: Session) -> int:
     describing them. Rewind to where the earliest discarded memory began, so
     those actions are summarized again.
     """
-    max_index = max((a.index for a in adventure.actions), default=-1)
+    max_index = history.max_action_index(adventure)
     dangling = [
         m for m in adventure.memories
         if m.source_end is not None and m.source_end > max_index
@@ -186,9 +209,9 @@ async def retrieve_memories(
     if not candidates:
         return {"used": [], "error": None}
 
-    actions = story_actions(adventure, exclude_action_id)
+    recent = history.tail(adventure, RETRIEVAL_WINDOW_ACTIONS, exclude_action_id)
     query = truncate_to_last_tokens(
-        "\n\n".join(a.text for a in actions[-4:]), RETRIEVAL_WINDOW_TOKENS
+        "\n\n".join(a.text for a in recent), RETRIEVAL_WINDOW_TOKENS
     )
     if not query.strip():
         return {"used": [], "error": None}
@@ -264,9 +287,9 @@ async def run_post_turn(adventure_id: int) -> None:
         # an already-summarized action in the next block. Both consumers below
         # read settled actions and bail on a negative remainder, so a cursor
         # briefly sitting one past the settled end is harmless.
-        count = len(story_actions(adventure))
-        adventure.memory_cursor = min(adventure.memory_cursor, count)
-        adventure.summary_cursor = min(adventure.summary_cursor, count)
+        total = history.count(adventure)
+        adventure.memory_cursor = min(adventure.memory_cursor, total)
+        adventure.summary_cursor = min(adventure.summary_cursor, total)
         if adventure.auto_summarize:
             await _create_due_memories(adventure, settings, db)
             await _update_story_summary(adventure, settings, db)
@@ -281,13 +304,18 @@ async def run_post_turn(adventure_id: int) -> None:
 async def _create_due_memories(
     adventure: models.Adventure, settings: models.Settings, db: Session
 ) -> None:
-    actions = settled_story_actions(adventure)
     provider = summary_provider(settings)
     for _ in range(MAX_MEMORIES_PER_RUN):
+        # Re-counted each pass: a memory just committed doesn't change the
+        # count, but this loop is the only thing that moves the cursor, so the
+        # comparison has to be against a total that is still current.
+        settled = settled_count(adventure)
         cursor = adventure.memory_cursor
-        if len(actions) < MEMORY_START or len(actions) - cursor < MEMORY_INTERVAL:
+        if settled < MEMORY_START or settled - cursor < MEMORY_INTERVAL:
             return
-        block = actions[cursor:cursor + MEMORY_INTERVAL]
+        block = settled_slice(adventure, cursor, MEMORY_INTERVAL)
+        if len(block) < MEMORY_INTERVAL:
+            return
         excerpt = truncate_to_last_tokens("\n\n".join(a.text for a in block), 2000)
         try:
             text = await provider.complete(
@@ -312,8 +340,8 @@ async def _create_due_memories(
 async def _update_story_summary(
     adventure: models.Adventure, settings: models.Settings, db: Session
 ) -> None:
-    actions = settled_story_actions(adventure)
-    if len(actions) - adventure.summary_cursor < SUMMARY_INTERVAL:
+    settled = settled_count(adventure)
+    if settled - adventure.summary_cursor < SUMMARY_INTERVAL:
         return
 
     # Fold in memories covering the uncovered stretch; fall back to raw story
@@ -321,10 +349,12 @@ async def _update_story_summary(
     # summary_cursor is a position into story_actions(); Memory.source_end is
     # an Action.index. Translate the cursor to an index boundary before
     # comparing — the two spaces diverge once actions are deleted or empty.
-    if adventure.summary_cursor < len(actions):
-        boundary = actions[adventure.summary_cursor].index
+    if adventure.summary_cursor < settled:
+        [first_uncovered] = settled_slice(adventure, adventure.summary_cursor, 1)
+        boundary = first_uncovered.index
     else:
-        boundary = actions[-1].index + 1 if actions else 0
+        last = settled_slice(adventure, settled - 1, 1) if settled else []
+        boundary = last[0].index + 1 if last else 0
     new_events = [
         m.text
         for m in adventure.memories
@@ -333,7 +363,9 @@ async def _update_story_summary(
     if new_events:
         events_text = "\n".join(f"- {t}" for t in new_events)
     else:
-        block = actions[adventure.summary_cursor:]
+        block = settled_slice(
+            adventure, adventure.summary_cursor, settled - adventure.summary_cursor
+        )
         events_text = truncate_to_last_tokens("\n\n".join(a.text for a in block), 2000)
 
     current = adventure.story_summary.strip()
@@ -351,7 +383,7 @@ async def _update_story_summary(
     if not text:
         return
     adventure.story_summary = text
-    adventure.summary_cursor = len(actions)
+    adventure.summary_cursor = settled
     db.commit()
 
 

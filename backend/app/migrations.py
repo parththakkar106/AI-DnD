@@ -115,12 +115,19 @@ MIGRATIONS: list[tuple[int, str]] = [
     # the emit block replayed into history. Lift just that slice into its own
     # column so the snapshot can be deferred. Backfilled by _backfill_world_delta.
     (36, "ALTER TABLE actions ADD COLUMN world_delta JSON"),
+    # Egress, part two: `variants` holds every discarded retry attempt, but a
+    # list response only needs how many there are. Keep the count beside it so
+    # the column itself can be deferred — otherwise each retry permanently adds
+    # ~5 KB to every later load of that adventure. Backfilled by
+    # _backfill_variant_count.
+    (37, "ALTER TABLE actions ADD COLUMN variant_count INTEGER NOT NULL DEFAULT 0"),
 ]
 
 LATEST_VERSION = max((v for v, _ in MIGRATIONS), default=1)
 
 # Migrations that need a data pass after their DDL, keyed by version.
 WORLD_DELTA_VERSION = 36
+VARIANT_COUNT_VERSION = 37
 
 
 def _backfill_world_delta(conn) -> None:
@@ -150,6 +157,28 @@ def _backfill_world_delta(conn) -> None:
             WHERE world_delta IS NULL
               AND context_snapshot IS NOT NULL
               AND jsonb_exists(context_snapshot::jsonb, 'world_state')
+        """
+    conn.execute(text(sql))
+
+
+def _backfill_variant_count(conn) -> None:
+    """Populate actions.variant_count from the existing variants list.
+
+    Server-side for the same reason as _backfill_world_delta: `variants` is the
+    column being taken off the wire, so counting it in Python would mean
+    dragging every stored attempt across the network once to avoid dragging it
+    across forever.
+    """
+    if conn.dialect.name == "sqlite":
+        sql = """
+            UPDATE actions SET variant_count = json_array_length(variants)
+            WHERE variants IS NOT NULL AND json_valid(variants)
+        """
+    else:
+        sql = """
+            UPDATE actions SET variant_count = jsonb_array_length(variants::jsonb)
+            WHERE variants IS NOT NULL
+              AND jsonb_typeof(variants::jsonb) = 'array'
         """
     conn.execute(text(sql))
 
@@ -194,6 +223,8 @@ def bootstrap(engine: Engine) -> None:
                 conn.execute(text(sql))
                 if version == WORLD_DELTA_VERSION:
                     _backfill_world_delta(conn)
+                if version == VARIANT_COUNT_VERSION:
+                    _backfill_variant_count(conn)
                 current = version
         _set_version(conn, current)
         _encrypt_plaintext_api_keys(conn)
