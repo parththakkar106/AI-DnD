@@ -24,6 +24,20 @@ CARD_BUDGET_SHARE = 0.4  # max share of non-reserved budget that story cards may
 NPC_WINDOW = 6  # actions of story searched for NPC trigger words ("in scene")
 SEPARATOR = "\n\n"
 
+# Output-length guidance. max_output_tokens is a hard wall the endpoint enforces
+# mid-sentence: hitting it truncates whatever is being written, and since the
+# state block is emitted last, it is what gets lost. Asking the model to land
+# just inside the wall keeps the cut from happening in the first place.
+LENGTH_HEADROOM = 50  # tokens held back from the cap for the state block itself
+# Models cannot count their own tokens, but they do follow a word budget, so the
+# reserved budget is stated in words. ~0.75 words per token for English prose.
+WORDS_PER_TOKEN = 0.75
+# A word budget is a suggestion the model routinely overshoots, and the cap it is
+# protecting is a hard wall — so aim 10% short of the real ceiling and let the
+# overshoot land in the slack instead of in the state block.
+LENGTH_BUFFER = 0.90
+MIN_LENGTH_HINT_WORDS = 40  # below this the hint is noise; a tiny cap speaks for itself
+
 
 @functools.lru_cache(maxsize=1)
 def _encoding() -> tiktoken.Encoding:
@@ -49,6 +63,34 @@ class Section:
     @property
     def tokens(self) -> int:
         return count_tokens(self.text)
+
+
+def length_hint(max_output_tokens: int, *, has_ws: bool) -> str:
+    """Ask for a turn that fits inside the output cap, stated as a word budget.
+
+    Returns "" when the cap is too small to phrase usefully — the hint is a
+    suggestion the model can drift past, so it only earns its tokens when there
+    is enough room for the drift to still land inside the wall.
+    """
+    words = int((max_output_tokens - LENGTH_HEADROOM) * WORDS_PER_TOKEN * LENGTH_BUFFER)
+    if words < MIN_LENGTH_HINT_WORDS:
+        return ""
+    tail = (
+        " Finish the narration and append the state block well inside the limit."
+        if has_ws
+        else " Bring the turn to a close well inside the limit rather than "
+        "stopping mid-sentence."
+    )
+    # Phrased as a ceiling, never as a budget. Measured against this model, "keep
+    # this turn under about N words" reads as a target to fill: it moved a 174-word
+    # average to 246 (n=5, every run longer than every unhinted one), i.e. the hint
+    # pushed turns toward the very wall it exists to keep them away from. Naming
+    # the number as a limit, plus saying a typical turn is far shorter, left the
+    # average at 170 while still rescuing the state block at tight caps.
+    return (
+        f"[Hard limit: this turn must not exceed {words} words. Write only as "
+        f"much as the moment needs — a typical turn is much shorter.{tail}]"
+    )
 
 
 def _script_memory(adventure: models.Adventure) -> dict:
@@ -164,10 +206,13 @@ def build_context(
     if isinstance(script_mem.get("frontMemory"), str):
         front_memory = script_mem["frontMemory"].strip()
 
+    length_note = length_hint(settings.max_output_tokens, has_ws=has_ws)
+
     reserved = (
         sum(s.tokens for s in system_sections)
         + count_tokens(authors_note)
         + count_tokens(front_memory)
+        + count_tokens(length_note)
         + (count_tokens(worldstate.EMIT_REMINDER) if has_ws else 0)
     )
     available = max(256, settings.context_token_budget - reserved)
@@ -244,6 +289,10 @@ def build_context(
         note_sections.append(Section("history", SEPARATOR.join(texts)))
     if front_memory:
         note_sections.append(Section("front_memory", front_memory))
+    # Sits just above the emit reminder, which keeps the strongest recency slot:
+    # the length budget is about the narration, the reminder about the block that
+    # comes after it, so this is also the order the model has to act in.
+    note_sections.append(Section("length_hint", length_note))
     if has_ws:
         # Terminal reminder: the emit rule sits up in the system block, far from
         # where the model generates; repeat it last, in the strongest recency slot.
