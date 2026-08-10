@@ -13,6 +13,10 @@ scripting**.
 > tier, so the first load after it's been idle takes ~30–60s to wake up.)
 >
 > Prefer a tour first? The **[project page](https://parththakkar106.github.io/AI-DnD/)** loads instantly.
+>
+> Want the internals? The **[design notes](https://parththakkar106.github.io/AI-DnD/guide.html)**
+> walk through the context budgeting, the world-state referee and the memory bank, and state the
+> reasoning behind each one ([Markdown version](docs/GUIDE.md)).
 
 Built with FastAPI + SQLAlchemy on the backend and React (Vite) on the frontend, running on
 SQLite locally and Postgres in the cloud. Works with **any OpenAI-compatible endpoint**: Ollama
@@ -199,6 +203,9 @@ is worth.
 - `plan/` — the phased implementation plan this was built from, kept as a build log. All twelve
   phases are complete; the later files (11, 12) double as design notes for the state-revert and
   world-state work.
+- [`docs/GUIDE.md`](docs/GUIDE.md) — design notes: how each subsystem works and why it was built
+  that way, with the measurements behind the decisions. Also rendered as a
+  [reading page](https://parththakkar106.github.io/AI-DnD/guide.html).
 - `backend/.env.example` — the few environment variables the backend reads.
 - [`docs/self-review.md`](docs/self-review.md) — a full-codebase self-review pass and what came
   out of it. All correctness findings are resolved.

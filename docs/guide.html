@@ -1,0 +1,1335 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI D&amp;D — the engineering guide</title>
+<meta name="description" content="How the AI D&amp;D storytelling engine works and why it was built this way: context assembly under a token budget, an AI-proposes/Python-referees world-state engine, an embedding memory bank, and the production concerns around a server-funded demo key.">
+<meta property="og:title" content="AI D&amp;D — the engineering guide">
+<meta property="og:description" content="Design decisions, measured results, and spoken answers for every part of the engine.">
+<meta property="og:type" content="article">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%E2%9A%94%3C/text%3E%3C/svg%3E">
+<style>
+/* ------------------------------------------------------------------ tokens
+   Single-theme by intent: this page is part of the AI D&D project site, which
+   is a committed dark identity. Every colour is painted explicitly so the page
+   holds on any host ground. */
+:root {
+  --ink:        #0b0b12;
+  --ink-raised: #12121b;
+  --panel:      #16161f;
+  --rule:       #282838;
+  --rule-soft:  #1e1e2a;
+  --text:       #e5e0d3;
+  --dim:        #948d7e;
+  --dimmer:     #6b6559;
+  --gold:       #d4a94e;
+  --gold-lit:   #ecc978;
+  --gold-deep:  #8e7233;
+  --say:        #79a892;
+  --say-deep:   #2c4740;
+  --trap:       #c07f66;
+  --trap-deep:  #4a2e25;
+
+  --display: 'Iowan Old Style', 'Palatino Linotype', Palatino, 'Book Antiqua', Georgia, serif;
+  --body:    'Iowan Old Style', Charter, Georgia, 'Times New Roman', serif;
+  --ui:      ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --mono:    ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+
+  --measure: 34rem;
+  color-scheme: dark;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  * { animation-duration: .001ms !important; transition-duration: .001ms !important; }
+}
+
+body {
+  margin: 0;
+  background:
+    radial-gradient(900px 520px at 12% -6%, rgba(212,169,78,.055), transparent 62%),
+    radial-gradient(760px 460px at 92% 104%, rgba(96,84,150,.07), transparent 58%),
+    var(--ink);
+  background-attachment: fixed;
+  color: var(--text);
+  font-family: var(--body);
+  font-size: 17px;
+  line-height: 1.68;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* ------------------------------------------------------------- reading rail */
+#progress {
+  position: fixed; inset: 0 auto auto 0; height: 2px; width: 0;
+  background: linear-gradient(90deg, var(--gold-deep), var(--gold-lit));
+  z-index: 50;
+}
+
+.bar {
+  position: sticky; top: 0; z-index: 40;
+  display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+  padding: .6rem 1.15rem;
+  background: rgba(11,11,18,.9);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--rule-soft);
+  font-family: var(--ui);
+  font-size: .74rem;
+  letter-spacing: .11em;
+  text-transform: uppercase;
+}
+.bar b { color: var(--gold); font-weight: 600; letter-spacing: .16em; }
+.bar a { color: var(--dim); text-decoration: none; border-bottom: 1px solid transparent; }
+.bar a:hover, .bar a:focus-visible { color: var(--gold-lit); border-bottom-color: var(--gold-deep); }
+
+/* ------------------------------------------------------------------ layout */
+.wrap { max-width: var(--measure); margin: 0 auto; padding: 0 1.15rem; }
+
+main { padding-bottom: 5rem; }
+
+/* --------------------------------------------------------------- masthead */
+/* Only the block axis — .mast is also a .wrap, whose inline padding must survive. */
+.mast { padding-top: 3.4rem; padding-bottom: 2.2rem; }
+.eyebrow {
+  font-family: var(--ui); font-size: .68rem; letter-spacing: .3em;
+  text-transform: uppercase; color: var(--gold); margin: 0 0 1.1rem;
+}
+.mast h1 {
+  font-family: var(--display); font-weight: 600;
+  font-size: clamp(2rem, 8vw, 2.9rem); line-height: 1.12;
+  margin: 0 0 .5rem; letter-spacing: -.005em; text-wrap: balance;
+  color: var(--text);
+}
+.mast .lede { color: var(--dim); font-size: 1.02rem; margin: 0 0 1.4rem; text-wrap: pretty; }
+.mast .meta {
+  font-family: var(--ui); font-size: .78rem; color: var(--dimmer);
+  border-top: 1px solid var(--rule-soft); padding-top: .9rem;
+}
+.mast .meta a { color: var(--gold); text-decoration: none; border-bottom: 1px solid var(--gold-deep); }
+
+/* -------------------------------------------------------------------- TOC */
+.toc {
+  border: 1px solid var(--rule); border-radius: 3px;
+  background: var(--ink-raised); margin: 0 0 3rem;
+}
+.toc > summary {
+  cursor: pointer; list-style: none; padding: .85rem 1.1rem;
+  font-family: var(--ui); font-size: .72rem; letter-spacing: .18em;
+  text-transform: uppercase; color: var(--gold);
+  display: flex; align-items: center; justify-content: space-between;
+}
+.toc > summary::-webkit-details-marker { display: none; }
+.toc > summary::after { content: '+'; color: var(--dimmer); font-size: 1rem; }
+.toc[open] > summary::after { content: '−'; }
+.toc ol { list-style: none; margin: 0; padding: 0 1.1rem 1rem; font-family: var(--ui); font-size: .87rem; }
+.toc li { padding: .28rem 0; border-top: 1px solid var(--rule-soft); }
+.toc li:first-child { border-top: 0; }
+.toc .sub { padding-left: 1.1rem; color: var(--dim); font-size: .83rem; }
+.toc a { color: var(--text); text-decoration: none; }
+.toc .sub a { color: var(--dim); }
+.toc a:hover, .toc a:focus-visible { color: var(--gold-lit); }
+
+/* ------------------------------------------------------------ part divider */
+.part { margin: 4.5rem 0 2.2rem; scroll-margin-top: 3.5rem; }
+.part .num {
+  font-family: var(--ui); font-size: .68rem; letter-spacing: .3em;
+  text-transform: uppercase; color: var(--gold-deep);
+  display: flex; align-items: center; gap: .8rem;
+}
+.part .num::after { content: ''; flex: 1; height: 1px; background: var(--rule); }
+.part h2 {
+  font-family: var(--display); font-weight: 600;
+  font-size: clamp(1.55rem, 5.5vw, 2rem); line-height: 1.2;
+  margin: .55rem 0 0; color: var(--gold-lit); text-wrap: balance;
+}
+.part p { color: var(--dim); margin: .6rem 0 0; }
+
+/* ------------------------------------------------------------------ prose */
+h3 {
+  font-family: var(--display); font-weight: 600;
+  font-size: 1.32rem; line-height: 1.25; margin: 3rem 0 .2rem;
+  color: var(--text); text-wrap: balance; scroll-margin-top: 4rem;
+}
+h3 .h-num {
+  display: block; font-family: var(--ui); font-size: .66rem; letter-spacing: .24em;
+  text-transform: uppercase; color: var(--gold-deep); margin-bottom: .4rem;
+}
+h4 {
+  font-family: var(--ui); font-weight: 600; font-size: .78rem;
+  letter-spacing: .14em; text-transform: uppercase; color: var(--gold);
+  margin: 2rem 0 .5rem;
+}
+p { margin: 0 0 1.05rem; text-wrap: pretty; }
+a { color: var(--gold-lit); text-decoration-color: var(--gold-deep); text-underline-offset: .18em; }
+strong { color: #f3efe4; font-weight: 600; }
+em { color: var(--text); }
+hr { border: 0; border-top: 1px solid var(--rule-soft); margin: 2.6rem 0; }
+
+ul, ol { margin: 0 0 1.05rem; padding-left: 1.25rem; }
+li { margin: 0 0 .45rem; }
+li::marker { color: var(--gold-deep); }
+
+code {
+  font-family: var(--mono); font-size: .84em;
+  background: #1b1b26; border: 1px solid var(--rule-soft);
+  border-radius: 2px; padding: .1em .32em; color: #dfd6bd;
+}
+pre {
+  font-family: var(--mono); font-size: .78rem; line-height: 1.6;
+  background: var(--panel); border: 1px solid var(--rule);
+  border-left: 2px solid var(--gold-deep);
+  border-radius: 2px; padding: .95rem 1rem; margin: 0 0 1.3rem;
+  overflow-x: auto; color: #ccc4ae;
+}
+pre code { background: 0; border: 0; padding: 0; font-size: inherit; color: inherit; }
+
+blockquote {
+  margin: 0 0 1.3rem; padding: 0 0 0 1rem;
+  border-left: 2px solid var(--rule); color: var(--dim); font-style: italic;
+}
+
+/* ------------------------------------------------------------------ tables */
+.scroll { overflow-x: auto; margin: 0 0 1.4rem; border: 1px solid var(--rule); border-radius: 2px; }
+table { border-collapse: collapse; width: 100%; font-family: var(--ui); font-size: .82rem; }
+th, td { text-align: left; padding: .58rem .8rem; border-bottom: 1px solid var(--rule-soft); vertical-align: top; }
+th {
+  background: var(--ink-raised); color: var(--gold); font-weight: 600;
+  font-size: .68rem; letter-spacing: .12em; text-transform: uppercase; white-space: nowrap;
+}
+tr:last-child td { border-bottom: 0; }
+td code { font-size: .8em; }
+.nums td { font-variant-numeric: tabular-nums; }
+/* Keep the label column from collapsing to one word per line on a phone; the
+   figures only get nowrap once there is room for it. */
+.nums td:first-child { min-width: 10rem; }
+@media (min-width: 34rem) { .nums td:last-child { white-space: nowrap; } }
+
+/* ---------------------------------------------------------------- callouts */
+.trap {
+  margin: 1.6rem 0 1.5rem; padding: 1rem 1.1rem;
+  border: 1px solid var(--rule); border-radius: 2px;
+  background: var(--ink-raised); font-size: .95rem;
+}
+.trap { border-left: 2px solid var(--trap); }
+.trap .tag {
+  display: block; font-family: var(--ui); font-size: .64rem;
+  letter-spacing: .2em; text-transform: uppercase; margin-bottom: .55rem;
+}
+.trap .tag { color: var(--trap); }
+.trap p { margin: 0 0 .7rem; }
+.trap p:last-child { margin: 0; }
+
+/* -------------------------------------------------------------- decision */
+.decision {
+  margin: 1.5rem 0; border: 1px solid var(--rule); border-radius: 2px;
+  background: var(--panel); overflow: hidden;
+}
+.decision > div { padding: .7rem 1rem; border-bottom: 1px solid var(--rule-soft); }
+.decision > div:last-child { border-bottom: 0; }
+.decision dt {
+  font-family: var(--ui); font-size: .63rem; letter-spacing: .2em;
+  text-transform: uppercase; color: var(--gold-deep); margin-bottom: .25rem;
+}
+.decision dd { margin: 0; font-size: .93rem; }
+
+/* -------------------------------------------------------------- pipeline */
+.pipe { margin: 1.5rem 0; font-family: var(--ui); font-size: .8rem; }
+.pipe .step {
+  position: relative; padding: .55rem .8rem .55rem 1.5rem;
+  border: 1px solid var(--rule); border-radius: 2px;
+  background: var(--panel); margin-bottom: .38rem;
+}
+.pipe .step::before {
+  content: ''; position: absolute; left: .62rem; top: 50%;
+  width: 5px; height: 5px; margin-top: -2.5px; border-radius: 50%;
+  background: var(--rule); border: 1px solid var(--dimmer);
+}
+.pipe .step.ai::before { background: var(--gold); border-color: var(--gold-lit); }
+.pipe .step.hook::before { background: var(--say-deep); border-color: var(--say); }
+.pipe .step b { color: var(--text); font-weight: 600; }
+.pipe .step span { color: var(--dim); }
+.pipe .legend {
+  display: flex; flex-wrap: wrap; gap: .9rem; margin-top: .7rem;
+  font-size: .7rem; color: var(--dimmer); letter-spacing: .06em;
+}
+.pipe .legend i { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: .35rem; }
+
+/* -------------------------------------------------------------- svg figure */
+figure { margin: 1.8rem 0; }
+figure svg { display: block; width: 100%; height: auto; }
+figcaption {
+  font-family: var(--ui); font-size: .74rem; color: var(--dimmer);
+  margin-top: .6rem; line-height: 1.5;
+}
+
+/* ------------------------------------------------------------------ stats */
+.stats { display: grid; grid-template-columns: 1fr; gap: .5rem; margin: 1.6rem 0; }
+@media (min-width: 34rem) { .stats { grid-template-columns: 1fr 1fr; } }
+.stat {
+  border: 1px solid var(--rule); border-radius: 2px;
+  background: var(--panel); padding: .85rem 1rem;
+}
+.stat .v {
+  font-family: var(--display); font-size: 1.45rem; color: var(--gold-lit);
+  font-variant-numeric: tabular-nums; line-height: 1.1;
+}
+.stat .k {
+  font-family: var(--ui); font-size: .7rem; color: var(--dim);
+  letter-spacing: .06em; margin-top: .3rem; line-height: 1.4;
+}
+
+
+/* ---------------------------------------------------------------- footer */
+footer {
+  border-top: 1px solid var(--rule); margin-top: 4rem; padding: 2rem 0 3rem;
+  font-family: var(--ui); font-size: .8rem; color: var(--dimmer);
+}
+footer a { color: var(--gold); }
+
+:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; border-radius: 2px; }
+</style>
+</head>
+<body>
+
+<div id="progress"></div>
+
+<div class="bar">
+  <b>⚔ AI D&amp;D</b>
+  <a href="https://github.com/parththakkar106/AI-DnD">Repo →</a>
+</div>
+
+<main>
+
+<header class="mast wrap">
+  <p class="eyebrow">Engineering guide</p>
+  <h1>How this thing works, and why it works that way</h1>
+  <p class="lede">An AI Dungeon-style storytelling engine. The chat loop is the boring part —
+  the interesting parts are the token-budget allocator, the world-state referee, and the
+  memory system that decides what the model is allowed to remember.</p>
+  <p class="meta">
+    Written to be read end to end. Every section states the decision, the reasoning behind
+    it, and what it cost. ·
+    <a href="https://ai-dnd-1gmp.onrender.com">Live demo</a> ·
+    <a href="https://github.com/parththakkar106/AI-DnD">Source</a>
+  </p>
+</header>
+
+<div class="wrap">
+<details class="toc" open>
+  <summary>Contents</summary>
+  <ol>
+    <li><a href="#p0">Part 0 — Orientation</a></li>
+    <li><a href="#p1">Part 1 — The AI layer</a></li>
+    <li class="sub"><a href="#s11">1.1 The turn pipeline</a></li>
+    <li class="sub"><a href="#s12">1.2 Context assembly is a budget problem</a></li>
+    <li class="sub"><a href="#s13">1.3 World state: the AI proposes, Python referees</a></li>
+    <li class="sub"><a href="#s14">1.4 Output length, by measurement</a></li>
+    <li class="sub"><a href="#s15">1.5 The memory bank</a></li>
+    <li class="sub"><a href="#s16">1.6 Streaming</a></li>
+    <li class="sub"><a href="#s17">1.7 The scripting sandbox</a></li>
+    <li class="sub"><a href="#s18">1.8 Why there is no agent framework</a></li>
+    <li><a href="#p2">Part 2 — Data and correctness</a></li>
+    <li class="sub"><a href="#s22">2.2 Two coordinate systems</a></li>
+    <li class="sub"><a href="#s23">2.3 Undo and retry that rewind</a></li>
+    <li class="sub"><a href="#s25">2.5 The 189× egress fix</a></li>
+    <li><a href="#p3">Part 3 — Production concerns</a></li>
+    <li><a href="#p4">Part 4 — The web plumbing</a></li>
+    <li><a href="#p5">Part 5 — Results and limitations</a></li>
+  </ol>
+</details>
+</div>
+
+<!-- ===================================================== PART 0 ========== -->
+<section class="wrap part" id="p0">
+  <p class="num">Part 0</p>
+  <h2>Orientation</h2>
+  <p>What the thing is, in the fewest words that are still true.</p>
+</section>
+
+<div class="wrap">
+
+<h3><span class="h-num">0.1</span>What it is</h3>
+
+<p>An AI Dungeon clone. You write a scenario, then play an open-ended text adventure where a
+language model narrates the world. You type “I open the door”, the model writes what happens
+next, and it remembers what came before.</p>
+
+<p>Three things make it more than a chat wrapper:</p>
+
+<ol>
+  <li><strong>A context engine.</strong> The model has a limited input window. The app decides,
+  every single turn, which pieces of the story get to be in the prompt and which get dropped.</li>
+  <li><strong>A world-state engine.</strong> The scenario declares stats — <code>hp</code>,
+  <code>trust</code>, <code>day</code>. The model proposes changes each turn; a Python engine
+  decides what actually sticks.</li>
+  <li><strong>A scripting sandbox.</strong> Real AI Dungeon JavaScript scripts import and run,
+  inside an embedded QuickJS interpreter.</li>
+</ol>
+
+<p>Runs locally against Ollama for free, or hosted against any OpenAI-compatible endpoint.</p>
+
+<h3><span class="h-num">0.2</span>The stack, and what each part is doing</h3>
+
+<div class="scroll">
+<table>
+  <thead><tr><th>Piece</th><th>What it actually does here</th></tr></thead>
+  <tbody>
+    <tr><td><strong>FastAPI</strong></td><td>The HTTP server. Every URL like <code>/api/adventures/3/actions</code> maps to a Python function. Also does the SSE streaming.</td></tr>
+    <tr><td><strong>SQLAlchemy</strong></td><td>Lets you write Python classes instead of SQL. <code>Adventure</code>, <code>Action</code>, <code>Memory</code> are Python classes; SQLAlchemy turns them into tables and turns attribute access into <code>SELECT</code>s.</td></tr>
+    <tr><td><strong>SQLite / Postgres</strong></td><td>The database. SQLite is one file on disk (local). Postgres is a server (hosted, on Neon). Same code talks to both.</td></tr>
+    <tr><td><strong>React</strong></td><td>The UI. Describes what the screen should look like for a given state; when the state changes it re-renders.</td></tr>
+    <tr><td><strong>Vite</strong></td><td>The frontend build tool and dev server. Bundles React into plain JS the browser can load.</td></tr>
+    <tr><td><strong>httpx</strong></td><td>The Python HTTP client used to call the model endpoint.</td></tr>
+    <tr><td><strong>tiktoken</strong></td><td>Counts tokens, so the budgeting is real arithmetic and not a guess.</td></tr>
+    <tr><td><strong>QuickJS</strong></td><td>A small embeddable JavaScript engine, used as a sandbox for user scripts.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>The whole thing is one process in production: FastAPI serves the API <em>and</em> the built
+React files from the same port.</p>
+
+<h4>The shape of one request</h4>
+
+<pre><code>you tap "Do"
+  → POST /api/adventures/3/actions
+       {type: "do", text: "open the door"}
+  → check ownership, rate limit, turn lock
+  → assemble the prompt      ← the interesting part
+  → POST to the model endpoint, stream=true
+  → tokens come back one at a time
+  → each is forwarded on as a Server-Sent Event
+  → React appends it to the screen as it arrives
+  → stream ends: parse the state block, referee
+       it, save the action</code></pre>
+
+</div>
+
+<!-- ===================================================== PART 1 ========== -->
+<section class="wrap part" id="p1">
+  <p class="num">Part 1</p>
+  <h2>The AI layer</h2>
+  <p>Where most of the design effort went. Everything here is a decision someone could
+  reasonably disagree with.</p>
+</section>
+
+<div class="wrap">
+
+<h3 id="s11"><span class="h-num">1.1</span>The turn pipeline</h3>
+
+<p>Everything that happens between “player pressed a button” and “text is on screen”.
+Source: <code>backend/app/routers/adventures.py</code>.</p>
+
+<div class="pipe">
+  <div class="step hook"><b>onInput</b> <span>— user JS may rewrite or block the input</span></div>
+  <div class="step"><b>store the player action</b></div>
+  <div class="step ai"><b>retrieve memories</b> <span>— embed recent story, cosine-rank the bank</span></div>
+  <div class="step"><b>snapshot script + world state</b> <span>— so undo and retry can roll back</span></div>
+  <div class="step ai"><b>build_context()</b> <span>— the budget allocator</span></div>
+  <div class="step hook"><b>onModelContext</b> <span>— user JS may rewrite the whole prompt</span></div>
+  <div class="step"><b>snapshot the exact prompt</b> <span>— for the Insights panel</span></div>
+  <div class="step ai"><b>provider.generate()</b> <span>— streamed, token by token</span></div>
+  <div class="step hook"><b>onOutput</b></div>
+  <div class="step ai"><b>extract + referee the state block</b> <span>— then strip it from the prose</span></div>
+  <div class="step"><b>save the action</b></div>
+  <div class="step ai"><b>background: summarize + embed</b> <span>— fire-and-forget</span></div>
+  <div class="legend">
+    <span><i style="background:var(--gold)"></i>model or prompt work</span>
+    <span><i style="background:var(--say)"></i>user script hook</span>
+    <span><i style="background:var(--dimmer)"></i>persistence</span>
+  </div>
+</div>
+
+<p>Two design choices are visible in that list before any of the details.</p>
+
+<p><strong>The prompt is snapshotted, not reconstructed.</strong> Every AI action stores the
+exact text that was sent to the model. That’s what powers the Insights panel — open any turn and
+see each context component, its token cost, and why it was included. It’s also what makes prompt
+bugs findable. The cost is storage, about 74 KB per turn, which turns into a real performance
+problem later (see <a href="#s25">2.5</a>).</p>
+
+<p><strong>Snapshots happen before the model call, not after.</strong> <code>state_before</code>
+and <code>world_state_before</code> are stapled onto the action <em>before</em> the hooks and the
+delta run. That’s the entire mechanism behind undo and retry actually rewinding rather than just
+deleting text.</p>
+
+<h3 id="s12"><span class="h-num">1.2</span>Context assembly is a budget problem</h3>
+
+<p>Source: <code>backend/app/context/builder.py</code>.</p>
+
+<h4>The problem</h4>
+
+<p>The model can only read so much. Say the budget is 8,000 tokens. A 200-turn adventure has far
+more story than that. Something has to be dropped, and <em>what</em> gets dropped decides whether
+the story stays coherent.</p>
+
+<h4>The naive version, and why it breaks</h4>
+
+<p>Send the last N turns. That fails in two directions: N turns of short exchanges wastes the
+window, and N turns of long ones overflows it. Worse, “the last N turns” throws away the things
+that matter most — the premise, the character sheet, the fact that you promised the innkeeper
+you’d return.</p>
+
+<h4>What this app does</h4>
+
+<p>Split the prompt into <strong>fixed</strong> sections and <strong>elastic</strong> ones.</p>
+
+<figure>
+<svg viewBox="-4 -4 648 176" role="img" aria-label="A stacked bar showing the context token budget: fixed sections are reserved first, then story cards take up to 40 percent of what remains, and story history fills the rest, newest first.">
+  <defs>
+    <linearGradient id="gFixed" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#8e7233"/><stop offset="1" stop-color="#d4a94e"/>
+    </linearGradient>
+  </defs>
+  <text x="0" y="14" fill="#948d7e" font-family="ui-sans-serif, system-ui" font-size="11" letter-spacing="1.4">CONTEXT TOKEN BUDGET</text>
+
+  <!-- full bar outline -->
+  <rect x="0" y="26" width="640" height="44" fill="#16161f" stroke="#282838"/>
+
+  <!-- fixed -->
+  <rect x="0" y="26" width="228" height="44" fill="url(#gFixed)" opacity="0.85"/>
+  <!-- cards -->
+  <rect x="228" y="26" width="165" height="44" fill="#2c4740" stroke="#79a892"/>
+  <!-- history -->
+  <rect x="393" y="26" width="247" height="44" fill="#1e1e2a" stroke="#3a3a50"/>
+
+  <text x="10" y="53" fill="#0b0b12" font-family="ui-sans-serif, system-ui" font-size="11" font-weight="600">RESERVED</text>
+  <text x="238" y="53" fill="#79a892" font-family="ui-sans-serif, system-ui" font-size="11" font-weight="600">CARDS ≤ 40%</text>
+  <text x="403" y="53" fill="#948d7e" font-family="ui-sans-serif, system-ui" font-size="11" font-weight="600">HISTORY, NEWEST FIRST</text>
+
+  <!-- brace for available -->
+  <path d="M228 78 L228 86 L640 86 L640 78" fill="none" stroke="#3a3a50"/>
+  <text x="434" y="102" fill="#948d7e" font-family="ui-sans-serif, system-ui" font-size="10.5" text-anchor="middle">available = budget − reserved</text>
+
+  <text x="0" y="128" fill="#6b6559" font-family="ui-monospace, monospace" font-size="10.5">narrator · stat guide · world state · emit rule · ai instructions</text>
+  <text x="0" y="144" fill="#6b6559" font-family="ui-monospace, monospace" font-size="10.5">plot essentials · story summary · retrieved memories</text>
+  <text x="0" y="160" fill="#6b6559" font-family="ui-monospace, monospace" font-size="10.5">↑ these are always included, whatever they cost</text>
+</svg>
+<figcaption>Fixed sections are reserved first and never dropped. What’s left is the elastic
+budget: triggered story cards may take up to 40% of it, and story history spends the remainder
+filling backwards from the newest turn.</figcaption>
+</figure>
+
+<p>The algorithm is three lines of arithmetic:</p>
+
+<pre><code>reserved  = every fixed section + note + hint + reminder
+available = max(256, token_budget - reserved)
+
+cards   ≤ available * 0.4
+history = available - cards_used, newest first</code></pre>
+
+<h4>The details that are actually decisions</h4>
+
+<p><strong>Cards are capped at 40% of the elastic budget.</strong> Story cards are triggered by
+keyword match, so a scene mentioning six named things could pull in six lore entries and leave no
+room for the story itself. The cap makes the failure mode “some lore is missing” instead of “the
+model has no idea what just happened”. Cards that don’t fit are still <em>reported</em> to
+Insights with <code>included: false</code>, so the UI can show the lore that got squeezed out.</p>
+
+<p><strong>History fills newest-first and stops.</strong> Oldest turns fall out. That’s the right
+direction because the old material isn’t actually lost — it’s been summarized into memories and
+the running summary, which live in the fixed section.</p>
+
+<p><strong>If even the single newest turn is over budget, it gets hard-truncated</strong> rather
+than dropped. A prompt with no story at all produces nonsense; a prompt with the tail end of the
+last turn produces something.</p>
+
+<p><strong>The author’s note is injected three actions from the end</strong>, not at the top.
+Instructions placed near the end of a prompt have more influence on what comes next than
+instructions at the top — recency. The author’s note is a steering control (“keep it tense”), so
+it goes where steering works.</p>
+
+<p><strong>The world-state reminder goes dead last.</strong> The full emit rule lives up in the
+system block, hundreds of tokens away from where the model starts writing. A one-line reminder
+occupies the final slot. Same recency logic, applied to the thing most likely to be forgotten.</p>
+
+<div class="trap">
+  <span class="tag">The subtle one</span>
+  <p><strong>Past AI turns get their state block re-attached.</strong> The block is stripped from
+  the text before storage, so a replayed history would show the model twenty of its own past
+  turns that contain <em>no</em> state block — teaching it, by imitation, to stop emitting one.
+  So the history builder reconstructs the block from the stored delta and re-appends it. The
+  model sees its own pattern and keeps following it.</p>
+</div>
+
+<h4>The performance trap hiding in this</h4>
+
+<p>Building the context needs the newest ~6,000 tokens of story. The obvious implementation reads
+<code>adventure.actions</code> — which loads every row of the adventure — then throws 90% of it
+away. At turn 200 that was 839 KB of database reads to use maybe 70 KB, growing every turn.</p>
+
+<p><code>context/history.py</code> fixes it by serving three shapes directly from SQL: a tail, a
+slice, and a count. <code>window_covering()</code> fetches the newest 32 actions, measures their
+real token count, and if that’s short of the budget it <em>projects</em> how many more it needs
+from the average length just measured, rather than blindly doubling:</p>
+
+<pre><code>average   = tokens / len(actions)
+projected = int(budget / average * 1.15) + 8</code></pre>
+
+<p>Each round fetches only what it doesn’t already hold, so no row is read twice. The same turn
+costs 129 KB instead of 839 KB, and stops growing at around turn 50 — the cost is bounded by the
+context budget instead of by the length of the story.</p>
+
+<p>There’s a second rule in that module worth naming: <strong>if the actions are already loaded
+in memory, slice them instead of querying.</strong> The scripting pipeline hands the whole history
+to user scripts, because AI Dungeon’s API requires it, so on a scripted adventure the rows are
+already there — issuing a query beside them would mean paying twice.</p>
+
+<h3 id="s13"><span class="h-num">1.3</span>World state: the AI proposes, Python referees</h3>
+
+<p>Source: <code>backend/app/worldstate/engine.py</code>.</p>
+
+<h4>The question</h4>
+
+<p>You want an RPG layer — hit points, trust, quest progress. Who owns the numbers?</p>
+
+<div class="decision">
+  <div>
+    <dt>Option A — a deterministic dice engine</dt>
+    <dd>The engine rolls and applies damage, the model narrates the result. This is what a real
+    RPG does. It loses here because the action space is unbounded: the player can type anything,
+    and mapping arbitrary natural language onto a fixed rules system is a harder problem than the
+    one being solved.</dd>
+  </div>
+  <div>
+    <dt>Option B — the model owns the numbers</dt>
+    <dd>Track hp in the prose and trust it. Fails immediately. Models are bad at arithmetic, worse
+    at holding a number across twenty turns, and completely unable to obey their own frequency
+    rules — tell one “only change this every 5 turns” and it changes it every turn.</dd>
+  </div>
+  <div>
+    <dt>Option C — chosen: propose and dispose</dt>
+    <dd>The model narrates and appends a JSON delta of what changed. Python validates and clamps
+    it before anything is stored. The model owns intent; the engine owns arithmetic.</dd>
+  </div>
+</div>
+
+<pre><code>narration: "The blade catches your shoulder. Gwen shouts and drags you back."
+
+```state
+{"player.hp": -15, "npc.gwen.trust": 5, "milestones.escaped": true}
+```</code></pre>
+
+<p>The engine then applies, in order:</p>
+
+<div class="scroll">
+<table>
+  <thead><tr><th>Rule</th><th>What it stops</th></tr></thead>
+  <tbody>
+    <tr><td>Path must exist in the schema</td><td>Hallucinated stats</td></tr>
+    <tr><td>Value must be the right type</td><td><code>"a lot"</code> instead of <code>-15</code></td></tr>
+    <tr><td>Cooldown</td><td>Changing a stat more often than the scenario allows</td></tr>
+    <tr><td>Counters can’t decrease</td><td>The in-game day going backwards</td></tr>
+    <tr><td><code>max_delta_per_turn</code></td><td>Losing 90 hp to a stubbed toe</td></tr>
+    <tr><td>Clamp to <code>min</code>/<code>max</code></td><td>Negative hp, trust above 100</td></tr>
+    <tr><td>Milestones sticky, <code>true</code> only</td><td>Un-completing a quest</td></tr>
+    <tr><td>Flags are two-way booleans</td><td>Deliberately unrestricted — that’s what flags are for</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Everything rejected is <em>reported</em>, not silently swallowed. The Insights panel shows
+applied, clamped and rejected paths per turn, and the chip under each narration shows what
+actually changed.</p>
+
+<h4>The reliability mechanism: word bands</h4>
+
+<p>A stat can carry <strong>bands</strong>:</p>
+
+<pre><code>"hp": { "min": 0, "max": 100, "initial": 100,
+        "bands": [[0,20,"very weak"],[20,40,"hurt"],[40,60,"minor damage"],
+                  [60,90,"healthy"],[90,100,"full health"]] }</code></pre>
+
+<p>Two things use them. The live state block shows the current band label —
+<code>hp 55/100 (minor damage)</code> — so the model reads a <em>word</em>, not just a number. And
+the stat guide shows the whole ladder once per turn, so the model can see the full scale it’s
+reasoning across.</p>
+
+<p>The point: models reason well over semantics and badly over arithmetic. “He’s badly hurt, so a
+solid hit should take him to very weak” is a judgement a model can make. “55 minus 22 is 33” is
+one it will get wrong often enough to matter.</p>
+
+<h4>The failure philosophy</h4>
+
+<p>Nothing in the world-state engine raises. A malformed delta returns <code>{}</code> and the
+turn continues. The parser is deliberately tolerant — it strips trailing commas and leading
+<code>+</code> signs on numbers, both of which weaker free models emit and strict JSON rejects. It
+accepts a <code>state</code>, <code>json</code> or unlabelled fence, and falls back to a bare JSON
+object at the end of the text, but only if it parses into something that looks like a delta, so
+prose ending in <code>}</code> is never eaten.</p>
+
+<p>This matters because the public demo runs on free-tier models. A stricter parser would mean a
+good model works and a free one doesn’t.</p>
+
+<h4>One call, not two</h4>
+
+<p>The model narrates <em>and</em> emits the delta in a single request. The alternative — narrate,
+then a second call to extract structured state — is more reliable per call and costs twice the
+latency and twice the rate-limit budget. On the free tier (20 requests/minute) that would halve
+the playable turn rate. The tolerant parser plus the terminal reminder was the cheaper way to buy
+the same reliability.</p>
+
+<h3 id="s14"><span class="h-num">1.4</span>Output length, by measurement</h3>
+
+<h4>The problem</h4>
+
+<p><code>max_output_tokens</code> is a hard wall the endpoint enforces mid-sentence. Hit it and
+whatever is being written gets cut off. Since the state block is emitted <em>last</em>, the state
+block is what gets lost. The turn narrates fine and silently records nothing.</p>
+
+<h4>First attempt, and the measurement</h4>
+
+<p>Tell the model its budget: <em>“keep this turn under about N words”</em>.</p>
+
+<div class="stats">
+  <div class="stat"><div class="v">174 → 246</div><div class="k">average words per turn once the “budget” hint was added — every run longer than every unhinted run (n=5)</div></div>
+  <div class="stat"><div class="v">170</div><div class="k">average after rephrasing the same number as a hard ceiling</div></div>
+</div>
+
+<p>Phrased as a budget, the number reads as a <em>target to fill</em>. The hint pushed turns
+toward the very wall it existed to protect.</p>
+
+<h4>The fix</h4>
+
+<pre><code>[Hard limit: this turn must not exceed 412 words. Write only as much as the
+moment needs — a typical turn is much shorter. Finish the narration and append
+the state block well inside the limit.]</code></pre>
+
+<h4>And the arithmetic around it</h4>
+
+<pre><code>words = int((max_output_tokens - 50) * 0.75 * 0.90)</code></pre>
+
+<ul>
+  <li><code>- 50</code> — tokens held back for the state block itself.</li>
+  <li><code>* 0.75</code> — models can’t count their own tokens, but they do follow a word budget.
+  English prose is roughly 0.75 words per token.</li>
+  <li><code>* 0.90</code> — a word budget is a suggestion the model overshoots; the cap it protects
+  is a hard wall. Aim 10% short so the overshoot lands in slack.</li>
+  <li>Below 40 words the hint is dropped entirely — it stops earning its tokens.</li>
+</ul>
+
+<h3 id="s15"><span class="h-num">1.5</span>The memory bank</h3>
+
+<p>Source: <code>backend/app/memorybank.py</code>.</p>
+
+<h4>The problem</h4>
+
+<p>Story history falls out of the context window as the adventure grows. Turn 4 said you promised
+the innkeeper you’d return. At turn 90 that’s long gone from the prompt — but if you walk back
+into the inn, it should come back.</p>
+
+<h4>Three layers</h4>
+
+<div class="scroll">
+<table>
+  <thead><tr><th>Layer</th><th>Cadence</th><th>Purpose</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Memory</strong></td><td>every 6 actions, from 12</td><td>One or two past-tense sentences of concrete fact.</td></tr>
+    <tr><td><strong>Story summary</strong></td><td>every 15 actions</td><td>A single ≤250-word overview, rewritten by folding in the new memories.</td></tr>
+    <tr><td><strong>Retrieval</strong></td><td>every turn</td><td>Embed the last 4 actions (≤600 tokens), cosine-rank the bank, inject the top 5.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Retrieval is what answers the innkeeper problem: the promise is a memory, the memory has a
+vector, walking into the inn produces a query vector near it, and it comes back into the prompt.</p>
+
+<h4>The decisions inside it</h4>
+
+<p><strong>Only <em>settled</em> actions get summarized.</strong> The newest action is always held
+back one turn. Only the last action can be retried — so if a memory summarized the newest action
+and the player then retried it, that memory would describe narration that no longer exists, and
+because its cursor has already advanced it would never be regenerated. Holding one action back
+costs a turn of latency and makes that state unreachable.</p>
+
+<p><strong>Cursors only advance on success.</strong> Every AI call here is best-effort. If
+summarization fails, the function returns and the cursor is unchanged, so the same block is
+retried on a later turn. There’s no retry loop, no dead-letter queue, no backoff — the cadence
+<em>is</em> the retry mechanism.</p>
+
+<p><strong>Summarization is fire-and-forget, in a background task with its own DB session.</strong>
+The player’s turn is already on screen; making them wait would add a second or two of latency
+every sixth turn for no visible benefit. The task holds a strong reference to itself — the event
+loop only keeps weak ones, so a fire-and-forget task can otherwise be garbage-collected mid-run —
+and a per-adventure guard stops two from overlapping.</p>
+
+<p><strong>Pinned memories count toward <code>top_k</code>.</strong> Pinned ones are always
+injected; unpinned fill up to <code>top_k − len(pinned)</code>. Without that, 6 pinned memories
+plus <code>top_k=5</code> injects 11 and blows the budget the whole context engine exists to
+respect.</p>
+
+<p><strong>A dimension mismatch scores 0.0, it doesn’t crash.</strong> If the user changes their
+embedding model, old 768-dim vectors get compared against a new 1536-dim query.
+<code>zip()</code> would happily truncate and score garbage, silently. An explicit length check
+returns 0.0 instead.</p>
+
+<p><strong>Eviction is LRU-ish, and evicted memories are kept.</strong> Over capacity (default
+200), the least-used unpinned memories are marked <code>forgotten</code> rather than deleted — so
+the UI can still show them and you can un-forget one.</p>
+
+<div class="trap">
+  <span class="tag">Money trap</span>
+  <p><strong>Background calls never spend the shared demo key.</strong> The summarization and
+  embedding providers are built directly from the user’s own settings, never from the demo config,
+  and their call sites are skipped when the turn is running on the demo key. Summarization is
+  unmetered background spend; the demo key is server-funded. Both facts together would be a bill.</p>
+</div>
+
+<h3 id="s16"><span class="h-num">1.6</span>Streaming</h3>
+
+<p>The model produces tokens one at a time. Waiting for the whole reply before showing anything
+makes a 20-second generation feel broken.</p>
+
+<p><strong>Server-Sent Events</strong> is the mechanism: an HTTP response that stays open and
+pushes <code>data: {...}</code> lines as they become available. It’s one-directional
+(server → browser), which is exactly the shape of this problem — WebSockets would be a
+bidirectional connection for a unidirectional need.</p>
+
+<pre><code>model endpoint  --SSE--&gt;  FastAPI  --SSE--&gt;  browser  --&gt;  React state  --&gt;  screen</code></pre>
+
+<p>FastAPI reads the provider’s stream and for each chunk yields
+<code>data: {"type":"chunk","text":"…"}</code>. The frontend reads the response body with a
+<code>ReadableStream</code> reader, buffers on <code>\n\n</code> boundaries, and dispatches each
+parsed event. Event types: <code>player</code>, <code>reasoning</code> (thinking-model traces,
+which stream into a separate collapsible panel with their own token budget), <code>chunk</code>,
+<code>stopped</code>, <code>error</code>, <code>done</code>.</p>
+
+<p>Two production details that only show up when hosted:</p>
+
+<ul>
+  <li><code>X-Accel-Buffering: no</code> — nginx-style reverse proxies buffer responses by default,
+  which turns a stream into one big delivery at the end. This header tells them to flush each event.</li>
+  <li>The security-headers and body-size middlewares are written as <strong>pure ASGI</strong>
+  rather than Starlette’s <code>BaseHTTPMiddleware</code>, because the latter buffers the response
+  body and would break streaming.</li>
+</ul>
+
+<p><strong>The empty-reply case is diagnosed, not reported as “empty”.</strong> If a reasoning
+model streams thinking but no story text, it spent its whole budget thinking — the error says so
+and names the three settings that fix it.</p>
+
+<h3 id="s17"><span class="h-num">1.7</span>The scripting sandbox</h3>
+
+<p>Real AI Dungeon scripts are JavaScript files defining <code>modifier(text)</code> and calling it
+as the last line, with globals like <code>state</code>, <code>history</code>,
+<code>storyCards</code>. To be compatible, this app runs the same contract in an embedded
+<strong>QuickJS</strong> interpreter.</p>
+
+<p>The safety properties are mostly structural:</p>
+
+<div class="scroll">
+<table>
+  <thead><tr><th>Property</th><th>How</th></tr></thead>
+  <tbody>
+    <tr><td>No filesystem, network or process access</td><td>QuickJS has none by default — nothing was removed, nothing was added</td></tr>
+    <tr><td>Memory cap</td><td>16 MB per run</td></tr>
+    <tr><td>CPU cap</td><td>2 seconds per run</td></tr>
+    <tr><td>No shared state between runs</td><td>A fresh context per hook execution</td></tr>
+    <tr><td>A broken script can’t break a turn</td><td>Every failure returns as <code>.error</code> with text, state and cards unchanged; the pipeline logs it and continues</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Data crosses the boundary as JSON — Python serializes <code>{state, text, history, storyCards,
+info}</code> in and the results out. There is no object bridge to exploit.</p>
+
+<p>One deliberate bug-compatibility: <code>addStoryCard</code> returns the new card’s
+<em>index</em>, so the first card returns <code>0</code>, which is falsy, so
+<code>if (!addStoryCard(…))</code> misfires. That’s upstream AI Dungeon’s behaviour. It’s
+documented in the code and left alone, because matching real scripts is the entire point of the
+feature.</p>
+
+<h3 id="s18"><span class="h-num">1.8</span>Why there is no agent framework</h3>
+
+<p>Graph-based agent frameworks (LangGraph and similar) earn their complexity with
+<strong>branching, cyclic, multi-step control flow</strong>
+— a graph of nodes where the path depends on what the model decides, with loops, retries, tool
+calls, and persisted state between steps.</p>
+
+<p>This turn pipeline is a <strong>fixed linear sequence with exactly one model call</strong>.
+There is no routing decision, no tool selection, no loop. Every turn takes the same path. Adding a
+graph framework would mean carrying its state abstraction, its serialization model and its
+debugging surface to express a straight line.</p>
+
+<p>There’s also a specific reason a framework’s context handling wouldn’t fit here:
+<strong>the budgeting logic is the product.</strong> Buffer-window and summary-memory abstractions
+are opinionated about how to fit history into a window. This app shows the user every context
+component, its token cost, and the trigger word that pulled it in — which means the assembly has
+to be explicit and inspectable.</p>
+
+<p><strong>When it would be the right call:</strong> if the design went toward the
+two-call version — narrate, then a separate structured-extraction step, with a retry branch when
+extraction fails and a tool-calling path for dice — that is a graph, and hand-rolling it would get
+ugly fast.</p>
+
+</div>
+
+<!-- ===================================================== PART 2 ========== -->
+<section class="wrap part" id="p2">
+  <p class="num">Part 2</p>
+  <h2>Data and correctness</h2>
+  <p>The bugs in this section are the kind that don’t crash. They just quietly produce the wrong
+  answer, which is why each one has a test.</p>
+</section>
+
+<div class="wrap">
+
+<h3><span class="h-num">2.1</span>The domain model</h3>
+
+<pre><code>User
+ ├─ Scenario   (the template)      ── stat_schema, prompt, memory, author's note
+ │    └─ StoryCard, Script
+ └─ Adventure  (the playthrough)   ── world_state, script_state, cursors
+      ├─ Action  (one story entry) ── text, context_snapshot, variants, state_before
+      ├─ StoryCard  (its own copy)
+      ├─ Memory     (text, embedding, source_start/end, use_count)
+      └─ AdventureScript</code></pre>
+
+<p><strong>The one decision that shapes everything: template vs instance.</strong> A scenario
+declares what stats <em>exist</em>; an adventure holds what they <em>are</em> right now. Creating
+an adventure copies the scenario’s story cards, scripts and plot fields into it, so editing a
+scenario later never mutates a game in progress. There’s an explicit opt-in “Update from scenario”
+flow for when you <em>do</em> want that, which diffs the two and shows what would change.</p>
+
+<p>Same reasoning as instantiating a class: shared definition, independent state.</p>
+
+<h3 id="s22"><span class="h-num">2.2</span>Two coordinate systems, and the bug class they create</h3>
+
+<p>The subtlest thing in the codebase.</p>
+
+<p>There are two ways to identify an action:</p>
+
+<ul>
+  <li><strong><code>Action.index</code></strong> — a stable number stored on the row. Gaps appear
+  when actions are deleted.</li>
+  <li><strong>Position</strong> — where an action sits in the filtered, index-ordered list of
+  <em>story</em> actions. Shifts whenever anything before it is deleted.</li>
+</ul>
+
+<p>The memory cursors are <strong>positions</strong>. <code>Memory.source_start</code> and
+<code>source_end</code> are <strong><code>Action.index</code> values</strong>.</p>
+
+<div class="trap">
+  <span class="tag">Why it’s nasty</span>
+  <p>The two spaces are identical until the first deletion, and diverge forever after. Mixing them
+  means summarization silently skips or duplicates blocks — no crash, no error, just a memory
+  describing the wrong turns.</p>
+</div>
+
+<p>Three things hold it together:</p>
+
+<ol>
+  <li><code>position_of_index()</code> is the explicit translation between the spaces, and every
+  crossing goes through it.</li>
+  <li><code>note_action_removed()</code> is called <em>before</em> a delete: if the removed action
+  sat before a cursor, the cursor decrements, so an unsummarized action can’t slide into the
+  “already covered” range and be skipped forever.</li>
+  <li>One definition of “story action”, written twice — once in SQL and once in Python — with a
+  comment on both saying to keep them in step. The SQL version folds newlines and tabs into spaces
+  before <code>trim()</code>, because SQLite’s and Postgres’ single-argument <code>trim()</code>
+  only strips spaces while Python’s <code>.strip()</code> also drops newlines. An action of nothing
+  but a newline would otherwise count as story text in one and not the other, and every cursor
+  after it would be off by one.</li>
+</ol>
+
+<h3 id="s23"><span class="h-num">2.3</span>Undo and retry that actually rewind</h3>
+
+<p>Most implementations of undo delete the last message. That’s wrong here, because a turn mutates
+three things: the text, the scripting scoreboard, and the RPG stats.</p>
+
+<p><strong>The mechanism:</strong> every action carries <code>state_before</code> and
+<code>world_state_before</code> — deep copies taken before the turn’s hooks ran. Undo restores from
+them. Retry rolls back to them, then regenerates.</p>
+
+<p><strong>Retry keeps every attempt.</strong> Instead of deleting and replacing, the row survives
+and each attempt is appended to <code>Action.variants</code>; <code>variant_index</code> names the
+live one. The UI shows <code>‹ 2/3 ›</code> and you can page back to a discarded take. A variant
+stores only what differs between attempts — the narration, its reasoning trace, and the state it
+produced — never the assembled prompt, which is identical across attempts of the same turn and is
+by far the biggest thing in the snapshot.</p>
+
+<p>Three details that are easy to get wrong:</p>
+
+<ul>
+  <li><strong>The row being retried is excluded from its own context.</strong> It’s still attached
+  to the adventure because it holds the variant history, so without an explicit exclusion the model
+  would be shown the attempt it’s replacing as established story — and would write a continuation
+  of it instead of a replacement.</li>
+  <li><strong>A retry reuses the turn’s index</strong>, not the next one. Cooldowns are measured in
+  action indexes, so advancing the index would quietly unlock stats that should still be on
+  cooldown.</li>
+  <li><strong>If the regeneration fails, the rollback is reversed.</strong> The generator is wrapped
+  in a <code>try/finally</code>: if it ends without saving — provider error, empty reply, a script
+  <code>stop</code>, or the browser hanging up — the previous variant is put back in charge.
+  Otherwise the state on the server drifts from the text still on the user’s screen.</li>
+</ul>
+
+<h3><span class="h-num">2.4</span>The turn lock</h3>
+
+<p>One turn at a time per adventure. Double-clicking “Continue” must not run two generations.</p>
+
+<p>The subtlety: the check has to happen in the <strong>request phase</strong>, not when the SSE
+generator first runs. A streaming response doesn’t start iterating its generator until the response
+begins, so a check inside the generator lets two rapid requests both pass before either claims the
+slot. And because sync FastAPI endpoints run in a threadpool, the test-and-set needs a real lock.</p>
+
+<pre><code>def acquire_turn_lock(adventure_id):          # in the request handler
+    with _active_turns_guard:
+        if adventure_id in _active_turns:
+            raise HTTPException(409, "A turn is already generating…")
+        _active_turns.add(adventure_id)
+
+async def with_turn_lock(adventure_id, gen):  # wraps the SSE generator
+    try:
+        async for event in gen: yield event
+    finally:
+        _active_turns.discard(adventure_id)</code></pre>
+
+<p>In-memory, so it’s a single-process guarantee. That’s honest for the deployment this targets —
+one Render web service. Two processes would need the lock in the database.</p>
+
+<h3 id="s25"><span class="h-num">2.5</span>The 189× egress fix</h3>
+
+<div class="stats">
+  <div class="stat"><div class="v">38.5 MB → 0.20 MB</div><div class="k">database egress for one adventure load</div></div>
+  <div class="stat"><div class="v">~74 KB</div><div class="k">per-turn prompt snapshot — 94% of the database</div></div>
+</div>
+
+<p><strong>The bug:</strong> <code>Action.context_snapshot</code> holds the entire assembled prompt
+for a turn. Every adventure load pulled that column for every action, to read two small fields out
+of it — the world-state delta for the “what changed” chip, and the applied report. SQLAlchemy loads
+all columns by default.</p>
+
+<p><strong>The fix, in three parts:</strong></p>
+
+<ol>
+  <li>Move the two small things that <em>are</em> needed for every action into their own column.</li>
+  <li>Mark the heavy columns <code>deferred</code> — snapshot, variants, reasoning — so they’re only
+  fetched when explicitly asked for.</li>
+  <li>Backfill the new column with dialect-specific server-side SQL, so the old data is extracted
+  inside the database and never crosses the wire.</li>
+</ol>
+
+<p><strong>The part that makes it stick:</strong> <code>tests/test_egress.py</code> hooks into
+SQLAlchemy’s <code>before_cursor_execute</code> event, captures every statement the ORM sends, and
+fails if a bulk load ever names those columns again. The regression is caught by asserting on the
+<em>SQL</em>, not on a timing.</p>
+
+<p>One more detail from that test’s design: the count query is written as a real
+<code>SELECT count(…)</code> rather than <code>query.count()</code>, because SQLAlchemy’s
+<code>.count()</code> wraps the entity select in a subquery whose SQL names every column —
+including the deferred ones. No bytes come back either way, but the database still reads them, and
+a guard that greps SQL can’t tell the two apart.</p>
+
+<p>There’s a companion denormalization for the same reason: <code>variants</code> is deferred, so
+<code>variant_count</code> exists as its own column to answer “how many attempts?” without fetching
+them. One function is the only thing allowed to write <code>variants</code>, precisely so the two
+can’t drift and the pager can’t lie.</p>
+
+<h3><span class="h-num">2.6</span>Migrations, hand-rolled</h3>
+
+<p>No Alembic. An append-only list of <code>(version, SQL)</code> pairs, with the current version
+stored in SQLite’s <code>PRAGMA user_version</code> or a one-row table on Postgres. 37 versions so
+far.</p>
+
+<ul>
+  <li>A <strong>fresh</strong> database is created by <code>create_all()</code> — always current —
+  and stamped at the latest version. It never replays history.</li>
+  <li>An <strong>existing</strong> database runs every migration above its stored version, in order.</li>
+</ul>
+
+<p>Why this and not Alembic: for a single-file SQLite app someone may have been running for months,
+the entire requirement is “add a column, don’t lose their data”. Alembic’s autogenerate, branching
+and down-migrations are machinery for a team with a staging environment. This is 250 lines and you
+can read all of it.</p>
+
+<p>The constraint it creates is written at the top of the file: change <code>models.py</code> so
+fresh databases are current, <em>and</em> append a pair here so existing ones upgrade. Migrations
+2–23 predate Postgres support and use SQLite-only syntax — harmless, because every Postgres
+database starts fresh and never replays them, but anything added since must run on both dialects.</p>
+
+<p>One migration worth reading (repairing duplicate action indexes) uses <code>UPDATE … FROM</code>
+with a window function rather than a correlated subquery, because SQLite may evaluate a correlated
+subquery against partially-updated rows and produce duplicates again while “repairing” them.</p>
+
+</div>
+
+<!-- ===================================================== PART 3 ========== -->
+<section class="wrap part" id="p3">
+  <p class="num">Part 3</p>
+  <h2>Production concerns</h2>
+  <p>What changes when the app stops being yours and starts being a URL strangers can open.</p>
+</section>
+
+<div class="wrap">
+
+<h3><span class="h-num">3.1</span>Two modes, one codebase</h3>
+
+<p><code>AIDND_MULTI_USER</code> switches the whole app between two personalities:</p>
+
+<div class="scroll">
+<table>
+  <thead><tr><th></th><th>Local (default)</th><th>Hosted</th></tr></thead>
+  <tbody>
+    <tr><td>Users</td><td>One auto-created local user</td><td>Guest on first visit, optional account</td></tr>
+    <tr><td>Auth</td><td>None — no cookies, no login UI</td><td>Signed session cookie</td></tr>
+    <tr><td>Rate limits</td><td>Off</td><td>On</td></tr>
+    <tr><td>Row caps</td><td>Off</td><td>On</td></tr>
+    <tr><td>API docs</td><td>On</td><td>Off</td></tr>
+    <tr><td>Provider</td><td>Whatever Settings points at</td><td>User’s key, or the shared demo key</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>The reasoning: someone running this on their own laptop should never be throttled by their own
+app, never see a login screen, and should get the interactive API docs. A hosted deployment needs
+all four to be the opposite. Rather than two builds, the differences are gated at each site.</p>
+
+<p><strong>Guests upgrade in place.</strong> A visitor gets a guest <code>User</code> row on first
+load. Registering sets <code>email</code> and <code>password_hash</code> on that <em>same row</em>
+— so every adventure they played as a guest survives with no re-parenting and no migration step.
+Three kinds of row share the users table: local, guest, and registered.</p>
+
+<h3><span class="h-num">3.2</span>The shared demo key</h3>
+
+<p>The demo lets people play with no signup and no API key, on a key the server pays for. That is a
+spending surface, so it’s the most defended code in the project.</p>
+
+<p>One function makes the BYOK-vs-demo decision, and on the demo branch it pins <strong>two</strong>
+things:</p>
+
+<ul>
+  <li><strong>The model</strong> — to a whitelist. A caller-supplied override or a hand-edited
+  settings row can’t aim a server-funded key at an expensive model. Anything unrecognised falls
+  back to the first whitelisted model.</li>
+  <li><strong>The endpoint</strong> — to the configured demo URL. Otherwise the key could be
+  redirected to a URL the user controls and harvested.</li>
+</ul>
+
+<p>Plus a daily per-user turn cap (default 20), checked <em>before</em> the player’s input is stored
+so a capped player doesn’t get their message saved with no reply, and counted only after a
+successful turn.</p>
+
+<div class="trap">
+  <span class="tag">A real bug, recorded in a comment</span>
+  <p>There’s a defensive check that raises if a demo config somehow carries a non-whitelisted
+  model. It tests <code>using_demo</code>, <strong>not</strong>
+  <code>api_key == DEMO_API_KEY</code>. Keying on the key value looks stricter but is wrong — the
+  demo key is an ordinary OpenRouter key, so a user can legitimately paste that same key into their
+  own settings as BYOK, and then every resolution raised, 500ing even <code>GET /auth/me</code> and
+  taking the whole SPA down. <code>using_demo</code> is what actually means “the server is paying”.</p>
+</div>
+
+<h3><span class="h-num">3.3</span>Secrets</h3>
+
+<p>Everything derives from one server-side secret.</p>
+
+<div class="scroll">
+<table>
+  <thead><tr><th>Thing</th><th>Mechanism</th></tr></thead>
+  <tbody>
+    <tr><td>Passwords</td><td><code>hashlib.scrypt</code>, N=2¹⁴, r=8, p=1, per-password salt, constant-time compare. Stdlib, so no extra dependency.</td></tr>
+    <tr><td>Sessions</td><td><code>v1.&lt;user_id&gt;.&lt;HMAC-SHA256&gt;</code>, no expiry — long-lived guest sessions are the point.</td></tr>
+    <tr><td>Stored LLM API keys</td><td>Fernet encryption at rest, key derived from the secret, <code>enc:</code> prefix so legacy plaintext rows are recognisable and migratable.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>The secret auto-generates into a file next to the database for local installs (zero config), but
+<strong>multi-user mode refuses to start without the env var</strong> — with an error that explains
+why and gives the command to generate one. Hosted filesystems are ephemeral; a regenerated secret
+on every deploy would silently log out every user and orphan their stored API keys.</p>
+
+<p>A rotated secret makes stored keys undecryptable. Decryption treats that as “unset” rather than
+raising, so the user just re-enters their key instead of hitting a 500.</p>
+
+<h3><span class="h-num">3.4</span>Abuse guards</h3>
+
+<div class="scroll">
+<table class="nums">
+  <thead><tr><th>Guard</th><th>Limit</th></tr></thead>
+  <tbody>
+    <tr><td>Turn generation</td><td>10 / min</td></tr>
+    <tr><td>Auth attempts (per IP)</td><td>10 / 5 min</td></tr>
+    <tr><td>Guest creation (per IP)</td><td>30 / 5 min</td></tr>
+    <tr><td>Script test runs</td><td>30 / min</td></tr>
+    <tr><td>Connection test</td><td>10 / min</td></tr>
+    <tr><td>Adventures / scenarios / scripts per user</td><td>100 / 200 / 200</td></tr>
+    <tr><td>Actions per adventure</td><td>5,000</td></tr>
+    <tr><td>Request body</td><td>2 MB (20 MB on import)</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Rate limits are keyed per user when one is known — accounts survive IP changes — and per IP
+otherwise, in fixed windows held in memory, with a pruning pass so the per-IP dict can’t grow
+without bound. Import endpoints check bundle list lengths against the same caps live creation
+enforces, otherwise the cap is trivially bypassed by uploading a file.</p>
+
+<p>Security headers on every response: <code>nosniff</code>, <code>X-Frame-Options: DENY</code>,
+<code>Referrer-Policy: same-origin</code>, and a CSP allowing exactly what the SPA uses.</p>
+
+<h3><span class="h-num">3.5</span>Deployment</h3>
+
+<p>One Docker web service on Render, serving the SPA and the API same-origin, with Postgres on Neon.</p>
+
+<p>The Postgres decision was forced: Render’s free tier has no persistent disk, so a SQLite file
+wouldn’t survive a deploy. The database lives off-box.</p>
+
+<p>Two things worth knowing about the free tier:</p>
+
+<ul>
+  <li>The service <strong>sleeps after ~15 minutes idle</strong>, and the first request then takes
+  30–60 seconds.</li>
+  <li><code>/api/health</code> deliberately <strong>doesn’t touch the database</strong>, so a
+  keep-warm pinger wakes the web service without waking the database. Waking a database around the
+  clock costs far more than the cold start is worth.</li>
+</ul>
+
+<p>CI runs the backend tests, the frontend lint and build, and a Docker image build on every push.</p>
+
+</div>
+
+<!-- ===================================================== PART 4 ========== -->
+<section class="wrap part" id="p4">
+  <p class="num">Part 4</p>
+  <h2>The web plumbing, briefly</h2>
+  <p>The parts that are just how the web works, not decisions.</p>
+</section>
+
+<div class="wrap">
+
+<p><strong>Frontend and backend are two programs.</strong> In development they’re two servers —
+Vite on 5173 serving React, FastAPI on 8000 serving the API — and Vite proxies <code>/api</code> to
+FastAPI so the browser thinks it’s all one origin, which avoids CORS entirely. In production
+there’s one server: FastAPI serves the built React files as static assets from the same port.</p>
+
+<p><strong>SPA routing.</strong> React Router handles URLs like <code>/play/3</code> in the browser
+without a round trip. But if you <em>reload</em> that URL, the browser asks the server for
+<code>/play/3</code>, which isn’t a file. So the static-file handler catches the 404 and returns
+<code>index.html</code>, letting React take over and read the URL itself. API routes are matched
+before the static mount, so they’re unaffected.</p>
+
+<p><strong>Sessions.</strong> A cookie is a small value the browser stores and automatically
+attaches to every request to that site. Here it holds <code>v1.&lt;user_id&gt;.&lt;signature&gt;</code>.
+The server doesn’t store sessions anywhere — it re-verifies the signature on each request, which is
+why there’s no session table.</p>
+
+<p><strong>The 401 retry.</strong> If the cookie is missing or stale, any API call returns 401. The
+frontend catches that once, calls <code>/api/auth/me</code> — which mints a fresh guest session —
+and retries the original request. So a returning visitor with an expired cookie never sees an
+error.</p>
+
+<p><strong>React, in one paragraph.</strong> A component is a function that returns a description
+of some UI. <code>useState</code> holds a value; changing it re-renders the component. The
+streaming turn is the clearest example: each SSE chunk appends to a state string, React re-renders,
+and the text appears to type itself.</p>
+
+</div>
+
+<!-- ===================================================== PART 5 ========== -->
+<section class="wrap part" id="p5">
+  <p class="num">Part 5</p>
+  <h2>Results and limitations</h2>
+  <p>What was measured, and what this design knowingly does not do.</p>
+</section>
+
+<div class="wrap">
+
+<h3><span class="h-num">5.1</span>Measured results</h3>
+
+<div class="scroll">
+<table class="nums">
+  <tbody>
+    <tr><td>Database egress per adventure load</td><td>38.5 MB → 0.20 MB (~189×)</td></tr>
+    <tr><td>Prompt snapshot size</td><td>~74 KB/turn, 94% of the DB</td></tr>
+    <tr><td>Turn read cost at turn 200</td><td>839 KB → 129 KB, flat after ~turn 50</td></tr>
+    <tr><td>Length-hint phrasing</td><td>174 → 246 words as a budget; 170 as a ceiling (n=5)</td></tr>
+    <tr><td>Backend tests</td><td>151, LLM mocked, real QuickJS engine</td></tr>
+    <tr><td>Schema versions</td><td>37</td></tr>
+    <tr><td>Sandbox limits</td><td>16 MB, 2 s CPU, fresh context per run</td></tr>
+    <tr><td>Context defaults</td><td>author’s note at depth 3; cards ≤ 40% of elastic budget</td></tr>
+    <tr><td>Memory cadence</td><td>memory / 6 turns, summary / 15 turns, top-5 retrieval</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Two of the tests encode a performance property rather than a behaviour:
+<code>test_egress.py</code> asserts on the SQL the ORM emits, and
+<code>test_history_window.py</code> asserts that the read cost stops growing with story
+length.</p>
+
+<h3><span class="h-num">5.2</span>Known limitations</h3>
+
+<p>Deliberate trades for a single-user-first app that also happens to be hosted, listed so
+nobody has to discover them the hard way.</p>
+
+<ul>
+  <li><strong>Single process.</strong> The turn lock, the rate limiter and the summarization task
+  all assume one worker. A second worker would need the lock in the database — a row-level
+  advisory lock — and the rate limiter in Redis.</li>
+  <li><strong>No vector index.</strong> Retrieval does cosine similarity in Python over the whole
+  bank. Fine at the 200-memory cap; at 10,000 it would want pgvector.</li>
+  <li><strong>Prompt snapshots are heavy</strong> even after the egress fix — they’re deferred, not
+  smaller. Compressing them or expiring old ones is the real fix.</li>
+  <li><strong>In-memory rate-limit windows reset on restart</strong>, so a restart grants a brief
+  extra allowance.</li>
+  <li><strong>Background summarization is a fire-and-forget asyncio task</strong>, so it does not
+  survive a restart. At real load it belongs in a queue.</li>
+  <li><strong>The demo key depends on a free-tier provider’s daily cap</strong>, which the app can
+  only detect after the fact by string-matching the 429 body.</li>
+</ul>
+
+<h3><span class="h-num">5.3</span>Cleanup backlog</h3>
+
+<p><code>docs/self-review.md</code> carries an open list of non-bugs — reuse, simplification and
+efficiency items — kept deliberately separate from the correctness list, which is empty. The
+largest ones:</p>
+
+<ul>
+  <li><code>Section.tokens</code> is uncached, so the context gets tokenized two or three times a
+  turn.</li>
+  <li><code>onModelContext</code> flattens system and story into one string before handing it to
+  user scripts; if a script modifies it, the structure is gone and everything ships as user
+  content. Passing structure through the hook would be better but would break AI Dungeon
+  compatibility, which is the point of the feature.</li>
+  <li>The import endpoints hand-coerce raw dicts instead of using Pydantic bundle schemas.</li>
+  <li><code>Action</code> has no <code>UniqueConstraint('adventure_id', 'index')</code>; index
+  allocation is ad-hoc per writer, and a database constraint would make the turn-lock race
+  impossible rather than merely fixed.</li>
+</ul>
+
+</div>
+
+<footer>
+  <div class="wrap">
+    <p><strong>AI D&amp;D</strong> — design notes ·
+    <a href="https://github.com/parththakkar106/AI-DnD">Source on GitHub</a> ·
+    <a href="https://ai-dnd-1gmp.onrender.com">Live demo</a> ·
+    <a href="https://parththakkar106.github.io/AI-DnD/">Project page</a></p>
+    <p>Full source for every claim here is in the repo; the file paths are named inline.</p>
+  </div>
+</footer>
+
+</main>
+
+<script>
+(function () {
+  var bar = document.getElementById('progress');
+  var tick = function () {
+    var h = document.documentElement;
+    var max = h.scrollHeight - h.clientHeight;
+    bar.style.width = (max > 0 ? (h.scrollTop / max) * 100 : 0) + '%';
+  };
+  addEventListener('scroll', tick, { passive: true });
+  addEventListener('resize', tick);
+  tick();
+})();
+</script>
+
+</body>
+</html>
