@@ -11,6 +11,8 @@ scripting**.
 > ### ▶️ Try it live: **[ai-dnd-1gmp.onrender.com](https://ai-dnd-1gmp.onrender.com)**
 > Play a demo scenario as a guest — no sign-up, no API key needed. (Hosted on Render's free
 > tier, so the first load after it's been idle takes ~30–60s to wake up.)
+>
+> Prefer a tour first? The **[project page](https://parththakkar106.github.io/AI-DnD/)** loads instantly.
 
 Built with FastAPI + SQLAlchemy on the backend and React (Vite) on the frontend, running on
 SQLite locally and Postgres in the cloud. Works with **any OpenAI-compatible endpoint**: Ollama
