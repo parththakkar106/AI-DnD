@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api'
-import { downloadJSON, pickJSONFile, useToast } from '../components'
+import { pickJSONFile, useToast } from '../components'
 
 export default function Scripts() {
   const [scripts, setScripts] = useState(null)

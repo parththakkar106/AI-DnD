@@ -1,8 +1,13 @@
-# Code Review Findings — 2026-07-05
+# Self-review log
 
-Full-codebase review (no git history, so whole project was the scope).
-Status: `pending` = not yet fixed, `fixed` = applied, `verify-failed` = finding was wrong on closer look, `skipped` = intentionally not fixed.
-Resume point: fix `pending` items top-to-bottom (they are ranked by severity).
+**Every correctness bug on this page is resolved** — 20 fixed, 1 intentionally skipped with the
+reasoning recorded below. The record is kept because the reasoning outlives the verdicts;
+several of these are traps worth remembering. The *cleanup backlog* at the bottom is a
+deliberately open list of non-bugs (reuse, simplification, efficiency), not outstanding defects.
+
+Original review: 2026-07-05, whole project in scope (no git history at the time).
+Status key: `fixed` = applied, `skipped` = intentionally not fixed, `pending` = outstanding
+(none remain).
 
 **2026-07-06 update (branch `bugfix-code-review`):** every finding re-verified against
 current code. #1/#2/#3/#4/#6/#12 had already been fixed in earlier sessions (statuses were
