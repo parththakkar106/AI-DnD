@@ -8,11 +8,10 @@ with your own AI model. Create scenarios, play open-ended adventures where an LL
 world, and extend the engine with **JavaScript scripts compatible with real AI Dungeon
 scripting**.
 
-> ### ▶️ Try it live: **[ai-dnd-1gmp.onrender.com](https://ai-dnd-1gmp.onrender.com)**
-> Play a demo scenario as a guest — no sign-up, no API key needed. (Hosted on Render's free
-> tier, so the first load after it's been idle takes ~30–60s to wake up.)
->
-> Prefer a tour first? The **[project page](https://parththakkar106.github.io/AI-DnD/)** loads instantly.
+> ### ▶️ Try it live: **[parththakkar106.github.io/AI-DnD](https://parththakkar106.github.io/AI-DnD/)**
+> The project page loads instantly and launches the hosted demo in one tap — play a scenario as
+> a guest, no sign-up and no API key needed. (The demo runs on a free tier that sleeps, so the
+> first load after it's been idle takes ~30–60s to wake up.)
 >
 > Want the internals? The **[design notes](https://parththakkar106.github.io/AI-DnD/guide.html)**
 > walk through the context budgeting, the world-state referee and the memory bank, and state the
