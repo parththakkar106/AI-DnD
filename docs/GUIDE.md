@@ -911,4 +911,4 @@ The largest ones:
 ---
 
 *Source: [github.com/parththakkar106/AI-DnD](https://github.com/parththakkar106/AI-DnD) ·
-Live demo: [ai-dnd-1gmp.onrender.com](https://ai-dnd-1gmp.onrender.com)*
+[Project page](https://parththakkar106.github.io/AI-DnD/)*
