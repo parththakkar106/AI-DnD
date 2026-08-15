@@ -234,7 +234,7 @@ export function PlaceholderModal({ title, names, onSubmit, onCancel }) {
 
 // Phase 8: register/login for the hosted multi-user mode. `onAuthed(me)` gets
 // the fresh /auth/me payload after success.
-export function AuthModal({ mode: initialMode, onClose, onAuthed }) {
+export function AuthModal({ mode: initialMode, onClose, onAuthed, retentionDays }) {
   const [mode, setMode] = useState(initialMode || 'register')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -283,6 +283,12 @@ export function AuthModal({ mode: initialMode, onClose, onAuthed }) {
           {registering
             ? 'Everything you’ve played as a guest stays with your new account, and you can pick it up from any device.'
             : 'Log in to reach your adventures.'}
+          {/* Guest data really is deleted, so say so where the decision is
+              being made. The window comes from the server (see cleanup.py) so
+              it can't drift from what's enforced. */}
+          {registering && retentionDays ? (
+            <> Guest adventures are deleted after {retentionDays} days without a visit.</>
+          ) : null}
         </p>
 
         <div className="auth-tabs" role="tablist">

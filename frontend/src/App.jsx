@@ -68,7 +68,12 @@ export default function App() {
             <div className="nav-account">
               {me.is_guest ? (
                 <>
-                  <span className="guest-nudge">Playing as guest — sign up to keep your adventures</span>
+                  <span className="guest-nudge"
+                    title={me.guest_retention_days
+                      ? `Guest adventures are deleted after ${me.guest_retention_days} days without a visit.`
+                      : undefined}>
+                    Playing as guest — sign up to keep your adventures
+                  </span>
                   <button onClick={() => setAuthMode('login')}>Log in</button>
                   <button className="primary" onClick={() => setAuthMode('register')}>Sign up</button>
                 </>
@@ -84,7 +89,8 @@ export default function App() {
       </nav>
       <Outlet context={{ me, setMe }} />
       {authMode && (
-        <AuthModal mode={authMode} onClose={() => setAuthMode(null)} onAuthed={onAuthed} />
+        <AuthModal mode={authMode} onClose={() => setAuthMode(null)} onAuthed={onAuthed}
+          retentionDays={me?.guest_retention_days} />
       )}
     </ToastHost>
   )

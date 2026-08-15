@@ -732,6 +732,21 @@ guest survives with no re-parenting and no migration step. Three kinds of row sh
 users table: local (email NULL, not guest), guest (email NULL, guest), registered (email
 set).
 
+**Guests expire; accounts don't.** One row per curious visitor adds up, so `cleanup.py`
+deletes guests idle for `AIDND_GUEST_RETENTION_DAYS` (default 5) — measured as
+`COALESCE(last_seen_at, created_at)`, because `_touch` only writes `last_seen_at` hourly
+and a guest minted by `/auth/me` has NULL until its second request. The filter requires
+both `is_guest` *and* `email IS NULL`, so upgrading in place is also how you opt out of
+expiry. It runs once at startup (the reliable trigger on a host that sleeps) and then
+every few hours.
+
+It's a single Core `DELETE`, not `db.delete(user)`: the ORM path would SELECT every
+adventure, action and memory into Python purely to delete them, and the FK graph is
+`ON DELETE CASCADE` from `users` all the way down, so the database can do the whole graph
+in one statement. Nothing a guest owns is visible to anyone else either — `is_public` is
+output-only, so shared content is exactly the seeded scenarios, which have `user_id NULL`
+and never match the filter.
+
 ## 3.2 The shared demo key
 
 The demo lets people play with no signup and no API key, on a key the server pays for. That
@@ -768,7 +783,7 @@ Everything derives from one server-side secret (`AIDND_SECRET_KEY`).
 | Thing | Mechanism |
 |---|---|
 | Passwords | `hashlib.scrypt`, N=2^14, r=8, p=1, per-password salt, constant-time compare. Stdlib, so no extra dependency. |
-| Sessions | `v1.<user_id>.<HMAC-SHA256>`, no expiry — long-lived guest sessions are the point. |
+| Sessions | `v1.<user_id>.<HMAC-SHA256>`, no expiry — long-lived guest sessions are the point. A cookie can outlive a swept guest row; that resolves to a 401, which the frontend already turns into a fresh session. |
 | Stored LLM API keys | Fernet (AES) encryption at rest, key derived from the secret, `enc:` prefix so legacy plaintext rows are recognisable and migratable. |
 
 The secret auto-generates into a file next to the database for local installs (zero config),

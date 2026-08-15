@@ -3,7 +3,7 @@ import re
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 
-from .. import auth, limits, models, schemas, security
+from .. import auth, cleanup, limits, models, schemas, security
 from ..database import get_db
 from .settings import get_settings
 
@@ -34,6 +34,10 @@ def me_payload(user: models.User, db: Session) -> dict:
         "is_guest": user.is_guest,
         # Trusted testers: unmetered demo turns, plus the AI Chat scratchpad.
         "power_user": auth.is_power_user(user),
+        # How long an idle guest is kept before cleanup deletes it (None when
+        # the policy is off). Served rather than hardcoded in the UI so the
+        # number a guest is shown is the number actually enforced.
+        "guest_retention_days": cleanup.RETENTION_DAYS if cleanup.enabled() else None,
         "demo": {
             "enabled": auth.demo_enabled(),
             "using_demo": cfg.using_demo,

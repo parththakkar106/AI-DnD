@@ -1,4 +1,5 @@
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -6,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from . import cleanup
 from .auth import MULTI_USER
 from .database import engine
 from .limits import BodySizeLimitMiddleware
@@ -24,6 +26,18 @@ CORS_ORIGINS = [
     if o.strip()
 ] or ["http://localhost:5173", "http://127.0.0.1:5173"]
 
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # Sweeps once on boot, then on an interval. Booting is the reliable
+    # trigger on Render's free tier, where the service sleeps after ~15
+    # minutes and a long-running timer rarely gets to fire.
+    sweeper = cleanup.start_sweeper()
+    try:
+        yield
+    finally:
+        await cleanup.stop_sweeper(sweeper)
+
+
 # The interactive API docs stay local-only: in multi-user mode they just hand
 # strangers a map of the API surface.
 app = FastAPI(
@@ -31,6 +45,7 @@ app = FastAPI(
     docs_url=None if MULTI_USER else "/docs",
     redoc_url=None,
     openapi_url=None if MULTI_USER else "/openapi.json",
+    lifespan=lifespan,
 )
 
 app.add_middleware(

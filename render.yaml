@@ -51,4 +51,11 @@ services:
       - key: AIDND_POWER_USERS
         sync: false
 
+      # Guest retention: one account is minted per first-time visitor, so idle
+      # ones are collected (with their adventures) to keep the free-tier
+      # Postgres from filling with abandoned demo data. Registered accounts are
+      # never touched. 0 would disable it.
+      - key: AIDND_GUEST_RETENTION_DAYS
+        value: "5"
+
       # CORS is unset on purpose: the SPA is served same-origin by FastAPI.

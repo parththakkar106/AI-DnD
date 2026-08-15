@@ -1094,6 +1094,22 @@ load. Registering sets <code>email</code> and <code>password_hash</code> on that
 — so every adventure they played as a guest survives with no re-parenting and no migration step.
 Three kinds of row share the users table: local, guest, and registered.</p>
 
+<p><strong>Guests expire; accounts don't.</strong> One row per curious visitor adds up, so
+<code>cleanup.py</code> deletes guests idle for <code>AIDND_GUEST_RETENTION_DAYS</code>
+(default 5) — measured as <code>COALESCE(last_seen_at, created_at)</code>, since
+<code>_touch</code> only writes <code>last_seen_at</code> hourly and a freshly minted guest
+has NULL until its second request. The filter requires both <code>is_guest</code>
+<em>and</em> <code>email IS NULL</code>, so upgrading in place is also how you opt out of
+expiry. It sweeps once at startup — the reliable trigger on a host that sleeps — and then
+every few hours.</p>
+
+<p>It's a single Core <code>DELETE</code>, not <code>db.delete(user)</code>: the ORM path
+would SELECT every adventure, action and memory into Python purely to delete them, and the
+foreign keys are <code>ON DELETE CASCADE</code> from <code>users</code> all the way down, so
+the database does the whole graph in one statement. Nothing a guest owns is visible to
+anyone else either — <code>is_public</code> is output-only, so shared content is exactly the
+seeded scenarios, which have <code>user_id NULL</code> and never match the filter.</p>
+
 <h3><span class="h-num">3.2</span>The shared demo key</h3>
 
 <p>The demo lets people play with no signup and no API key, on a key the server pays for. That is a
@@ -1133,7 +1149,7 @@ successful turn.</p>
   <thead><tr><th>Thing</th><th>Mechanism</th></tr></thead>
   <tbody>
     <tr><td>Passwords</td><td><code>hashlib.scrypt</code>, N=2¹⁴, r=8, p=1, per-password salt, constant-time compare. Stdlib, so no extra dependency.</td></tr>
-    <tr><td>Sessions</td><td><code>v1.&lt;user_id&gt;.&lt;HMAC-SHA256&gt;</code>, no expiry — long-lived guest sessions are the point.</td></tr>
+    <tr><td>Sessions</td><td><code>v1.&lt;user_id&gt;.&lt;HMAC-SHA256&gt;</code>, no expiry — long-lived guest sessions are the point. A cookie can outlive a swept guest row; that resolves to a 401, which the frontend already turns into a fresh session.</td></tr>
     <tr><td>Stored LLM API keys</td><td>Fernet encryption at rest, key derived from the secret, <code>enc:</code> prefix so legacy plaintext rows are recognisable and migratable.</td></tr>
   </tbody>
 </table>
