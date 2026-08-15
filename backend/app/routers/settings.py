@@ -1,8 +1,9 @@
 import httpx
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
-from .. import auth, limits, models, schemas, security
+from .. import auth, limits, models, netguard, schemas, security
 from ..database import get_db
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -65,6 +66,10 @@ def update_settings(
 async def list_endpoint_models(cfg: auth.ProviderConfig) -> dict:
     """GET the endpoint's /models listing. Doubles as a connectivity check, so
     failures come back as {"ok": False, "detail": ...} rather than raising."""
+    # SSRF guard: never probe a non-public address the user pointed us at.
+    reason = await run_in_threadpool(netguard.endpoint_block_reason, cfg.endpoint_url)
+    if reason:
+        return {"ok": False, "detail": f"Can't reach that endpoint — {reason}."}
     url = cfg.endpoint_url.rstrip("/") + "/models"
     headers = {}
     if cfg.api_key:

@@ -3,7 +3,7 @@ from typing import AsyncIterator
 
 import httpx
 
-from .. import debuglog
+from .. import debuglog, netguard
 from .base import PromptParts, Provider, ProviderError
 
 # Framing appended after the story text in chat mode, so chat-tuned models keep
@@ -168,6 +168,11 @@ class OpenAICompatibleProvider(Provider):
     async def _stream(self, url: str, body: dict) -> AsyncIterator[tuple[str, str]]:
         """Shared SSE plumbing for generate()/chat(): POST a streaming request
         and yield ("text" | "reasoning", chunk) pairs, logging the exchange."""
+        # SSRF guard (hosted mode): a user-supplied endpoint_url must not point
+        # at an internal/metadata address. No-op for local installs.
+        reason = netguard.endpoint_block_reason(url)
+        if reason:
+            raise ProviderError(f"This endpoint can't be used — {reason}.")
         log = debuglog.start_entry(url, self.model, body)
         received: list[str] = []
         try:

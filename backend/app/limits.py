@@ -7,6 +7,7 @@ hostile visitor can't burn the demo key, peg the CPU, or bloat the database.
 """
 
 import json
+import os
 import threading
 import time
 from collections import defaultdict, deque
@@ -37,7 +38,27 @@ _windows: dict[tuple[str, str], deque] = defaultdict(deque)
 _windows_guard = threading.Lock()
 
 
+# How many proxy hops sit between the app and the real client. On Render (and
+# most PaaS) that's one: the platform's edge appends the connecting IP to the
+# RIGHT of X-Forwarded-For. A client can prepend anything it likes to the left,
+# but it cannot push a value past the edge's own append — so the trustworthy
+# client IP is the (hops)-th entry from the right, NOT uvicorn's leftmost pick.
+# Trusting the leftmost let anyone rotate X-Forwarded-For to mint a fresh
+# rate-limit bucket per request and bypass the auth/guest limits entirely.
+# Override with AIDND_TRUSTED_PROXY_HOPS if the deployment adds more hops.
+TRUSTED_PROXY_HOPS = max(1, int(os.environ.get("AIDND_TRUSTED_PROXY_HOPS", "1") or 1))
+
+
 def _client_ip(request: Request) -> str:
+    """The real client IP for rate-limit keying, resistant to a spoofed
+    X-Forwarded-For. Takes the hop the trusted edge appended (rightmost minus
+    any extra trusted hops); falls back to the socket peer when no forwarded
+    header is present (local/dev, or a direct connection)."""
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        parts = [p.strip() for p in forwarded.split(",") if p.strip()]
+        if parts:
+            return parts[-min(TRUSTED_PROXY_HOPS, len(parts))]
     return request.client.host if request.client else "unknown"
 
 
@@ -60,6 +81,63 @@ def rate_limit(scope: str, request: Request, user: models.User | None = None) ->
         window.append(now)
         if len(_windows) > 10_000:
             _prune(now)
+
+
+# ---------- Per-account login throttle ----------
+# Defense in depth beside the per-IP `auth` limit: that one can be diluted by a
+# botnet (many real source IPs, one bucket each), so it can't by itself stop a
+# distributed guessing run against a single account. This cap keys on the target
+# email instead of the caller, so guessing ONE account's password stays
+# expensive regardless of how many addresses it comes from. Failures only — a
+# correct password clears the record — and it's a short sliding window, not a
+# hard lock, so a user mistyping a few times recovers on their own in minutes.
+# Tradeoff: an attacker can keep a known account throttled (a nuisance), which
+# is strictly preferable to letting it be brute-forced.
+LOGIN_FAIL_LIMIT = 8          # failed attempts per account...
+LOGIN_FAIL_WINDOW = 900       # ...within this many seconds (15 min)
+
+_login_fails: dict[str, deque] = defaultdict(deque)
+_login_guard = threading.Lock()
+
+
+def check_login_allowed(email: str) -> None:
+    """429 when an account has too many recent failed logins. Call before
+    verifying the password so guesses don't even reach the hash."""
+    if not auth.MULTI_USER:
+        return
+    now = time.time()
+    with _login_guard:
+        window = _login_fails[email]
+        while window and window[0] < now - LOGIN_FAIL_WINDOW:
+            window.popleft()
+        if len(window) >= LOGIN_FAIL_LIMIT:
+            raise HTTPException(
+                429,
+                "Too many failed sign-in attempts for this account — "
+                "wait a few minutes and try again.",
+            )
+
+
+def note_login_failure(email: str) -> None:
+    """Record one failed attempt against `email`."""
+    if not auth.MULTI_USER:
+        return
+    now = time.time()
+    with _login_guard:
+        _login_fails[email].append(now)
+        if len(_login_fails) > 10_000:  # bound the map on a flood of unique emails
+            stale = [
+                key for key, window in _login_fails.items()
+                if not window or window[-1] < now - LOGIN_FAIL_WINDOW
+            ]
+            for key in stale:
+                del _login_fails[key]
+
+
+def note_login_success(email: str) -> None:
+    """A correct password wipes the account's failure streak."""
+    with _login_guard:
+        _login_fails.pop(email, None)
 
 
 def _prune(now: float) -> None:

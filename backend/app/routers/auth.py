@@ -105,13 +105,18 @@ def login(
         raise HTTPException(400, "Accounts are disabled in local mode.")
     limits.rate_limit("auth", request)
     email = payload.email.strip().lower()
+    # Per-account throttle: stops distributed guessing against one email even
+    # when the per-IP limit above is diluted across many source addresses.
+    limits.check_login_allowed(email)
     user = db.query(models.User).filter(models.User.email == email).first()
     if (
         user is None
         or not user.password_hash
         or not security.verify_password(payload.password, user.password_hash)
     ):
+        limits.note_login_failure(email)
         raise HTTPException(401, "Incorrect email or password.")
+    limits.note_login_success(email)
     _set_session_cookie(response, user.id)
     return me_payload(user, db)
 

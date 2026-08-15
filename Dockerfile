@@ -33,9 +33,14 @@ VOLUME /data
 
 EXPOSE 8000
 WORKDIR /app/backend
-# --proxy-headers: behind a reverse proxy (any hosted deploy), trust
-# X-Forwarded-For so per-IP rate limits key on the client, not the proxy.
+# --proxy-headers lets uvicorn fix up the request scheme (https) behind the
+# platform's edge. We deliberately do NOT pass --forwarded-allow-ips "*": that
+# made uvicorn trust the LEFTMOST X-Forwarded-For value, which the client fully
+# controls, so anyone could rotate the header to dodge the per-IP rate limits.
+# The client IP used for rate limiting is derived in limits._client_ip from the
+# hop the edge appends (rightmost), which a client cannot spoof past; tune with
+# AIDND_TRUSTED_PROXY_HOPS if the platform adds more proxy hops.
 # Single worker on purpose: the turn lock, rate limiter, and debug log are
 # in-process state.
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", \
-     "--proxy-headers", "--forwarded-allow-ips", "*"]
+     "--proxy-headers"]
