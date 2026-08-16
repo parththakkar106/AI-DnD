@@ -20,14 +20,14 @@ on a later turn because the cursors only advance on success.
 """
 
 import asyncio
-import math
 
 from sqlalchemy.orm import Session
 
-from . import models
+from . import models, vectors
 from .context import history, story_actions, truncate_to_last_tokens
 from .database import SessionLocal
 from .providers import OpenAICompatibleProvider, ProviderError
+from .vectors import cosine  # re-exported: the ranking lives here, the maths there
 
 MEMORY_INTERVAL = 6  # actions per memory
 MEMORY_START = 12  # first memory once the adventure reaches this many actions
@@ -79,14 +79,15 @@ def embedding_provider(settings: models.Settings) -> OpenAICompatibleProvider:
     )
 
 
-def cosine(a: list[float], b: list[float]) -> float:
-    # Different lengths means the embedding model changed since this vector was
-    # stored; zip() would silently score garbage.
-    if len(a) != len(b):
-        return 0.0
-    dot = sum(x * y for x, y in zip(a, b))
-    norm = math.sqrt(sum(x * x for x in a)) * math.sqrt(sum(y * y for y in b))
-    return dot / norm if norm else 0.0
+def set_vector(memory: models.Memory, vector: list[float] | None) -> None:
+    """Store (or clear) a memory's embedding.
+
+    Both columns, always together: `embedding_blob` is what will be read, and
+    the JSON `embedding` stays correct behind it until the follow-up migration
+    drops it. Going through one function is what keeps them from drifting.
+    """
+    memory.embedding = vector
+    memory.embedding_blob = None if vector is None else vectors.pack(vector)
 
 
 def settled_count(adventure: models.Adventure) -> int:
@@ -395,11 +396,11 @@ async def _embed_pending(
     if not pending:
         return
     try:
-        vectors = await embedding_provider(settings).embed([m.text for m in pending])
+        new = await embedding_provider(settings).embed([m.text for m in pending])
     except ProviderError:
         return
-    for memory, vector in zip(pending, vectors):
-        memory.embedding = vector
+    for memory, vector in zip(pending, new):
+        set_vector(memory, vector)
     db.commit()
 
 

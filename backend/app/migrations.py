@@ -17,13 +17,18 @@ starts fresh (created by create_all, stamped LATEST, never replays them), but
 migrations added from Phase 9 on must run on both dialects.
 """
 
+import json
+
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
 
+from . import vectors
 from .database import Base
 
 # (version, SQL to run when upgrading past it) — append only, never reorder.
-MIGRATIONS: list[tuple[int, str]] = [
+# The SQL is a string, or a {dialect: sql} map with a "default" entry when the
+# two dialects have to be spelled differently (BLOB vs BYTEA and the like).
+MIGRATIONS: list[tuple[int, str | dict[str, str]]] = [
     # Phase 6: auto-summarization + memory bank (the `memories` table itself is
     # created by create_all, which runs for existing DBs too).
     (2, "ALTER TABLE adventures ADD COLUMN auto_summarize BOOLEAN NOT NULL DEFAULT 0"),
@@ -121,6 +126,14 @@ MIGRATIONS: list[tuple[int, str]] = [
     # ~5 KB to every later load of that adventure. Backfilled by
     # _backfill_variant_count.
     (37, "ALTER TABLE actions ADD COLUMN variant_count INTEGER NOT NULL DEFAULT 0"),
+    # Egress, round three: a 1536-dimension embedding written as a JSON list is
+    # ~31 KB, and the whole bank is fetched every turn to rank it. Packed
+    # float32 is 6 KB for the same numbers, exactly (see vectors.py). Dimensions
+    # are unchanged, so this is a format conversion — no re-embedding, no API
+    # calls. Backfilled by _backfill_embedding_blob. The old JSON column is left
+    # in place and keeps being written until a follow-up migration drops it.
+    (38, {"sqlite": "ALTER TABLE memories ADD COLUMN embedding_blob BLOB",
+          "default": "ALTER TABLE memories ADD COLUMN embedding_blob BYTEA"}),
 ]
 
 LATEST_VERSION = max((v for v, _ in MIGRATIONS), default=1)
@@ -128,6 +141,11 @@ LATEST_VERSION = max((v for v, _ in MIGRATIONS), default=1)
 # Migrations that need a data pass after their DDL, keyed by version.
 WORLD_DELTA_VERSION = 36
 VARIANT_COUNT_VERSION = 37
+EMBEDDING_BLOB_VERSION = 38
+
+# Vectors converted per round trip. Small enough that the backfill never holds
+# more than a few megabytes, large enough that it isn't a query per row.
+BACKFILL_BATCH = 200
 
 
 def _backfill_world_delta(conn) -> None:
@@ -183,6 +201,46 @@ def _backfill_variant_count(conn) -> None:
     conn.execute(text(sql))
 
 
+def _for_dialect(sql: str | dict[str, str], dialect: str) -> str:
+    return sql if isinstance(sql, str) else sql.get(dialect, sql["default"])
+
+
+def _backfill_embedding_blob(conn) -> None:
+    """Repack memories.embedding (JSON list) into memories.embedding_blob.
+
+    The one backfill here that has to come through Python: struct packing has
+    no portable SQL spelling, so unlike migrations 36 and 37 this pays a
+    one-time read of every vector (~4 MB in production) to stop paying three
+    megabytes every turn. Batched so the read is bounded whatever the bank
+    grows to.
+
+    Reads the JSON defensively — SQLite hands back the raw string while psycopg
+    has already parsed it into a list — and skips anything that isn't a
+    non-empty list, so one malformed row can't strand the migration.
+    """
+    last_id = 0
+    while True:
+        rows = conn.execute(
+            text("""
+                SELECT id, embedding FROM memories
+                WHERE embedding IS NOT NULL AND embedding_blob IS NULL AND id > :last
+                ORDER BY id LIMIT :batch
+            """),
+            {"last": last_id, "batch": BACKFILL_BATCH},
+        ).all()
+        if not rows:
+            return
+        for row_id, stored in rows:
+            vector = json.loads(stored) if isinstance(stored, str) else stored
+            if not isinstance(vector, list) or not vector:
+                continue
+            conn.execute(
+                text("UPDATE memories SET embedding_blob = :blob WHERE id = :id"),
+                {"blob": vectors.pack(vector), "id": row_id},
+            )
+        last_id = rows[-1][0]
+
+
 def _get_version(conn) -> int:
     if conn.dialect.name == "sqlite":
         return conn.execute(text("PRAGMA user_version")).scalar() or 1
@@ -220,11 +278,13 @@ def bootstrap(engine: Engine) -> None:
         current = _get_version(conn)
         for version, sql in MIGRATIONS:
             if version > current:
-                conn.execute(text(sql))
+                conn.execute(text(_for_dialect(sql, conn.dialect.name)))
                 if version == WORLD_DELTA_VERSION:
                     _backfill_world_delta(conn)
                 if version == VARIANT_COUNT_VERSION:
                     _backfill_variant_count(conn)
+                if version == EMBEDDING_BLOB_VERSION:
+                    _backfill_embedding_blob(conn)
                 current = version
         _set_version(conn, current)
         _encrypt_plaintext_api_keys(conn)

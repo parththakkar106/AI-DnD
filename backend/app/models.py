@@ -1,7 +1,8 @@
 from datetime import datetime, timezone
 
 from sqlalchemy import (
-    JSON, Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Table, Text,
+    JSON, Boolean, Column, DateTime, Float, ForeignKey, Integer, LargeBinary, String,
+    Table, Text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -141,9 +142,15 @@ class Adventure(Base):
 class Memory(Base):
     """Phase 6: an auto-summarized (or hand-written) fact about the adventure.
 
-    `embedding` is the raw vector as a JSON list (cosine ranking happens in
-    Python — fine at bank sizes of a few hundred). NULL until embedded, which
-    also marks it for backfill when an embedding model becomes available.
+    The vector lives in `embedding_blob` as packed float32 (see vectors.py).
+    NULL until embedded, which also marks it for backfill when an embedding
+    model becomes available.
+
+    Cosine ranking happens in Python, which means the vectors cross the wire.
+    The original comment here sized that by count — "fine at a few hundred" —
+    and it was wrong by the only measure that mattered: a few hundred JSON
+    vectors is ten megabytes, fetched fresh every turn. Weigh new columns in
+    bytes.
     """
 
     __tablename__ = "memories"
@@ -151,7 +158,17 @@ class Memory(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     adventure_id: Mapped[int] = mapped_column(ForeignKey("adventures.id", ondelete="CASCADE"))
     text: Mapped[str] = mapped_column(Text, default="")
+    # Superseded by embedding_blob and written alongside it, so the two stay in
+    # step until a follow-up migration drops this one. Still the column the
+    # ranking path reads; that moves next.
     embedding: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # The vector, little-endian float32. Deferred because it is wider than the
+    # rest of the row put together and exactly one code path wants it: anything
+    # bulk-loading memories (the Memories drawer, eviction, the embed queue)
+    # must project the columns it needs rather than load whole entities.
+    embedding_blob: Mapped[bytes | None] = mapped_column(
+        LargeBinary, nullable=True, deferred=True
+    )
     # Action index range this memory summarizes (null for manual memories).
     source_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
     source_end: Mapped[int | None] = mapped_column(Integer, nullable=True)

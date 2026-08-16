@@ -1488,7 +1488,7 @@ def update_memory(
         raise HTTPException(404, "Memory not found")
     fields = {k: v for k, v in payload.model_dump(exclude_unset=True).items() if v is not None}
     if "text" in fields and fields["text"].strip() != memory.text:
-        memory.embedding = None  # re-embed on the next post-turn pass
+        memorybank.set_vector(memory, None)  # re-embed on the next post-turn pass
     for field, value in fields.items():
         setattr(memory, field, value)
     db.commit()

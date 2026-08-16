@@ -173,13 +173,18 @@ def build_fixture(args, rng: random.Random) -> tuple[int, int]:
             ))
 
         for i in range(args.memories):
-            db.add(models.Memory(
+            memory = models.Memory(
                 adventure_id=adventure.id,
                 text=f"{MEMORY_TEXT} ({i})",
-                embedding=[rng.uniform(-1.0, 1.0) for _ in range(EMBEDDING_DIMS)],
                 source_start=i * memorybank.MEMORY_INTERVAL,
                 source_end=i * memorybank.MEMORY_INTERVAL + memorybank.MEMORY_INTERVAL - 1,
-            ))
+            )
+            # Through the same door the app uses, so the fixture cannot end up
+            # storing vectors in a shape production never produces.
+            memorybank.set_vector(
+                memory, [rng.uniform(-1.0, 1.0) for _ in range(EMBEDDING_DIMS)]
+            )
+            db.add(memory)
 
         db.commit()
         return adventure.id, user.id
