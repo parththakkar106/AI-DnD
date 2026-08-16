@@ -87,13 +87,15 @@ no denormalisation to fix. It is a *format* problem plus a *fetch-frequency* pro
    + `stress_session.py`. The originals lived outside the repo and are gone. **Default it
    to running with an embedding model configured**, since that omission is precisely what
    hid this finding. Do this first so every item below is measured, not assumed.
+   **Done 2026-08-16** — see the baseline below.
 2. **Migration 38 — `memories.embedding_blob` (`LargeBinary`).** Backfill in Python
    (`struct.pack(f"<{n}f", *vec)`); the conversion cannot be expressed in portable SQL, so
    unlike migration 36/37 this one does pay a one-time 4 MB read. Drop the old JSON column
    in a follow-up migration once verified, not in the same one.
 3. **Read path.** `retrieve_memories` queries `memories` directly with
    `forgotten = false AND embedding_blob IS NOT NULL` in **SQL**, not Python. Unpack with
-   `struct`/`numpy`.
+   `struct`/`numpy`. Same for `_evict_over_capacity` and `_embed_pending`, which walk the
+   same relationship for a count and for the unembedded rows (see the baseline above).
 4. **Vector cache.** Keyed by `adventure_id`, invalidated on memory create, evict and
    delete. Must survive the retry/undo paths that prune memories.
 5. **Capacity default 200 → 80.** Existing adventures inherit it, so adventure 25 evicts
@@ -101,6 +103,38 @@ no denormalisation to fix. It is a *format* problem plus a *fetch-frequency* pro
 6. **Infinite scroll upward in `Play.jsx`** for the remaining 423 KB page load of a
    finished adventure — the last open item from round two. Load the newest turns, fetch
    older ones as the reader scrolls up.
+
+## Baseline from the harness (2026-08-16)
+
+`python -m tools.stress_session`, 200 actions × 4 KB, 100 memories × 1536 dims:
+
+| shape | fetched | memories' share |
+|---|---|---|
+| `GET /adventures` (index) | 0.7 kB | — |
+| `GET /adventures/{id}` (page load) | 426.7 kB | — |
+| `POST /adventures/{id}/actions` (one turn) | **3,258.7 kB** | 96% |
+| `GET /adventures/{id}/context` (Insights) | 3,223.7 kB | 97% |
+| `run_post_turn` (background) | **3,139.1 kB** | 100% |
+
+It reproduces both production figures independently — 426.7 kB against the measured
+423 KB page load, 3,258.7 kB against 3,024 + 129 kB for a turn, and 31.4 KB per
+embedding against 31.0 KB. `--no-embeddings` reports 112.0 kB for the same turn, so
+the round-two blind spot is now a **29x** gap anyone can see in one flag.
+
+**Two findings the SQL measurement could not have shown**, both the same root cause
+in a different caller:
+
+- **`run_post_turn` fetches the whole bank again**, every turn. `_evict_over_capacity`
+  walks `adventure.memories` to count the active ones, and `_embed_pending` walks it to
+  find the unembedded ones. So a played turn actually costs ~6.4 MB, not 3.2 — the
+  original estimate was half the real number.
+- **Insights pays it a third time**, on a page the player can open repeatedly without
+  spending a turn.
+
+So step 3 below is not just `retrieve_memories`: **every walk of
+`adventure.memories` has to go**. `_evict_over_capacity` wants a count and an ordering,
+`_embed_pending` wants rows where `embedding IS NULL` — neither needs a single vector,
+and both are pure SQL.
 
 ## Guardrails to add with this work
 
@@ -119,8 +153,11 @@ backups or storage start to hurt.
 
 ## Verification
 
-- Harness: one turn on adventure 25, memory bank **on**, before and after. Target is
-  3,024 kB → ~600 kB cold, ~0 warm.
+- Harness: `python -m tools.stress_session`, memory bank **on**, before and after,
+  against the baseline table above. Target for the turn shape is 3,258 kB → ~700 kB
+  cold, ~130 kB warm (the cache leaves only what a turn reads besides the bank).
+  `run_post_turn` should fall to roughly nothing: neither of its two walks needs a
+  vector at all.
 - Re-run the round-two shapes with an embedding model configured, so the 200-action
   playthrough number is finally honest.
 - The existing `test_egress.py` guard must still pass — nothing here should touch the
