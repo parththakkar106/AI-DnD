@@ -88,18 +88,19 @@ no denormalisation to fix. It is a *format* problem plus a *fetch-frequency* pro
    to running with an embedding model configured**, since that omission is precisely what
    hid this finding. Do this first so every item below is measured, not assumed.
    **Done 2026-08-16** — see the baseline below.
-2. **Migration 38 — `memories.embedding_blob` (`LargeBinary`).** Backfill in Python
+2. **Migration 38 — `memories.embedding_blob` (`LargeBinary`).** **Done.** Backfill in Python
    (`struct.pack(f"<{n}f", *vec)`); the conversion cannot be expressed in portable SQL, so
    unlike migration 36/37 this one does pay a one-time 4 MB read. Drop the old JSON column
    in a follow-up migration once verified, not in the same one.
-3. **Read path.** `retrieve_memories` queries `memories` directly with
+3. **Read path.** **Done.** `retrieve_memories` queries `memories` directly with
    `forgotten = false AND embedding_blob IS NOT NULL` in **SQL**, not Python. Unpack with
    `struct`/`numpy`. Same for `_evict_over_capacity` and `_embed_pending`, which walk the
    same relationship for a count and for the unembedded rows (see the baseline above).
-4. **Vector cache.** Keyed by `adventure_id`, invalidated on memory create, evict and
-   delete. Must survive the retry/undo paths that prune memories.
-5. **Capacity default 200 → 80.** Existing adventures inherit it, so adventure 25 evicts
-   on its next turn — check that the eviction path is sane at scale before shipping.
+4. **Vector cache.** **Done.** Keyed by `adventure_id`, bounded to 8 adventures. It
+   turned out to need no invalidation callbacks at all — see below.
+5. **Capacity default 200 → 80.** **Done** (migration 41, only rows still on the old
+   default). Eviction checked at scale first: trimming a 100-memory bank to 80 costs
+   0.8 kB and eight statements, and reads no vectors at all.
 6. **Infinite scroll upward in `Play.jsx`** for the remaining 423 KB page load of a
    finished adventure — the last open item from round two. Load the newest turns, fetch
    older ones as the reader scrolls up.
@@ -135,6 +136,36 @@ So step 3 below is not just `retrieve_memories`: **every walk of
 `adventure.memories` has to go**. `_evict_over_capacity` wants a count and an ordering,
 `_embed_pending` wants rows where `embedding IS NULL` — neither needs a single vector,
 and both are pure SQL.
+
+## After (2026-08-16, same harness, same fixture)
+
+| shape | before | after (cold) | after (warm) |
+|---|---|---|---|
+| `POST .../actions` (one turn) | 3,258.7 kB | 723.4 kB | **122.3 kB** |
+| `run_post_turn` | 3,139.1 kB | 0.7 kB | 0.7 kB |
+| `GET .../context` (Insights) | 3,223.7 kB | 117.9 kB | 117.9 kB |
+| `GET .../memories` (drawer) | ~3,138 kB | 23.6 kB | 23.6 kB |
+
+A played turn is turn + post_turn: **6,398 kB → 123 kB** once warm, a 52x cut. The
+targets above were ~700 kB cold and ~130 kB warm, so both were met.
+
+Steps 2–5 landed together, because they are one deployable unit: the columns are no
+use unless something reads them, and deferring them breaks the old readers. Two
+additions the plan did not anticipate:
+
+- **`memories.embedded`, a boolean beside the blob** (migration 39/40). Once the
+  vectors are deferred, every "does this have an embedding?" check becomes a lazy
+  load — an N+1 of 6 KB reads down the Memories drawer. Same shape as
+  `actions.variant_count` beside `actions.variants`, and the same reason.
+- **The cache needs no invalidation callbacks.** Vectors only ever change through
+  `set_vector`, which drops the one entry; everything that *removes* a memory from
+  play leaves the catalogue query, and entries missing from the catalogue are dropped
+  on the next read. So eviction, deletion and pruning need no hooks and cannot be
+  forgotten. Vectors are held as `array("f")` — 6 KB each, matching the column;
+  a list of Python floats would have been eight times the plan's RAM estimate.
+
+Remaining: **step 6, infinite scroll upward in `Play.jsx`.** The page load is
+unchanged at 426.7 kB and is now the largest single read in the app.
 
 ## Guardrails to add with this work
 

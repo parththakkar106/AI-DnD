@@ -18,16 +18,28 @@ that the packing and the in-process cache together already make cheap.
 
 import math
 import struct
+import sys
+from array import array
 
 
-def pack(vector: list[float]) -> bytes:
+def pack(vector) -> bytes:
     """A vector as little-endian float32."""
     return struct.pack(f"<{len(vector)}f", *vector)
 
 
-def unpack(blob: bytes) -> list[float]:
-    """The inverse of `pack`. Length is implied: four bytes per component."""
-    return list(struct.unpack(f"<{len(blob) // 4}f", blob))
+def unpack(blob: bytes) -> array:
+    """The inverse of `pack`. Length is implied: four bytes per component.
+
+    Returns an `array("f")` rather than a list, because these are held in
+    memory between turns: the array is the same 4 bytes a component the column
+    is, where a list of Python floats is eight times that. It indexes, zips and
+    lens like a list, which is all the ranking needs.
+    """
+    vector = array("f")
+    vector.frombytes(blob)
+    if sys.byteorder != "little":
+        vector.byteswap()
+    return vector
 
 
 def cosine(a: list[float], b: list[float]) -> float:

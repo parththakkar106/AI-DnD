@@ -427,6 +427,9 @@ def delete_adventure(
     adventure = get_adventure_or_404(adventure_id, db, user)
     db.delete(adventure)
     db.commit()
+    # Nothing else would ever ask for this adventure's vectors again, so the
+    # cache would hold them until the process restarted.
+    memorybank.forget_cached_vectors(adventure_id)
 
 
 # ---------- Turn engine ----------

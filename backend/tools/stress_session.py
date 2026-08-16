@@ -246,6 +246,13 @@ def shape_insights(client, meter, adv_id):
     _check(r)
 
 
+def shape_memories(client, meter, adv_id):
+    """The Memories drawer — every memory, and none of their vectors."""
+    with meter.scope("GET /adventures/{id}/memories  (drawer)"):
+        r = client.get(f"/api/adventures/{adv_id}/memories")
+    _check(r)
+
+
 def shape_post_turn(client, meter, adv_id):
     """Summarization, embedding and eviction, after the turn is saved."""
     with meter.scope("run_post_turn  (background)"):
@@ -257,6 +264,7 @@ SHAPES = {
     "load": shape_load,
     "turn": shape_turn,
     "insights": shape_insights,
+    "memories": shape_memories,
     "post_turn": shape_post_turn,
 }
 
@@ -277,8 +285,11 @@ def parse_args(argv=None):
                    help="story actions in the fixture (default: 200)")
     p.add_argument("--memories", type=int, default=100,
                    help="memories, all embedded (default: 100)")
+    # Deliberately not the app's default (80): a measuring instrument should
+    # hold the fixture at the size asked for rather than evict it mid-run.
     p.add_argument("--capacity", type=int, default=200,
-                   help="Settings.memory_bank_capacity (default: 200)")
+                   help="Settings.memory_bank_capacity; lower it below "
+                        "--memories to exercise eviction (default: 200)")
     p.add_argument("--narration-bytes", type=int, default=4000,
                    help="length of an AI action's text; production averages "
                         "~2.1 KB per action alternating with player input "

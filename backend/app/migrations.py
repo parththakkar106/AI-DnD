@@ -134,6 +134,16 @@ MIGRATIONS: list[tuple[int, str | dict[str, str]]] = [
     # in place and keeps being written until a follow-up migration drops it.
     (38, {"sqlite": "ALTER TABLE memories ADD COLUMN embedding_blob BLOB",
           "default": "ALTER TABLE memories ADD COLUMN embedding_blob BYTEA"}),
+    # ...and the one-bit answer beside it, so the Memories drawer and the embed
+    # queue can ask "has this got a vector?" without fetching one. Same shape as
+    # actions.variant_count beside actions.variants. TRUE/FALSE and a boolean
+    # DEFAULT are spelled the same on both dialects; 0/1 would not be.
+    (39, "ALTER TABLE memories ADD COLUMN embedded BOOLEAN NOT NULL DEFAULT false"),
+    (40, "UPDATE memories SET embedded = true WHERE embedding_blob IS NOT NULL"),
+    # Memory bank capacity 200 -> 80. Only rows still on the old default move,
+    # so anyone who picked a value keeps it — same rule as migration 29.
+    # Adventures already over 80 evict down on their next turn.
+    (41, "UPDATE settings SET memory_bank_capacity = 80 WHERE memory_bank_capacity = 200"),
 ]
 
 LATEST_VERSION = max((v for v, _ in MIGRATIONS), default=1)

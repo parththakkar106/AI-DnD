@@ -158,10 +158,10 @@ class Memory(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     adventure_id: Mapped[int] = mapped_column(ForeignKey("adventures.id", ondelete="CASCADE"))
     text: Mapped[str] = mapped_column(Text, default="")
-    # Superseded by embedding_blob and written alongside it, so the two stay in
-    # step until a follow-up migration drops this one. Still the column the
-    # ranking path reads; that moves next.
-    embedding: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Superseded by embedding_blob and still written alongside it, so a
+    # rollback finds the vectors, until a follow-up migration drops it. Nothing
+    # reads it.
+    embedding: Mapped[list | None] = mapped_column(JSON, nullable=True, deferred=True)
     # The vector, little-endian float32. Deferred because it is wider than the
     # rest of the row put together and exactly one code path wants it: anything
     # bulk-loading memories (the Memories drawer, eviction, the embed queue)
@@ -172,6 +172,11 @@ class Memory(Base):
     # Action index range this memory summarizes (null for manual memories).
     source_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
     source_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Whether embedding_blob is set. Maintained on write by memorybank
+    # .set_vector, for the same reason actions.variant_count exists beside
+    # actions.variants: every reader wants the one-bit answer and none of them
+    # should have to fetch six kilobytes of vector to get it.
+    embedded: Mapped[bool] = mapped_column(Boolean, default=False)
     pinned: Mapped[bool] = mapped_column(Boolean, default=False)
     forgotten: Mapped[bool] = mapped_column(Boolean, default=False)  # evicted, kept for UI
     use_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -179,10 +184,6 @@ class Memory(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     adventure: Mapped[Adventure] = relationship(back_populates="memories")
-
-    @property
-    def embedded(self) -> bool:
-        return self.embedding is not None
 
 
 class StoryCard(Base):
@@ -378,7 +379,11 @@ class Settings(Base):
     # Phase 6: auto-summarization + memory bank
     summary_model: Mapped[str] = mapped_column(String(200), default="")  # "" = main model
     embedding_model: Mapped[str] = mapped_column(String(200), default="")  # "" = bank disabled
-    memory_bank_capacity: Mapped[int] = mapped_column(Integer, default=200)
+    # Was 200. Lowered on retrieval-quality grounds first: ranking two hundred
+    # memories to pick five means the five are chosen out of a lot of noise,
+    # and older memories describe a story the player has moved on from. That it
+    # also cuts what the bank costs to read is the smaller reason.
+    memory_bank_capacity: Mapped[int] = mapped_column(Integer, default=80)
     memory_top_k: Mapped[int] = mapped_column(Integer, default=5)
 
     @property

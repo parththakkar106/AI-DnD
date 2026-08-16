@@ -20,8 +20,11 @@ on a later turn because the cursors only advance on success.
 """
 
 import asyncio
+from array import array
+from collections import OrderedDict
 
-from sqlalchemy.orm import Session
+from sqlalchemy import func, select, update
+from sqlalchemy.orm import Session, object_session
 
 from . import models, vectors
 from .context import history, story_actions, truncate_to_last_tokens
@@ -82,12 +85,73 @@ def embedding_provider(settings: models.Settings) -> OpenAICompatibleProvider:
 def set_vector(memory: models.Memory, vector: list[float] | None) -> None:
     """Store (or clear) a memory's embedding.
 
-    Both columns, always together: `embedding_blob` is what will be read, and
-    the JSON `embedding` stays correct behind it until the follow-up migration
-    drops it. Going through one function is what keeps them from drifting.
+    Every column that describes the vector moves together: `embedding_blob` is
+    what the ranking reads, `embedded` is the flag everything else reads, and
+    the JSON `embedding` stays correct behind both until the follow-up
+    migration drops it. Going through one function is what keeps them in step —
+    and it is also the only place a stored vector can change, which is what
+    makes the cache below safe to invalidate here and nowhere else.
     """
     memory.embedding = vector
     memory.embedding_blob = None if vector is None else vectors.pack(vector)
+    memory.embedded = vector is not None
+    cached = _vector_cache.get(memory.adventure_id)
+    if cached is not None:
+        cached.pop(memory.id, None)
+
+
+# ---------- The vector cache ----------
+
+# adventure id -> {memory id: vector}, most-recently-used last.
+#
+# Turns for one adventure arrive back to back, and the bank barely changes
+# between them, so re-reading every vector each turn is the same 600 KB over
+# and over. Vectors are held as array("f") — 4 bytes a component, the same
+# 6 KB the column holds. A list of Python floats would be eight times that.
+#
+# Correctness rests on two things. Anything that *changes* a vector goes
+# through set_vector, which drops that one entry. Anything that *removes* a
+# memory from play — eviction, deletion, pruning, an edit clearing the vector —
+# takes it out of the catalogue query below, and entries missing from the
+# catalogue are dropped on the next read. So nothing has to remember to call an
+# invalidate, which is the failure this design is chosen to avoid.
+#
+# In-process, so it assumes one worker. That is what the deploy runs; a second
+# worker would each keep their own copy and both would still be correct on
+# eviction and deletion, but a vector rewritten by one could go stale in the
+# other until that memory next leaves the catalogue.
+_vector_cache: OrderedDict[int, dict[int, array]] = OrderedDict()
+VECTOR_CACHE_ADVENTURES = 8  # ~600 KB each at a 100-memory bank
+
+
+def forget_cached_vectors(adventure_id: int) -> None:
+    """Drop an adventure's cached vectors. Only needed when the adventure
+    itself goes away — everything else self-corrects (see above)."""
+    _vector_cache.pop(adventure_id, None)
+
+
+def _vectors_for(db: Session, adventure_id: int, ids: list[int]) -> dict[int, array]:
+    """The vectors for `ids`, reading only the ones not already held."""
+    cached = _vector_cache.get(adventure_id)
+    if cached is None:
+        cached = _vector_cache[adventure_id] = {}
+    _vector_cache.move_to_end(adventure_id)
+    while len(_vector_cache) > VECTOR_CACHE_ADVENTURES:
+        _vector_cache.popitem(last=False)
+
+    wanted = set(ids)
+    for gone in set(cached) - wanted:
+        del cached[gone]
+    missing = [memory_id for memory_id in ids if memory_id not in cached]
+    if missing:
+        rows = db.execute(
+            select(models.Memory.id, models.Memory.embedding_blob)
+            .where(models.Memory.id.in_(missing))
+        ).all()
+        for memory_id, blob in rows:
+            if blob:
+                cached[memory_id] = vectors.unpack(blob)
+    return cached
 
 
 def settled_count(adventure: models.Adventure) -> int:
@@ -205,9 +269,22 @@ async def retrieve_memories(
         return None
     if not settings.embedding_model.strip():
         return {"used": [], "error": "No embedding model configured in Settings."}
+    db = object_session(adventure)
+    if db is None:
+        return {"used": [], "error": None}
 
-    candidates = [m for m in adventure.memories if not m.forgotten and m.embedding]
-    if not candidates:
+    # Which memories are in play, and nothing else about them. This used to
+    # walk adventure.memories, which loaded every row of the bank *including
+    # its vector* — ~31 KB a memory, three megabytes a turn, 96% of everything
+    # a turn read. Two ids and a flag per row is about eight bytes.
+    catalogue = db.execute(
+        select(models.Memory.id, models.Memory.pinned).where(
+            models.Memory.adventure_id == adventure.id,
+            models.Memory.forgotten.is_(False),
+            models.Memory.embedded.is_(True),
+        )
+    ).all()
+    if not catalogue:
         return {"used": [], "error": None}
 
     recent = history.tail(adventure, RETRIEVAL_WINDOW_ACTIONS, exclude_action_id)
@@ -222,29 +299,51 @@ async def retrieve_memories(
     except ProviderError as exc:
         return {"used": [], "error": str(exc)}
 
+    held = _vectors_for(db, adventure.id, [memory_id for memory_id, _ in catalogue])
     scored = sorted(
-        ((cosine(query_vec, m.embedding), m) for m in candidates),
-        key=lambda pair: pair[0],
+        (
+            (cosine(query_vec, held[memory_id]), memory_id, pinned)
+            for memory_id, pinned in catalogue
+            if memory_id in held
+        ),
+        key=lambda row: row[0],
         reverse=True,
     )
     # Pinned memories are always used and count toward top_k, so the injected
     # set never exceeds the configured budget (unless pinned alone exceed it).
     top_k = max(1, settings.memory_top_k)
-    used = [(score, m) for score, m in scored if m.pinned]
+    used = [row for row in scored if row[2]]
     remaining = max(0, top_k - len(used))
-    used += [(score, m) for score, m in scored if not m.pinned][:remaining]
-    used.sort(key=lambda pair: pair[0], reverse=True)
+    used += [row for row in scored if not row[2]][:remaining]
+    used.sort(key=lambda row: row[0], reverse=True)
+    if not used:
+        return {"used": [], "error": None}
+
+    # Only now, for at most top_k rows, is the text worth fetching.
+    used_ids = [memory_id for _, memory_id, _ in used]
+    texts = dict(
+        db.execute(
+            select(models.Memory.id, models.Memory.text)
+            .where(models.Memory.id.in_(used_ids))
+        ).all()
+    )
 
     if update_stats:
-        now = models.utcnow()
-        for _, m in used:
-            m.use_count += 1
-            m.last_used_at = now
+        # synchronize_session=False: nothing in this request reads the counters
+        # back, and matching the UPDATE against loaded objects would mean having
+        # loaded them, which is the cost this whole path exists to avoid.
+        db.execute(
+            update(models.Memory)
+            .where(models.Memory.id.in_(used_ids))
+            .values(use_count=models.Memory.use_count + 1, last_used_at=models.utcnow())
+            .execution_options(synchronize_session=False)
+        )
 
     return {
         "used": [
-            {"id": m.id, "text": m.text, "similarity": round(score, 4), "pinned": m.pinned}
-            for score, m in used
+            {"id": memory_id, "text": texts.get(memory_id, ""),
+             "similarity": round(score, 4), "pinned": pinned}
+            for score, memory_id, pinned in used
         ],
         "error": None,
     }
@@ -391,8 +490,19 @@ async def _update_story_summary(
 async def _embed_pending(
     adventure: models.Adventure, settings: models.Settings, db: Session
 ) -> None:
-    pending = [m for m in adventure.memories if m.embedding is None and not m.forgotten]
-    pending = pending[:MAX_EMBED_BATCH]
+    # A query, not a walk of adventure.memories: this ran every turn and pulled
+    # the whole bank's vectors to find the handful that had none.
+    pending = (
+        db.query(models.Memory)
+        .filter(
+            models.Memory.adventure_id == adventure.id,
+            models.Memory.embedded.is_(False),
+            models.Memory.forgotten.is_(False),
+        )
+        .order_by(models.Memory.id)
+        .limit(MAX_EMBED_BATCH)
+        .all()
+    )
     if not pending:
         return
     try:
@@ -407,14 +517,35 @@ async def _embed_pending(
 def _evict_over_capacity(
     adventure: models.Adventure, settings: models.Settings, db: Session
 ) -> None:
-    active = [m for m in adventure.memories if not m.forgotten]
-    overflow = len(active) - max(1, settings.memory_bank_capacity)
+    # Counting and ranking are both things the database does without sending
+    # anything back. Walking adventure.memories to count them fetched every
+    # vector in the bank, every turn, whether or not anything was over capacity.
+    in_this_bank = (models.Memory.adventure_id == adventure.id,
+                    models.Memory.forgotten.is_(False))
+    active = db.execute(
+        select(func.count(models.Memory.id)).where(*in_this_bank)
+    ).scalar() or 0
+    overflow = active - max(1, settings.memory_bank_capacity)
     if overflow <= 0:
         return
-    evictable = sorted(
-        (m for m in active if not m.pinned),
-        key=lambda m: (m.use_count, m.last_used_at or m.created_at),
+    doomed = db.execute(
+        select(models.Memory.id)
+        .where(*in_this_bank, models.Memory.pinned.is_(False))
+        .order_by(
+            models.Memory.use_count,
+            func.coalesce(models.Memory.last_used_at, models.Memory.created_at),
+        )
+        .limit(overflow)
+    ).scalars().all()
+    if not doomed:
+        return  # every active memory is pinned; capacity yields to the pins
+    db.execute(
+        update(models.Memory)
+        .where(models.Memory.id.in_(doomed))
+        .values(forgotten=True)
+        .execution_options(synchronize_session=False)
     )
-    for memory in evictable[:overflow]:
-        memory.forgotten = True
     db.commit()
+    # The bulk UPDATE went around any loaded objects, so anything still holding
+    # the collection would see the evicted memories as active.
+    db.expire(adventure, ["memories"])

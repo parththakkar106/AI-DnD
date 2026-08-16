@@ -66,7 +66,7 @@ def test_pack_round_trips_exactly():
     that into JSON, so packing back to float32 must be lossless."""
     rng = random.Random(1)
     vector = sample_vector(rng)
-    assert vectors.unpack(vectors.pack(vector)) == vector
+    assert list(vectors.unpack(vectors.pack(vector))) == vector
 
 
 def test_packed_vector_is_four_bytes_per_dimension():
@@ -79,7 +79,18 @@ def test_packed_vector_is_four_bytes_per_dimension():
 
 def test_pack_handles_the_extremes():
     vector = [float32(v) for v in (0.0, -0.0, 1.0, -1.0, 3.4028234663852886e38, 1e-38)]
-    assert vectors.unpack(vectors.pack(vector)) == vector
+    assert list(vectors.unpack(vectors.pack(vector))) == vector
+
+
+def test_unpack_returns_a_compact_array():
+    """These are held in memory between turns, so the container matters: an
+    array("f") is the 4 bytes a component the column is, a list of Python
+    floats is eight times that."""
+    vector = sample_vector(random.Random(9))
+    unpacked = vectors.unpack(vectors.pack(vector))
+    assert unpacked.typecode == "f"
+    assert unpacked.itemsize == 4
+    assert len(unpacked) == len(vector)
 
 
 def test_pack_rounds_a_value_float32_cannot_hold():
@@ -113,7 +124,8 @@ def test_set_vector_writes_both_columns(db, adventure):
     db.expire_all()
 
     assert memory.embedding == vector
-    assert vectors.unpack(memory.embedding_blob) == vector
+    assert list(vectors.unpack(memory.embedding_blob)) == vector
+    assert memory.embedded is True
 
 
 def test_set_vector_none_clears_both(db, adventure):
@@ -130,6 +142,7 @@ def test_set_vector_none_clears_both(db, adventure):
 
     assert memory.embedding is None
     assert memory.embedding_blob is None
+    assert memory.embedded is False
 
 
 # --------------------------------------------------------------- the backfill
@@ -147,7 +160,7 @@ def seed_json_only(db, adventure, count: int, dims: int = 64) -> dict[int, list[
         db.flush()
         expected[memory.id] = vector
     db.commit()
-    db.execute(text("UPDATE memories SET embedding_blob = NULL"))
+    db.execute(text("UPDATE memories SET embedding_blob = NULL, embedded = false"))
     db.commit()
     return expected
 
@@ -160,7 +173,7 @@ def test_backfill_converts_every_existing_vector(db, adventure):
 
     db.expire_all()
     for memory in db.query(models.Memory).all():
-        assert vectors.unpack(memory.embedding_blob) == expected[memory.id]
+        assert list(vectors.unpack(memory.embedding_blob)) == expected[memory.id]
 
 
 def test_backfill_reaches_past_one_batch(db, adventure):
@@ -176,7 +189,7 @@ def test_backfill_reaches_past_one_batch(db, adventure):
     memories = db.query(models.Memory).all()
     assert len(memories) == count
     assert all(m.embedding_blob is not None for m in memories)
-    assert all(vectors.unpack(m.embedding_blob) == expected[m.id] for m in memories)
+    assert all(list(vectors.unpack(m.embedding_blob)) == expected[m.id] for m in memories)
 
 
 def test_backfill_leaves_unembedded_memories_alone(db, adventure):
@@ -225,29 +238,41 @@ def test_backfill_skips_a_malformed_row_without_stopping(db, adventure):
     db.expire_all()
     assert db.get(models.Memory, broken.id).embedding_blob is None
     for memory_id, vector in expected.items():
-        assert vectors.unpack(db.get(models.Memory, memory_id).embedding_blob) == vector
+        blob = db.get(models.Memory, memory_id).embedding_blob
+        assert list(vectors.unpack(blob)) == vector
 
 
 # ------------------------------------------------------- the upgrade in full
 
-def test_bootstrap_adds_the_column_and_backfills_it(db, adventure):
-    """The path a deployed database actually takes: sitting at 37 without the
-    column, then started on this build."""
+def test_bootstrap_adds_the_columns_and_backfills_them(db, adventure):
+    """The path a deployed database actually takes: sitting at 37 with neither
+    new column, then started on this build."""
     expected = seed_json_only(db, adventure, count=4)
+    unembedded = models.Memory(adventure_id=adventure.id, text="no vector yet")
+    db.add(unembedded)
+    db.commit()
+    unembedded_id = unembedded.id
     db.close()
 
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE memories DROP COLUMN embedding_blob"))
+        conn.execute(text("ALTER TABLE memories DROP COLUMN embedded"))
         conn.execute(text(f"PRAGMA user_version = {migrations.EMBEDDING_BLOB_VERSION - 1}"))
 
     migrations.bootstrap(engine)
 
     with engine.begin() as conn:
         assert conn.execute(text("PRAGMA user_version")).scalar() == migrations.LATEST_VERSION
-        rows = conn.execute(text("SELECT id, embedding_blob FROM memories")).all()
-    assert len(rows) == len(expected)
-    for row_id, blob in rows:
-        assert vectors.unpack(blob) == expected[row_id]
+        rows = conn.execute(text("SELECT id, embedding_blob, embedded FROM memories")).all()
+    by_id = {row[0]: (row[1], row[2]) for row in rows}
+    assert len(by_id) == len(expected) + 1
+    for memory_id, vector in expected.items():
+        blob, embedded = by_id[memory_id]
+        assert list(vectors.unpack(blob)) == vector
+        assert embedded
+    # The flag has to follow the vector, not the row: a memory that was never
+    # embedded must still read as not embedded afterwards.
+    assert by_id[unembedded_id] == (None, False)
 
 
 def test_migration_38_is_spelled_for_both_dialects():
