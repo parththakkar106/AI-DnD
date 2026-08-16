@@ -1097,8 +1097,9 @@ function ScriptReport({ script }) {
 const LEGEND_VISIBLE = 6 // enough to cover what actually moves the budget
 
 // Where the prompt's tokens actually went: one stacked bar scaled to the
-// budget (so leftover width IS the remaining headroom) plus a legend ordered
-// biggest-first, which is the order that answers "what is eating my context?".
+// budget (so leftover width IS the remaining headroom) plus a matching legend.
+// Bar and legend both run biggest-share-first — the order that answers "what is
+// eating my context?" — rather than the prompt order the sections below use.
 function TokenBreakdown({ sections, tokens, used, onJump }) {
   const [hovered, setHovered] = useState(null)
   const [expanded, setExpanded] = useState(false)
@@ -1108,10 +1109,10 @@ function TokenBreakdown({ sections, tokens, used, onJump }) {
   // prompt actually costs and the total line above it carries the warning.
   const scale = Math.max(budget, used)
   const free = Math.max(0, budget - used)
-  const filled = sections
+  const ranked = sections
     .map((s, i) => ({ ...s, i, pct: (s.tokens / used) * 100 }))
     .filter((s) => s.tokens > 0)
-  const ranked = [...filled].sort((a, b) => b.tokens - a.tokens)
+    .sort((a, b) => b.tokens - a.tokens)
   // The panel is narrow, so the legend is one column: list the sections that
   // actually move the budget and fold the long tail behind a count.
   const shown = expanded ? ranked : ranked.slice(0, LEGEND_VISIBLE)
@@ -1127,7 +1128,7 @@ function TokenBreakdown({ sections, tokens, used, onJump }) {
         role="img"
         aria-label={`Context breakdown: ${ranked.map(describe).join(', ')}`}
       >
-        {filled.map((s) => (
+        {ranked.map((s) => (
           <div
             key={s.i}
             className={`token-seg ${hovered !== null && hovered !== s.i ? 'faded' : ''}`}
