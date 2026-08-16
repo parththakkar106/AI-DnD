@@ -51,7 +51,39 @@ const SECTION_LABELS = {
   authors_note: "Author's Note",
   recent_history: 'Recent history',
   front_memory: 'Front memory',
+  length_hint: 'Length guidance',
+  world_state_reminder: 'World State (emit reminder)',
 }
+
+// One colour per context section, and the single source of truth for it: the
+// token bar, the legend and each section's own header all read from here, so a
+// slice of the bar and the text it stands for always carry the same colour.
+// Related sections share a hue family but never an exact shade — in a stacked
+// bar two identical colours read as one section.
+const SECTION_COLORS = {
+  narrator: '#7d8fc9',
+  ai_instructions: '#9c8fd6',
+  plot_essentials: '#c97dc0',
+  script_context: '#d99ad0',
+  story_summary: '#7dc9a2',
+  used_memories: '#5fb8c9',
+  world_lore: '#c9b47d',
+  world_state: '#d79a63',
+  world_state_guide: '#b8834a',
+  world_state_rule: '#9d7a52',
+  world_state_reminder: '#8a6f52',
+  history: '#74748c',
+  recent_history: '#9d9db4',
+  authors_note: '#c97d7d',
+  front_memory: '#d99a9a',
+  length_hint: '#98a06b',
+}
+const SECTION_FALLBACK = '#6a6a78'
+const sectionColor = (label) => SECTION_COLORS[label] || SECTION_FALLBACK
+
+// Share of the prompt, rounded for glanceability. Sections too small to round
+// to a whole percent still say so rather than showing a misleading 0%.
+const pctLabel = (pct) => (pct > 0 && pct < 1 ? '<1%' : `${Math.round(pct)}%`)
 
 const FIELD_LABELS = {
   memory: 'Plot Essentials (Memory)',
@@ -1044,17 +1076,104 @@ function ScriptReport({ script }) {
       )}
       {script.context_changed && (
         <>
-          <div className="ctx-section ctx-script_context">
-            <div className="ctx-header"><span>Context before script</span></div>
+          <div className="ctx-section" style={{ borderLeftColor: sectionColor('script_context') }}>
+            <div className="ctx-header" style={{ color: sectionColor('script_context') }}>
+              <span>Context before script</span>
+            </div>
             <pre>{script.context_before}</pre>
           </div>
-          <div className="ctx-section ctx-script_context">
-            <div className="ctx-header"><span>Context after script (sent to AI)</span></div>
+          <div className="ctx-section" style={{ borderLeftColor: sectionColor('script_context') }}>
+            <div className="ctx-header" style={{ color: sectionColor('script_context') }}>
+              <span>Context after script (sent to AI)</span>
+            </div>
             <pre>{script.context_after}</pre>
           </div>
         </>
       )}
     </div>
+  )
+}
+
+const LEGEND_VISIBLE = 6 // enough to cover what actually moves the budget
+
+// Where the prompt's tokens actually went: one stacked bar scaled to the
+// budget (so leftover width IS the remaining headroom) plus a legend ordered
+// biggest-first, which is the order that answers "what is eating my context?".
+function TokenBreakdown({ sections, tokens, used, onJump }) {
+  const [hovered, setHovered] = useState(null)
+  const [expanded, setExpanded] = useState(false)
+  if (used <= 0) return null
+  const budget = tokens.budget || 0
+  // Over budget there is no headroom to draw, so the bar scales to what the
+  // prompt actually costs and the total line above it carries the warning.
+  const scale = Math.max(budget, used)
+  const free = Math.max(0, budget - used)
+  const filled = sections
+    .map((s, i) => ({ ...s, i, pct: (s.tokens / used) * 100 }))
+    .filter((s) => s.tokens > 0)
+  const ranked = [...filled].sort((a, b) => b.tokens - a.tokens)
+  // The panel is narrow, so the legend is one column: list the sections that
+  // actually move the budget and fold the long tail behind a count.
+  const shown = expanded ? ranked : ranked.slice(0, LEGEND_VISIBLE)
+  const rest = ranked.slice(shown.length)
+  const restPct = rest.reduce((n, s) => n + s.pct, 0)
+  const describe = (s) =>
+    `${SECTION_LABELS[s.label] || s.label} — ${s.tokens} tok · ${pctLabel(s.pct)}`
+
+  return (
+    <>
+      <div
+        className={`token-split ${tokens.total > budget ? 'over' : ''}`}
+        role="img"
+        aria-label={`Context breakdown: ${ranked.map(describe).join(', ')}`}
+      >
+        {filled.map((s) => (
+          <div
+            key={s.i}
+            className={`token-seg ${hovered !== null && hovered !== s.i ? 'faded' : ''}`}
+            style={{ width: `${(s.tokens / scale) * 100}%`, background: sectionColor(s.label) }}
+            title={describe(s)}
+            onMouseEnter={() => setHovered(s.i)}
+            onMouseLeave={() => setHovered(null)}
+          />
+        ))}
+        {free > 0 && (
+          <div
+            className="token-seg token-seg-free"
+            style={{ width: `${(free / scale) * 100}%` }}
+            title={`${free} tokens of budget unused`}
+          />
+        )}
+      </div>
+      <div className="token-legend">
+        {shown.map((s) => (
+          <button
+            key={s.i}
+            type="button"
+            className={`token-legend-item ${hovered !== null && hovered !== s.i ? 'faded' : ''}`}
+            title={`${describe(s)} — click to jump to this section`}
+            onMouseEnter={() => setHovered(s.i)}
+            onMouseLeave={() => setHovered(null)}
+            onClick={() => onJump(s.i)}
+          >
+            <span className="token-swatch" style={{ background: sectionColor(s.label) }} />
+            <span className="token-legend-name">{SECTION_LABELS[s.label] || s.label}</span>
+            <span className="token-legend-pct">{pctLabel(s.pct)}</span>
+            <span className="token-legend-tok">{s.tokens}</span>
+          </button>
+        ))}
+        {rest.length > 0 && (
+          <button type="button" className="token-legend-more" onClick={() => setExpanded(true)}>
+            + {rest.length} smaller {rest.length === 1 ? 'section' : 'sections'} ({pctLabel(restPct)})
+          </button>
+        )}
+        {expanded && ranked.length > LEGEND_VISIBLE && (
+          <button type="button" className="token-legend-more" onClick={() => setExpanded(false)}>
+            Show less
+          </button>
+        )}
+      </div>
+    </>
   )
 }
 
@@ -1079,6 +1198,12 @@ function InsightsPanel({ advId, inspectActionId, onClearInspect, refreshKey }) {
 
   const { tokens, cards, history, sections } = report
   const overBudget = tokens.total > tokens.budget
+  // The per-section sum, not tokens.total: the total also counts the separators
+  // between sections, and percentages have to add up to 100 for the reader.
+  const sectionTotal = sections.reduce((n, s) => n + s.tokens, 0)
+  const jumpToSection = (i) => {
+    document.getElementById(`ctx-sec-${i}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
 
   return (
     <div className="insights">
@@ -1094,10 +1219,12 @@ function InsightsPanel({ advId, inspectActionId, onClearInspect, refreshKey }) {
         <div className={`token-total ${overBudget ? 'over' : ''}`}>
           {tokens.total} / {tokens.budget} tokens
         </div>
-        <div className="token-bar">
-          <div className="token-bar-fill"
-            style={{ width: `${Math.min(100, (tokens.total / tokens.budget) * 100)}%` }} />
-        </div>
+        <TokenBreakdown
+          sections={sections}
+          tokens={tokens}
+          used={sectionTotal}
+          onJump={jumpToSection}
+        />
         <div className="insights-history">
           History: {history.included} of {history.total} actions in context
           {history.total > history.included && ' (older history trimmed)'}
@@ -1132,10 +1259,18 @@ function InsightsPanel({ advId, inspectActionId, onClearInspect, refreshKey }) {
       </div>
 
       {sections.map((s, i) => (
-        <div key={i} className={`ctx-section ctx-${s.label}`}>
-          <div className="ctx-header">
+        <div
+          key={i}
+          id={`ctx-sec-${i}`}
+          className={`ctx-section ctx-${s.label}`}
+          style={{ borderLeftColor: sectionColor(s.label) }}
+        >
+          <div className="ctx-header" style={{ color: sectionColor(s.label) }}>
             <span>{SECTION_LABELS[s.label] || s.label}</span>
-            <span>{s.tokens} tok</span>
+            <span>
+              {s.tokens} tok
+              {sectionTotal > 0 && ` · ${pctLabel((s.tokens / sectionTotal) * 100)}`}
+            </span>
           </div>
           <pre>{s.text}</pre>
         </div>
