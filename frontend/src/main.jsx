@@ -11,7 +11,10 @@ import Scripts from './pages/Scripts.jsx'
 import ScriptEditor from './pages/ScriptEditor.jsx'
 import Settings from './pages/Settings.jsx'
 import Chat from './pages/Chat.jsx'
+import { trackKeyboardInset } from './keyboard.js'
 import './index.css'
+
+trackKeyboardInset()
 
 const router = createBrowserRouter([
   {

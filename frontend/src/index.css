@@ -301,7 +301,16 @@ button:disabled { opacity: 0.45; cursor: default; transform: none; box-shadow: n
 
 /* ---------- Play page ---------- */
 
-.play-page { display: flex; flex-direction: column; min-height: calc(100dvh - 56px); }
+.play-page {
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100dvh - 56px);
+  /* Room to scroll the last beat clear of a composer lifted by the keyboard
+     (see --kb-inset in keyboard.js); 0 on desktop and on browsers that shrink
+     the layout viewport themselves. Margin, not padding — .page already sets
+     padding and a longhand here would drop its bottom gutter. */
+  margin-bottom: var(--kb-inset, 0px);
+}
 
 /* Keep the Plot/Memory/Scripts/Insights toggles reachable while the story
    scrolls — pin the header just below the 56px top nav. */
@@ -446,7 +455,9 @@ button:disabled { opacity: 0.45; cursor: default; transform: none; box-shadow: n
 
 .play-controls {
   position: sticky;
-  bottom: 0;
+  /* Sits on the keyboard's top edge when one is open, on the viewport bottom
+     otherwise — --kb-inset is 0 unless a virtual keyboard is covering us. */
+  bottom: var(--kb-inset, 0px);
   background: linear-gradient(to top, var(--bg) 75%, transparent);
   padding: 18px 0 16px;
   border-top: 1px solid var(--border);
@@ -1952,7 +1963,12 @@ button.primary.compact { padding: 3px 12px; font-size: 0.76rem; margin-left: aut
    A plain chat scratchpad, styled as a transcript rather than as the story
    page: UI font, role labels, and a sticky composer at the bottom. */
 
-.chat-page { max-width: 820px; display: flex; flex-direction: column; }
+.chat-page {
+  max-width: 820px;
+  display: flex;
+  flex-direction: column;
+  margin-bottom: var(--kb-inset, 0px); /* see .play-page */
+}
 .chat-meta {
   font-size: 0.78rem;
   margin: -10px 0 16px;
@@ -2024,7 +2040,7 @@ button.primary.compact { padding: 3px 12px; font-size: 0.76rem; margin-left: aut
 
 .chat-composer {
   position: sticky;
-  bottom: 0;
+  bottom: var(--kb-inset, 0px); /* clears the on-screen keyboard — see .play-controls */
   display: flex;
   gap: 10px;
   align-items: flex-end;
