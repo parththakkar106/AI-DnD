@@ -1,5 +1,8 @@
 # AI D&D — Local AI Dungeon Clone: Plan Overview
 
+> **[STATUS.md](STATUS.md) — where things stand and what to pick up next.** Read that
+> first; this file is the shape of the project, not its current state.
+
 A locally hosted web app replicating AI Dungeon's core experience: scenarios, adventures,
 AI-driven storytelling, AI Dungeon-style memory/context management, JavaScript scripting
 (compatible with real AI Dungeon scripts), and full transparency into what is sent to the AI.
@@ -109,3 +112,11 @@ Open questions are recorded at the top of each phase file under "Ask before impl
   + milestones per scenario (`stat_schema`); the AI proposes deltas, a Python engine clamps them
   (min/max, per-turn cap, cooldown, sticky milestones); band descriptions keep the model honest;
   World State drawer + Insights delta report; reuses the Phase 11 undo/retry snapshot.
+- **[Memory-bank embedding cost](13-memory-embedding-cost.md)** *(round three of the egress
+  work)*: a turn fetched the whole memory bank's vectors to pick five — 96% of everything it
+  read. Packed float32 + an in-process cache + SQL-side filtering; a played turn went 6.4 MB
+  to 123 kB. Includes the byte-meter harness (`backend/tools/`). One step left, see STATUS.
+- **[Phase 14 — Story tree](14-phase-story-tree.md)** *(designed, not started)*: the linear
+  action list becomes a branching tree, so a retry is a sibling rather than a rewrite and both
+  paths survive. The real argument is bug elimination — seven bug classes trace to "the story
+  is a mutable list" and all disappear when nothing is rewritten in place.
