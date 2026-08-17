@@ -7,16 +7,22 @@ call sites: a node written without a branch is a node no read can see, and it
 fails by disappearing rather than by raising.
 
 The read half — the lineage clause that turns a branch into "this story" —
-lands beside it in SP2 (`context/lineage.py`). Nothing here is read yet.
+lives beside it in `context/lineage.py`.
 
 Until forking ships there is exactly one branch per adventure and `depth` is
 the number `index` already held, so everything in this module is bookkeeping
 that changes nothing observable. That is the point: by the time a read depends
 on these columns, every row has them — including the rows written between the
 two deploys, which no migration will ever visit.
+
+SP2 added `place_new_nodes`, which the session calls on every flush. Wiring the
+call sites was enough while nothing read the columns; now that reads select on
+them, "every writer remembers" is a promise that has to hold for every fixture,
+script and test ever written too, and its breach is a story quietly missing
+turns. So the invariant is enforced at the flush instead of asked for.
 """
 
-from sqlalchemy import func
+from sqlalchemy import func, insert, update
 from sqlalchemy.orm import Session
 
 from . import models
@@ -45,12 +51,26 @@ def root_branch(db: Session, adventure: models.Adventure) -> models.Branch:
     )
     if branch is not None:
         return branch
-    branch = models.Branch(adventure_id=adventure.id, lineage=[])
-    db.add(branch)
-    # The lineage names the branch's own id, so the row has to exist first.
-    db.flush()
-    branch.lineage = [[branch.id, None]]
-    return branch
+    # Inserted through Core rather than through the unit of work, because this
+    # also runs from `place_new_nodes` inside a flush, and a nested ORM flush
+    # inside a flush raises. Same transaction either way, so it rolls back with
+    # everything else. The lineage names the branch's own id, so it takes a
+    # second statement — once per adventure, ever.
+    new_id = db.execute(
+        insert(models.Branch).values(
+            adventure_id=adventure.id,
+            parent_branch_id=None,
+            fork_depth=None,
+            lineage=[],
+            created_at=models.utcnow(),
+        )
+    ).inserted_primary_key[0]
+    db.execute(
+        update(models.Branch)
+        .where(models.Branch.id == new_id)
+        .values(lineage=[[new_id, None]])
+    )
+    return db.get(models.Branch, new_id)
 
 
 def head_branch(db: Session, adventure: models.Adventure) -> models.Branch:
@@ -81,7 +101,7 @@ def place_action(
     if action.depth is None:
         action.depth = action.index
     adventure.head_branch_id = branch.id
-    if action.depth > adventure.head_depth:
+    if action.depth is not None and action.depth > adventure.head_depth:
         adventure.head_depth = action.depth
     return branch
 
@@ -100,6 +120,34 @@ def place_memory(
     if memory.depth is None and memory.source_end is not None:
         memory.depth = memory.source_end
     return branch
+
+
+def place_new_nodes(session: Session) -> None:
+    """Place every unplaced node about to be inserted. Runs on every flush.
+
+    The call sites still call `place_action` / `place_memory` themselves, and
+    should: a node placed at the call site is placed *before* the code around
+    it reads the row back, and the explicit call is what makes the ordering
+    visible. This is the floor under them — a fixture built straight through
+    the ORM, a script, a test, or a call site added next year gets a branch
+    without knowing the tree exists.
+
+    Nodes whose adventure has not been inserted yet are left alone: there is no
+    id to hang a branch off, and an Action needs `adventure_id` to be written
+    at all, so the case does not arise from any writer we have.
+    """
+    for obj in list(session.new):
+        if isinstance(obj, models.Action):
+            place = place_action
+        elif isinstance(obj, models.Memory):
+            place = place_memory
+        else:
+            continue
+        if obj.branch_id is not None or obj.adventure_id is None:
+            continue
+        adventure = session.get(models.Adventure, obj.adventure_id)
+        if adventure is not None:
+            place(session, adventure, obj)
 
 
 def refresh_head(db: Session, adventure: models.Adventure) -> None:

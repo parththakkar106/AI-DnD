@@ -207,6 +207,12 @@ def check_row_cap(
             "delete some to make room",
         )
     elif kind == "actions":
+        # Every action of the adventure — the whole tree, not the path being
+        # played. That is the number that costs storage, and nothing is ever
+        # auto-pruned, so it is the right one to cap on. It does mean a heavily
+        # branched adventure reaches the cap while its *story* is shorter than
+        # the cap, which is why the message counts "actions in this adventure"
+        # rather than turns.
         count = _count(db, models.Action, models.Action.adventure_id == adventure.id)
         cap, subject, hint = (
             MAX_ACTIONS_PER_ADVENTURE, "actions in this adventure",

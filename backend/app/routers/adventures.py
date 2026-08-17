@@ -12,6 +12,7 @@ from sqlalchemy.orm.attributes import set_committed_value
 from .. import auth, images, limits, memorybank, models, schemas, tree, worldstate
 from ..context import build_context
 from ..context import history as context_history
+from ..context import lineage
 from ..database import get_db
 from ..providers import OpenAICompatibleProvider, PromptParts, ProviderError
 from ..scripting import ScriptPipeline
@@ -56,7 +57,7 @@ ACTION_PAGE = 60
 
 def action_window(
     db: Session,
-    adventure_id: int,
+    adventure: models.Adventure,
     before_id: int | None = None,
     limit: int = ACTION_PAGE,
 ) -> tuple[list[models.Action], int, bool]:
@@ -64,50 +65,56 @@ def action_window(
 
     Returns (actions, total, has_more). `before_id=None` is the newest window.
 
-    Anchored on an action, not on a count, and never on arithmetic over
-    `Action.index`. Two separate reasons, and both bite:
+    Scoped to the story being played — the head branch's lineage — rather than
+    to the adventure, so a sibling branch's turns can never appear in the
+    transcript. `total` counts the same path, because it is what tells the
+    reader there is more above.
+
+    Anchored on an action, not on a count, and never on arithmetic over depth.
+    Two separate reasons, and both bite:
 
     * **Appends.** Counting back from the newest means every older position
       shifts when a turn lands. A reader who scrolls up while a turn is
       generating would be handed a window one row out — re-sending one action
       and silently skipping another. An anchor is fixed: "older than this one"
       means the same thing before and after the story grows.
-    * **The story tree.** Index is a dense 0..n sequence today and branching
-      ends that. Comparing indices to order a branch survives; treating them as
-      positions does not.
+    * **The story tree.** Depth is dense today and branching ends that.
+      Comparing depths to order a path survives; treating them as positions
+      does not.
 
     `has_more` comes from asking for one row past the window rather than from
     counting, so it costs a row and not a scan.
     """
-    total = (
-        db.query(func.count(models.Action.id))
-        .filter(models.Action.adventure_id == adventure_id)
-        .scalar()
+    path = lineage.path_of(db, adventure)
+    on_path = (
+        models.Action.adventure_id == adventure.id,
+        path.clause(models.Action),
     )
+    total = db.query(func.count(models.Action.id)).filter(*on_path).scalar()
     if limit <= 0:
         return [], total, total > 0
 
-    query = (
-        db.query(models.Action)
-        .options(load_only(*ACTION_LIST_COLUMNS))
-        .filter(models.Action.adventure_id == adventure_id)
-    )
+    query = db.query(models.Action).options(load_only(*ACTION_LIST_COLUMNS)).filter(*on_path)
     if before_id is not None:
         anchor = (
-            db.query(models.Action.index)
-            .filter(models.Action.id == before_id,
-                    models.Action.adventure_id == adventure_id)
+            db.query(models.Action.depth)
+            .filter(models.Action.id == before_id, *on_path)
             .scalar()
         )
         if anchor is None:
             # The anchor was deleted (undo, or a turn edited away) while the
-            # reader was scrolling. Nothing older can be identified relative to
-            # a row that no longer exists, so report the end rather than
-            # guessing and handing back a duplicate page.
+            # reader was scrolling, or it belongs to a story this branch is not
+            # on. Nothing older can be identified relative to a row that is not
+            # here, so report the end rather than guessing and handing back a
+            # duplicate page.
             return [], total, False
-        query = query.filter(models.Action.index < anchor)
+        query = query.filter(models.Action.depth < anchor)
 
-    rows = query.order_by(models.Action.index.desc()).limit(limit + 1).all()
+    rows = (
+        query.order_by(models.Action.depth.desc(), models.Action.id.desc())
+        .limit(limit + 1)
+        .all()
+    )
     has_more = len(rows) > limit
     rows = rows[:limit]
     rows.reverse()
@@ -163,13 +170,21 @@ def _snippet(text: str) -> str:
 NARRATION_TYPES = ("ai", "story", "start")
 
 
-def _latest_narration(db: Session, adventure_ids: list[int]) -> dict[int, str]:
+def _latest_narration(db: Session, head_branches: dict[int, int | None]) -> dict[int, str]:
     """Map adventure id -> text of its most recent narrated action.
 
     One window-function query rather than a per-adventure lookup, so the list
     endpoint stays at a fixed number of round trips.
+
+    Scoped by head *branch* rather than by the full lineage, which is the one
+    place in the codebase that is allowed to be: a lineage clause per adventure
+    would put a hundred OR-terms on the index screen's query to pick one row
+    each. The two answers differ only for a branch with no nodes of its own,
+    and a branch is created by playing a turn onto it, so that state does not
+    exist. An adventure with no branch at all has no story to quote.
     """
-    if not adventure_ids:
+    branch_ids = [b for b in head_branches.values() if b is not None]
+    if not branch_ids:
         return {}
     ranked = (
         db.query(
@@ -178,12 +193,13 @@ def _latest_narration(db: Session, adventure_ids: list[int]) -> dict[int, str]:
             func.row_number()
             .over(
                 partition_by=models.Action.adventure_id,
-                order_by=(models.Action.index.desc(), models.Action.id.desc()),
+                order_by=(models.Action.depth.desc(), models.Action.id.desc()),
             )
             .label("rank"),
         )
         .filter(
-            models.Action.adventure_id.in_(adventure_ids),
+            models.Action.adventure_id.in_(list(head_branches)),
+            models.Action.branch_id.in_(branch_ids),
             models.Action.type.in_(NARRATION_TYPES),
         )
         .subquery()
@@ -206,6 +222,7 @@ def list_adventures(db: Session = Depends(get_db), user: models.User = CurrentUs
             models.Adventure.scenario_id,
             models.Adventure.title,
             models.Adventure.updated_at,
+            models.Adventure.head_branch_id,
             func.count(models.Action.id),
             models.Scenario.title,
             models.Scenario.image,
@@ -230,7 +247,7 @@ def list_adventures(db: Session = Depends(get_db), user: models.User = CurrentUs
         .order_by(models.Adventure.updated_at.desc())
         .all()
     )
-    narration = _latest_narration(db, [row[0] for row in rows])
+    narration = _latest_narration(db, {row[0]: row[4] for row in rows})
     return [
         schemas.AdventureListItem(
             id=adv_id,
@@ -245,7 +262,11 @@ def list_adventures(db: Session = Depends(get_db), user: models.User = CurrentUs
             image_url=images.public_url(scenario_id, image or "", scenario_updated),
             icon=icon or "",
         )
-        for (adv_id, scenario_id, title, updated_at, count,
+        # `count` is every action of the adventure, not of the path. Under one
+        # branch they are the same number; once forking ships the index screen
+        # will overstate a story that has siblings hanging off it, and the fix
+        # belongs with SP5, where a fork can first exist.
+        for (adv_id, scenario_id, title, updated_at, _head_branch_id, count,
              scenario_title, image, icon, scenario_updated) in rows
     ]
 
@@ -385,7 +406,7 @@ def get_adventure(
     from GET /{id}/actions as they scroll up.
     """
     adventure = get_adventure_or_404(adventure_id, db, user)
-    actions, total, _ = action_window(db, adventure_id)
+    actions, total, _ = action_window(db, adventure)
     # Hand the response the window as if the relationship had loaded it.
     # `set_committed_value` is the only way to do this safely: assigning
     # `adventure.actions = [...]` marks the collection dirty, and the
@@ -636,13 +657,19 @@ def next_index(adventure: models.Adventure) -> int:
 
 
 def last_action(adventure: models.Adventure, db: Session) -> models.Action | None:
-    """The newest action of any kind, or None. A query rather than
-    `adventure.actions[-1]`, which would load the entire story to look at
-    one row."""
+    """The newest action of any kind on the story being played, or None.
+
+    A query rather than `adventure.actions[-1]`, which would load the entire
+    story to look at one row — and, since that collection is every branch's
+    actions, would sometimes look at the wrong one.
+    """
     return (
         db.query(models.Action)
-        .filter(models.Action.adventure_id == adventure.id)
-        .order_by(models.Action.index.desc())
+        .filter(
+            models.Action.adventure_id == adventure.id,
+            lineage.path_of(db, adventure).clause(models.Action),
+        )
+        .order_by(models.Action.depth.desc(), models.Action.id.desc())
         .first()
     )
 
@@ -1061,8 +1088,11 @@ def undo_turn(
         # consist of rather than the whole story.
         newest = (
             db.query(models.Action)
-            .filter(models.Action.adventure_id == adventure.id)
-            .order_by(models.Action.index.desc())
+            .filter(
+                models.Action.adventure_id == adventure.id,
+                lineage.path_of(db, adventure).clause(models.Action),
+            )
+            .order_by(models.Action.depth.desc(), models.Action.id.desc())
             .limit(2)
             .all()
         )
@@ -1093,7 +1123,7 @@ def undo_turn(
         # transcript with this, and the transcript is a window now. Returning
         # everything here would undo the paging on the one action most likely
         # to be repeated several times in a row.
-        actions, total, has_more = action_window(db, adventure_id)
+        actions, total, has_more = action_window(db, adventure)
         return schemas.ActionPage(
             actions=[schemas.ActionOut.model_validate(a) for a in actions],
             total=total,
@@ -1704,10 +1734,10 @@ def list_actions(
     is "give me what comes before this". Omit it for the newest window. See
     action_window for why this anchors on a row rather than an offset.
     """
-    get_adventure_or_404(adventure_id, db, user)
+    adventure = get_adventure_or_404(adventure_id, db, user)
     limit = max(1, min(limit, ACTION_PAGE * 4))
     actions, total, has_more = action_window(
-        db, adventure_id, before_id=before_id, limit=limit
+        db, adventure, before_id=before_id, limit=limit
     )
     return schemas.ActionPage(
         actions=[schemas.ActionOut.model_validate(a) for a in actions],

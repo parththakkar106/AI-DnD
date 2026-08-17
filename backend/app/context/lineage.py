@@ -1,0 +1,191 @@
+"""Phase 14 — which nodes are "this story".
+
+`tree.py` decides where a node is written. This module is the other half: it
+decides which nodes a read can see, and it is the **only** place that knows.
+
+A branch owns the nodes played on it and *borrows* everything before its fork
+point from its ancestors, so "the story on branch C" is not a column you can
+filter on — it is an OR of ranges::
+
+    (branch_id = C)                 -- C's own nodes, to the tip
+    OR (branch_id = B AND depth <= 5)
+    OR (branch_id = A AND depth <= 3)
+
+which is exactly what `branches.lineage` spells out, newest first, computed
+once when the fork happens. Reads never walk parent pointers to rebuild it.
+
+Two properties fall out of the shape, and both are load-bearing:
+
+* **The ranges are disjoint and descending.** A branch's own nodes always sit
+  deeper than its fork point, and each lineage entry is capped at the fork
+  depth of the branch beneath it. So ordering the whole clause by `depth`
+  descending is the same as reading entry 0's nodes, then entry 1's, then
+  entry 2's — which is what lets a tail read use only the newest few entries
+  and stop.
+* **Clause count is bounded by the context window, not by fork count.** A
+  200-fork story whose newest branch is 40 turns long reads with one clause,
+  because the window is covered before the second entry is reached. That is
+  `prefix_covering`, and it is why `history.window_covering` can keep its shape.
+
+Everything here is a read. Nothing in this module creates a branch or writes a
+row: an adventure with no branch has no story, and healing that is the write
+side's job (`tree.place_action`, and the flush guard in `models.py` behind it).
+"""
+
+from sqlalchemy import and_, false, or_
+from sqlalchemy.orm import Session
+
+from .. import models
+
+# The depth of an adventure with no actions. Mirrors tree.NO_DEPTH; kept
+# separately so a read never has to import the write half.
+NO_DEPTH = -1
+
+
+def entries_of(branch: models.Branch) -> list[tuple[int, int | None]]:
+    """`branch.lineage` as (branch_id, max_depth) pairs, newest first.
+
+    An empty lineage reads as "this branch alone, to its tip" rather than as an
+    error. That is what a root branch's lineage means, and it is what a branch
+    row looks like in the moment between being inserted and having its own id
+    to name — so the fallback is the truth, not a guess.
+    """
+    raw = branch.lineage if isinstance(branch.lineage, list) else []
+    entries: list[tuple[int, int | None]] = []
+    for item in raw:
+        # JSON round-trips lists; a hand-written row might hold tuples.
+        if not isinstance(item, (list, tuple)) or not item:
+            continue
+        branch_id = item[0]
+        max_depth = item[1] if len(item) > 1 else None
+        if not isinstance(branch_id, int):
+            continue
+        entries.append((branch_id, max_depth if isinstance(max_depth, int) else None))
+    return entries or [(branch.id, None)]
+
+
+class Path:
+    """One story, as a clause and as a predicate.
+
+    Holds the lineage entries newest first, plus the depth of the tip, which is
+    only used to estimate how much story each entry covers.
+    """
+
+    def __init__(self, entries: list[tuple[int, int | None]], tip: int | None = None):
+        self.entries = entries
+        self.tip = tip
+
+    def __bool__(self) -> bool:
+        return bool(self.entries)
+
+    def __len__(self) -> int:
+        return len(self.entries)
+
+    # ---------------------------------------------------------------- SQL
+
+    def clause(self, model=models.Action, count: int | None = None):
+        """The branch clause, over `model` (`Action` or `Memory`).
+
+        `count` limits it to the newest `count` lineage entries — the windowed
+        read. `None` is the whole lineage, which is what anything counting from
+        the *oldest* end (a slice, a total) has to use.
+
+        An empty path yields `false`, not "no filter": an adventure whose nodes
+        carry no branch has no story, and the loud version of that is an empty
+        page, not every branch at once.
+        """
+        entries = self.entries if count is None else self.entries[:count]
+        if not entries:
+            return false()
+        return or_(*[self._entry_clause(model, b, d) for b, d in entries])
+
+    @staticmethod
+    def _entry_clause(model, branch_id: int, max_depth: int | None):
+        if max_depth is None:
+            return model.branch_id == branch_id
+        return and_(model.branch_id == branch_id, model.depth <= max_depth)
+
+    # ------------------------------------------------------------- Python
+
+    def contains(self, node) -> bool:
+        """The Python half of `clause()` — keep the two in step.
+
+        Used where the rows are already in memory (the scripting pipeline hands
+        user scripts the whole history), so an already-loaded collection can be
+        cut down to the path without a second read.
+        """
+        for branch_id, max_depth in self.entries:
+            if node.branch_id != branch_id:
+                continue
+            if max_depth is None:
+                return True
+            if node.depth is not None and node.depth <= max_depth:
+                return True
+        return False
+
+    def sort_key(self, node) -> tuple[int, int]:
+        """Oldest-first ordering. `depth` is the ordering key; `id` breaks the
+        tie a pre-tree row (depth NULL) or a future sibling pair would leave."""
+        return (node.depth if node.depth is not None else NO_DEPTH, node.id or 0)
+
+    # ------------------------------------------------------------ windowing
+
+    def prefix_covering(self, rows: int) -> int:
+        """How many lineage entries it takes to hold the newest `rows` nodes.
+
+        An estimate from depth arithmetic, not a query: entry *i* covers the
+        depths between its own cap and the cap of the entry below it, and there
+        is at most one node per depth on a path. So the count it returns is
+        never too many, and is too few only where the story has gaps — an
+        action deleted from the middle. The caller widens to the full lineage
+        if the window comes up short, which costs a second query on a story
+        somebody has deleted from, and nothing at all otherwise.
+        """
+        total = len(self.entries)
+        if rows <= 0 or total == 0:
+            return total
+        covered = 0
+        for i, (_, max_depth) in enumerate(self.entries):
+            top = self.tip if max_depth is None else max_depth
+            below = self.entries[i + 1][1] if i + 1 < total else NO_DEPTH
+            if top is None or below is None:
+                # No tip recorded, or a cap missing from a hand-written row:
+                # nothing to estimate from, so read the lot rather than guess
+                # short and hide the older half of the story.
+                return total
+            covered += max(top - below, 0)
+            if covered >= rows:
+                return i + 1
+        return total
+
+
+def branch_of(db: Session, adventure: models.Adventure) -> models.Branch | None:
+    """The branch this adventure is being read at, or None if it has none.
+
+    Deliberately not `tree.head_branch`, which creates one: a GET must not
+    write. An adventure with no branch row also has no nodes carrying a branch,
+    so the two agree — both say "no story here".
+    """
+    if adventure.head_branch_id is not None:
+        branch = db.get(models.Branch, adventure.head_branch_id)
+        if branch is not None:
+            return branch
+        # A head naming a branch that is gone: fall through to the root, the
+        # same recovery `tree.head_branch` makes on the write side.
+    return (
+        db.query(models.Branch)
+        .filter(
+            models.Branch.adventure_id == adventure.id,
+            models.Branch.parent_branch_id.is_(None),
+        )
+        .order_by(models.Branch.id)
+        .first()
+    )
+
+
+def path_of(db: Session, adventure: models.Adventure) -> Path:
+    """The story the adventure's head is currently on."""
+    branch = branch_of(db, adventure)
+    if branch is None:
+        return Path([], adventure.head_depth)
+    return Path(entries_of(branch), adventure.head_depth)
