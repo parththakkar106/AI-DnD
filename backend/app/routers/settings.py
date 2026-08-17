@@ -51,14 +51,26 @@ def update_settings(
         # Vectors from the old model have a different dimensionality/space;
         # clear them so the post-turn task re-embeds with the new model.
         # (This user's adventures only — settings are per-user now.)
+        #
+        # Both columns, and the flag. This is the one place that clears vectors
+        # in bulk rather than through memorybank.set_vector, and when the
+        # vectors moved to embedding_blob it kept nulling the old JSON column
+        # alone: the blob survived, `embedded` stayed true, and _embed_pending
+        # — which looks for embedded IS FALSE — never picked the rows up. The
+        # bank went on ranking against the previous model's vectors forever.
         owned = (
             db.query(models.Adventure.id)
             .filter(models.Adventure.user_id == user.id)
             .scalar_subquery()
         )
         db.query(models.Memory).filter(models.Memory.adventure_id.in_(owned)).update(
-            {"embedding": None}, synchronize_session=False
+            {"embedding_blob": None, "embedded": False}, synchronize_session=False
         )
+        # No cache invalidation needed, and deliberately none added: clearing
+        # `embedded` drops these rows out of the catalogue query, so retrieval
+        # stops asking for them, and by the time _embed_pending puts one back
+        # it has gone through set_vector, which evicts that entry. The rule
+        # holds — anything that removes a memory from play self-corrects.
     db.commit()
     return settings
 

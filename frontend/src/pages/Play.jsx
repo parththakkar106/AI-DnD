@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate, useParams } from 'react-router-dom'
 import { api } from '../api'
@@ -1310,10 +1310,20 @@ export default function Play() {
   // Read-only browsing of an earlier attempt at a past turn (see VariantPager).
   // One at a time; null when every message is showing its active version.
   const [preview, setPreview] = useState(null)
+  // The transcript is a window on the story, not the whole of it: the page
+  // load brings the newest page and older ones arrive as the reader scrolls
+  // up. `total` is the story's real length, for the "N earlier" line.
+  const [total, setTotal] = useState(0)
+  const [hasMore, setHasMore] = useState(false)
+  const [loadingOlder, setLoadingOlder] = useState(false)
   const storyEndRef = useRef(null)
   const abortRef = useRef(null)
   const pinnedRef = useRef(true) // autoscroll only while the reader is at the bottom
   const inputRef = useRef(null)
+  // Set just before older actions are prepended, read once afterwards to put
+  // the reader back where they were. See the layout effect below.
+  const restoreScrollRef = useRef(null)
+  const loadingOlderRef = useRef(false)
 
   // The drop cap belongs to the story's first narrated beat. `start` is the
   // scenario's opening prompt, so it's usually that; an adventure begun blank
@@ -1340,18 +1350,76 @@ export default function Play() {
 
   useEffect(() => {
     api.getAdventure(id)
-      .then((adv) => { setAdventure(adv); setActions(adv.actions) })
+      .then((adv) => {
+        setAdventure(adv)
+        setActions(adv.actions)
+        setTotal(adv.action_count ?? adv.actions.length)
+        setHasMore(adv.actions.length < (adv.action_count ?? adv.actions.length))
+      })
       .catch(() => navigate('/'))
   }, [id, navigate])
+
+  // Fetch the page above the one on screen and prepend it.
+  //
+  // Anchored on the oldest action we hold rather than on a count, so a turn
+  // landing while the reader scrolls cannot shift the page. Guarded by a ref
+  // as well as state because scroll fires far faster than React re-renders,
+  // and two in-flight requests would fetch the same page twice.
+  const loadOlder = useCallback(async () => {
+    if (loadingOlderRef.current || !hasMore) return
+    const oldest = actions[0]
+    if (!oldest) return
+    loadingOlderRef.current = true
+    setLoadingOlder(true)
+    try {
+      const page = await api.getActions(id, { beforeId: oldest.id })
+      if (page.actions.length) {
+        // Record the height before the prepend; the layout effect below uses
+        // it to keep the reader looking at the same paragraph.
+        restoreScrollRef.current = {
+          height: document.documentElement.scrollHeight,
+          top: window.scrollY,
+        }
+        setActions((prev) => {
+          // Defensive: never let a page the reader already holds duplicate a
+          // message. Cheap, and the alternative is a visibly doubled turn.
+          const known = new Set(prev.map((a) => a.id))
+          return [...page.actions.filter((a) => !known.has(a.id)), ...prev]
+        })
+      }
+      setTotal(page.total)
+      setHasMore(page.has_more)
+    } catch {
+      // Leave hasMore alone: a failed fetch should let the reader try again
+      // by scrolling, not permanently hide the rest of their story.
+    } finally {
+      loadingOlderRef.current = false
+      setLoadingOlder(false)
+    }
+  }, [actions, hasMore, id])
+
+  // Put the viewport back after a prepend. useLayoutEffect, not useEffect:
+  // this has to run before the browser paints, or the reader sees the story
+  // jump and then snap back.
+  useLayoutEffect(() => {
+    const mark = restoreScrollRef.current
+    if (!mark) return
+    restoreScrollRef.current = null
+    const grown = document.documentElement.scrollHeight - mark.height
+    if (grown > 0) window.scrollTo({ top: mark.top + grown })
+  }, [actions])
 
   useEffect(() => {
     const onScroll = () => {
       pinnedRef.current =
         window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 120
+      // Start the next page before the reader reaches the top, so the story
+      // is usually already there by the time they would have noticed its end.
+      if (window.scrollY < 400) loadOlder()
     }
     window.addEventListener('scroll', onScroll, { passive: true })
     return () => window.removeEventListener('scroll', onScroll)
-  }, [])
+  }, [loadOlder])
 
   useEffect(() => {
     // Snap to the real document bottom (below the sticky composer), not to
@@ -1375,6 +1443,9 @@ export default function Play() {
   const handleEvent = useCallback((event) => {
     if (event.type === 'player') {
       setActions((prev) => [...prev, event.action])
+      // The window grew at the bottom, so the story did too. Kept in step by
+      // hand because nothing re-reads the count between turns.
+      setTotal((n) => n + 1)
     } else if (event.type === 'chunk') {
       setStreaming((prev) => (prev ?? '') + event.text)
     } else if (event.type === 'reasoning') {
@@ -1383,6 +1454,7 @@ export default function Play() {
       setStreaming(null)
       setReasoningStream(null)
       setActions((prev) => [...prev, event.action])
+      setTotal((n) => n + 1)
       handleScriptReport(event.script)
     } else if (event.type === 'stopped') {
       setStreaming(null)
@@ -1443,8 +1515,14 @@ export default function Play() {
         await api.retry(id, handleEvent, signal)
       } catch (err) {
         // Failed retry (409, network): the optimistically removed action may
-        // still exist server-side — resync instead of guessing.
-        api.getAdventure(id).then((adv) => setActions(adv.actions)).catch(() => {})
+        // still exist server-side — resync instead of guessing. Resyncing
+        // collapses the transcript back to the newest window, which is the
+        // right call: the reader's place is already lost by the failure.
+        api.getAdventure(id).then((adv) => {
+          setActions(adv.actions)
+          setTotal(adv.action_count ?? adv.actions.length)
+          setHasMore(adv.actions.length < (adv.action_count ?? adv.actions.length))
+        }).catch(() => {})
         throw err
       }
     })
@@ -1454,7 +1532,12 @@ export default function Play() {
     setToast(null)
     setPreview(null)
     try {
-      setActions(await api.undo(id))
+      // A window, not the whole story — undo is the action most likely to be
+      // repeated several times running, so it must not re-fetch everything.
+      const page = await api.undo(id)
+      setActions(page.actions)
+      setTotal(page.total)
+      setHasMore(page.has_more)
     } catch (err) {
       setToast({ text: err.message, isError: true })
     }
@@ -1494,6 +1577,7 @@ export default function Play() {
     try {
       await api.deleteAction(id, actionId)
       setActions((prev) => prev.filter((a) => a.id !== actionId))
+      setTotal((n) => Math.max(0, n - 1))
     } catch (err) {
       setToast({ text: err.message, isError: true })
     }
@@ -1533,6 +1617,22 @@ export default function Play() {
         <div className="story">
           {actions.length === 0 && streaming === null && (
             <div className="empty">A blank page. Type something below to begin your story.</div>
+          )}
+          {/* Scrolling up loads the rest. The button is not decoration: on a
+              short viewport the story may not be tall enough to scroll at all,
+              and a reader who cannot scroll must still be able to get back to
+              the beginning. */}
+          {hasMore && (
+            <div className="story-earlier">
+              {loadingOlder ? (
+                <span className="dim">Turning back the pages…</span>
+              ) : (
+                <button type="button" onClick={loadOlder}>
+                  {Math.max(total - actions.length, 0)} earlier
+                  {total - actions.length === 1 ? ' moment' : ' moments'}
+                </button>
+              )}
+            </div>
           )}
           {actions.map((action, i) => {
             const isPlayer = PLAYER_TYPES.includes(action.type)

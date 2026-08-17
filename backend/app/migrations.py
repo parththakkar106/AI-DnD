@@ -22,7 +22,7 @@ import json
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
 
-from . import vectors
+from . import compression, vectors
 from .database import Base
 
 # (version, SQL to run when upgrading past it) — append only, never reorder.
@@ -144,6 +144,40 @@ MIGRATIONS: list[tuple[int, str | dict[str, str]]] = [
     # so anyone who picked a value keeps it — same rule as migration 29.
     # Adventures already over 80 evict down on their next turn.
     (41, "UPDATE settings SET memory_bank_capacity = 80 WHERE memory_bank_capacity = 200"),
+    # The JSON vectors, gone. Migration 38 left them in place so a rollback
+    # could still find them; production has since been verified reading from
+    # embedding_blob (schema_version 41, 134/134 backfilled), so the column is
+    # now 4 MB of a 99.6 MB database holding nothing anyone reads. DROP COLUMN
+    # is spelled the same on both dialects — SQLite has had it since 3.35.
+    (42, "ALTER TABLE memories DROP COLUMN embedding"),
+    # context_snapshot, compressed. 89% of the database is one column holding
+    # assembled prompts nobody filters on and one screen reads, one row at a
+    # time; Postgres already TOASTs it, but pglz only manages 1.7x and zlib
+    # gets three to four on the same text. Reads were fixed by deferring it —
+    # this is about the 512 MB the free tier allows.
+    #
+    # Three steps because a column cannot portably change type in place: add
+    # the new one, convert into it (_backfill_context_snapshot, which verifies
+    # every row round-trips before the old column goes), then swap the names so
+    # the model keeps calling it context_snapshot.
+    #
+    # **Postgres does not hand the disk back on its own.** DROP COLUMN only
+    # marks the column dropped, and the backfill's UPDATE leaves a dead tuple
+    # per row, so the table gets *bigger* before it gets smaller: peak is
+    # roughly twice the starting size while both columns are live. Plain
+    # autovacuum makes that space reusable but does not shrink the files. The
+    # deploy that ships this should follow it with, once:
+    #
+    #     VACUUM FULL actions;
+    #
+    # which needs exclusive access and free space equal to the finished table.
+    # On the 2026-08-17 figures that is 99.6 MB peaking near 200, settling at
+    # about 53 once vacuumed, against a 512 MB tier. Skipping the vacuum is
+    # safe and simply leaves the win unrealised.
+    (43, {"sqlite": "ALTER TABLE actions ADD COLUMN context_snapshot_z BLOB",
+          "default": "ALTER TABLE actions ADD COLUMN context_snapshot_z BYTEA"}),
+    (44, "ALTER TABLE actions DROP COLUMN context_snapshot"),
+    (45, "ALTER TABLE actions RENAME COLUMN context_snapshot_z TO context_snapshot"),
 ]
 
 LATEST_VERSION = max((v for v, _ in MIGRATIONS), default=1)
@@ -152,6 +186,12 @@ LATEST_VERSION = max((v for v, _ in MIGRATIONS), default=1)
 WORLD_DELTA_VERSION = 36
 VARIANT_COUNT_VERSION = 37
 EMBEDDING_BLOB_VERSION = 38
+SNAPSHOT_COMPRESS_VERSION = 43
+
+# Snapshots converted per round trip. Deliberately far smaller than
+# BACKFILL_BATCH: a vector is 6 KB and a snapshot is 232 KB, so 200 of these
+# would be 46 MB held at once.
+SNAPSHOT_BATCH = 50
 
 # Vectors converted per round trip. Small enough that the backfill never holds
 # more than a few megabytes, large enough that it isn't a query per row.
@@ -251,6 +291,60 @@ def _backfill_embedding_blob(conn) -> None:
         last_id = rows[-1][0]
 
 
+def _backfill_context_snapshot(conn) -> None:
+    """Compress actions.context_snapshot into actions.context_snapshot_z.
+
+    Runs between migration 43 and 44, which is the only window where both
+    columns exist. Migration 44 drops the original, so unlike every other
+    backfill here this one is destructive if it is wrong — and every row it
+    converts is somebody's game. So each row is decompressed again and
+    compared against what went in before it counts as converted, and a row
+    that fails to round-trip aborts the whole run rather than being skipped:
+    the transaction rolls back, the DROP never happens, and the prompts are
+    still there to try again.
+
+    Reads the JSON the same defensive way as the vector backfill — SQLite
+    hands back a raw string, psycopg has already parsed it.
+    """
+    last_id = 0
+    while True:
+        rows = conn.execute(
+            text("""
+                SELECT id, context_snapshot FROM actions
+                WHERE context_snapshot IS NOT NULL
+                  AND context_snapshot_z IS NULL AND id > :last
+                ORDER BY id LIMIT :batch
+            """),
+            {"last": last_id, "batch": SNAPSHOT_BATCH},
+        ).all()
+        if not rows:
+            return
+        params = []
+        for row_id, stored in rows:
+            value = json.loads(stored) if isinstance(stored, str) else stored
+            if value is None:
+                continue
+            packed = compression.pack(value)
+            if compression.unpack(packed) != value:
+                raise RuntimeError(
+                    f"context_snapshot for action {row_id} did not survive a "
+                    "compress/decompress round trip; refusing to drop the "
+                    "original column"
+                )
+            params.append({"z": packed, "id": row_id})
+        if params:
+            # One executemany per batch, not one statement per row. This runs
+            # at container start, before the port opens, against a database on
+            # the other end of a network: a thousand round trips is the
+            # difference between a deploy that comes up and a health check that
+            # times out waiting for it.
+            conn.execute(
+                text("UPDATE actions SET context_snapshot_z = :z WHERE id = :id"),
+                params,
+            )
+        last_id = rows[-1][0]
+
+
 def _get_version(conn) -> int:
     if conn.dialect.name == "sqlite":
         return conn.execute(text("PRAGMA user_version")).scalar() or 1
@@ -295,6 +389,11 @@ def bootstrap(engine: Engine) -> None:
                     _backfill_variant_count(conn)
                 if version == EMBEDDING_BLOB_VERSION:
                     _backfill_embedding_blob(conn)
+                # Must land between 43 (add the column) and 44 (drop the old
+                # one). The loop is one transaction, so if this raises, the
+                # DROP rolls back with it and the prompts are still there.
+                if version == SNAPSHOT_COMPRESS_VERSION:
+                    _backfill_context_snapshot(conn)
                 current = version
         _set_version(conn, current)
         _encrypt_plaintext_api_keys(conn)

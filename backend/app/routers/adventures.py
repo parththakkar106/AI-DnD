@@ -6,7 +6,8 @@ import threading
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func
-from sqlalchemy.orm import Session, undefer
+from sqlalchemy.orm import Session, load_only, undefer
+from sqlalchemy.orm.attributes import set_committed_value
 
 from .. import auth, images, limits, memorybank, models, schemas, worldstate
 from ..context import build_context
@@ -19,6 +20,114 @@ from .settings import get_settings
 router = APIRouter(prefix="/api/adventures", tags=["adventures"])
 
 CurrentUser = Depends(auth.get_current_user)
+
+# Exactly what schemas.ActionOut renders, named rather than implied.
+#
+# `deferred=True` in models.py already keeps the four heavy columns out of a
+# bulk read, but it makes narrowness the default that a *future* column has to
+# remember to ask for — and both egress blowouts this project has had were a
+# column nobody remembered. Listing what a list response carries inverts that:
+# a new column costs nothing here until someone adds it to this tuple.
+#
+# `world_delta` is on the list because ActionOut.world_changes is computed from
+# it. Leaving it off would not save the bytes, it would spend them one row at a
+# time as a lazy load, which is worse.
+ACTION_LIST_COLUMNS = (
+    models.Action.adventure_id,
+    models.Action.index,
+    models.Action.type,
+    models.Action.text,
+    models.Action.reasoning,
+    models.Action.world_delta,
+    models.Action.variant_count,
+    models.Action.variant_index,
+    models.Action.created_at,
+)
+
+# How many actions an adventure opens with, and how many arrive per scroll.
+#
+# Opening a finished adventure used to fetch the whole story in one response —
+# 589.5 kB on production's longest, and growing, because a story only ever gets
+# longer. 60 is a few screens of reading: enough that the common case (open,
+# read the end, take a turn) never pages at all, small enough that the worst
+# case is bounded by the window rather than by the story.
+ACTION_PAGE = 60
+
+
+def action_window(
+    db: Session,
+    adventure_id: int,
+    before_id: int | None = None,
+    limit: int = ACTION_PAGE,
+) -> tuple[list[models.Action], int, bool]:
+    """The `limit` actions immediately older than `before_id`, oldest first.
+
+    Returns (actions, total, has_more). `before_id=None` is the newest window.
+
+    Anchored on an action, not on a count, and never on arithmetic over
+    `Action.index`. Two separate reasons, and both bite:
+
+    * **Appends.** Counting back from the newest means every older position
+      shifts when a turn lands. A reader who scrolls up while a turn is
+      generating would be handed a window one row out — re-sending one action
+      and silently skipping another. An anchor is fixed: "older than this one"
+      means the same thing before and after the story grows.
+    * **The story tree.** Index is a dense 0..n sequence today and branching
+      ends that. Comparing indices to order a branch survives; treating them as
+      positions does not.
+
+    `has_more` comes from asking for one row past the window rather than from
+    counting, so it costs a row and not a scan.
+    """
+    total = (
+        db.query(func.count(models.Action.id))
+        .filter(models.Action.adventure_id == adventure_id)
+        .scalar()
+    )
+    if limit <= 0:
+        return [], total, total > 0
+
+    query = (
+        db.query(models.Action)
+        .options(load_only(*ACTION_LIST_COLUMNS))
+        .filter(models.Action.adventure_id == adventure_id)
+    )
+    if before_id is not None:
+        anchor = (
+            db.query(models.Action.index)
+            .filter(models.Action.id == before_id,
+                    models.Action.adventure_id == adventure_id)
+            .scalar()
+        )
+        if anchor is None:
+            # The anchor was deleted (undo, or a turn edited away) while the
+            # reader was scrolling. Nothing older can be identified relative to
+            # a row that no longer exists, so report the end rather than
+            # guessing and handing back a duplicate page.
+            return [], total, False
+        query = query.filter(models.Action.index < anchor)
+
+    rows = query.order_by(models.Action.index.desc()).limit(limit + 1).all()
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    rows.reverse()
+    return rows, total, has_more
+
+
+# Exactly what schemas.MemoryOut renders. `embedded` is a real column and is on
+# the list; the vector it describes is not, and must never be.
+MEMORY_LIST_COLUMNS = (
+    models.Memory.adventure_id,
+    models.Memory.text,
+    models.Memory.pinned,
+    models.Memory.forgotten,
+    models.Memory.embedded,
+    models.Memory.use_count,
+    models.Memory.last_used_at,
+    models.Memory.source_start,
+    models.Memory.source_end,
+    models.Memory.created_at,
+)
 
 
 def get_adventure_or_404(
@@ -85,9 +194,18 @@ def _latest_narration(db: Session, adventure_ids: list[int]) -> dict[int, str]:
 
 @router.get("", response_model=list[schemas.AdventureListItem])
 def list_adventures(db: Session = Depends(get_db), user: models.User = CurrentUser):
+    # Four columns of Adventure, named, rather than the entity. The entity is
+    # sixteen columns wide and carries script_state, world_state, placeholders,
+    # story_summary, memory, authors_note and ai_instructions — ~15 kB a row in
+    # production, none of it on this screen, all of it fetched once per
+    # adventure every time the index loads. Naming the columns also means the
+    # next wide column added to Adventure has to opt *in* to being listed here.
     rows = (
         db.query(
-            models.Adventure,
+            models.Adventure.id,
+            models.Adventure.scenario_id,
+            models.Adventure.title,
+            models.Adventure.updated_at,
             func.count(models.Action.id),
             models.Scenario.title,
             models.Scenario.image,
@@ -112,22 +230,23 @@ def list_adventures(db: Session = Depends(get_db), user: models.User = CurrentUs
         .order_by(models.Adventure.updated_at.desc())
         .all()
     )
-    narration = _latest_narration(db, [adv.id for adv, *_ in rows])
+    narration = _latest_narration(db, [row[0] for row in rows])
     return [
         schemas.AdventureListItem(
-            id=adv.id,
-            scenario_id=adv.scenario_id,
+            id=adv_id,
+            scenario_id=scenario_id,
             scenario_title=scenario_title,
-            title=adv.title,
-            updated_at=adv.updated_at,
+            title=title,
+            updated_at=updated_at,
             action_count=count,
-            snippet=_snippet(narration.get(adv.id, "")),
+            snippet=_snippet(narration.get(adv_id, "")),
             # The art belongs to the scenario, so the cache-busting stamp is the
             # scenario's updated_at, not the adventure's.
-            image_url=images.public_url(adv.scenario_id, image or "", scenario_updated),
+            image_url=images.public_url(scenario_id, image or "", scenario_updated),
             icon=icon or "",
         )
-        for adv, count, scenario_title, image, icon, scenario_updated in rows
+        for (adv_id, scenario_id, title, updated_at, count,
+             scenario_title, image, icon, scenario_updated) in rows
     ]
 
 
@@ -255,7 +374,25 @@ def create_adventure(
 def get_adventure(
     adventure_id: int, db: Session = Depends(get_db), user: models.User = CurrentUser
 ):
-    return get_adventure_or_404(adventure_id, db, user)
+    """The adventure, and the newest window of its story.
+
+    `actions` is the last ACTION_PAGE, not all of them; `action_count` says how
+    many there are so the reader knows there is more above. Older pages come
+    from GET /{id}/actions as they scroll up.
+    """
+    adventure = get_adventure_or_404(adventure_id, db, user)
+    actions, total, _ = action_window(db, adventure_id)
+    # Hand the response the window as if the relationship had loaded it.
+    # `set_committed_value` is the only way to do this safely: assigning
+    # `adventure.actions = [...]` marks the collection dirty, and the
+    # relationship cascades delete-orphan, so the actions left out of the
+    # window would be deleted on the next flush. This records them as the
+    # loaded, unmodified value instead, so serialising touches no lazy load
+    # and nothing is pending.
+    set_committed_value(adventure, "actions", actions)
+    out = schemas.AdventureOut.model_validate(adventure)
+    out.action_count = total
+    return out
 
 
 @router.get("/{adventure_id}/script-state")
@@ -902,7 +1039,7 @@ def select_variant(
         _active_turns.discard(adventure_id)
 
 
-@router.post("/{adventure_id}/undo", response_model=list[schemas.ActionOut])
+@router.post("/{adventure_id}/undo", response_model=schemas.ActionPage)
 def undo_turn(
     adventure_id: int, db: Session = Depends(get_db), user: models.User = CurrentUser
 ):
@@ -944,7 +1081,16 @@ def undo_turn(
         memorybank.prune_dangling_memories(adventure, db)
         db.commit()
         db.refresh(adventure)
-        return adventure.actions
+        # The newest window, not the whole story: the client replaces its
+        # transcript with this, and the transcript is a window now. Returning
+        # everything here would undo the paging on the one action most likely
+        # to be repeated several times in a row.
+        actions, total, has_more = action_window(db, adventure_id)
+        return schemas.ActionPage(
+            actions=[schemas.ActionOut.model_validate(a) for a in actions],
+            total=total,
+            has_more=has_more,
+        )
     finally:
         _active_turns.discard(adventure_id)
 
@@ -1455,7 +1601,19 @@ def action_context(
 def list_memories(
     adventure_id: int, db: Session = Depends(get_db), user: models.User = CurrentUser
 ):
-    return get_adventure_or_404(adventure_id, db, user).memories
+    get_adventure_or_404(adventure_id, db, user)
+    # A query naming its columns, not a walk of `adventure.memories`. The walk
+    # is what retrieval used to do, and it is the reason a turn cost megabytes:
+    # a relationship load takes whole entities, so it picks up whatever the
+    # model happens to carry. `embedding_blob` is deferred and so would stay
+    # out today — this is about the next wide column, not that one.
+    return (
+        db.query(models.Memory)
+        .options(load_only(*MEMORY_LIST_COLUMNS))
+        .filter(models.Memory.adventure_id == adventure_id)
+        .order_by(models.Memory.id)
+        .all()
+    )
 
 
 @router.post("/{adventure_id}/memories", response_model=schemas.MemoryOut, status_code=201)
@@ -1515,16 +1673,29 @@ def delete_memory(
 
 # ---------- Actions (CRUD) ----------
 
-@router.get("/{adventure_id}/actions", response_model=list[schemas.ActionOut])
+@router.get("/{adventure_id}/actions", response_model=schemas.ActionPage)
 def list_actions(
-    adventure_id: int, db: Session = Depends(get_db), user: models.User = CurrentUser
+    adventure_id: int,
+    before_id: int | None = None,
+    limit: int = ACTION_PAGE,
+    db: Session = Depends(get_db),
+    user: models.User = CurrentUser,
 ):
+    """A page of the story, walking backwards from the newest action.
+
+    `before_id` is the oldest action the caller already holds, so scrolling up
+    is "give me what comes before this". Omit it for the newest window. See
+    action_window for why this anchors on a row rather than an offset.
+    """
     get_adventure_or_404(adventure_id, db, user)
-    return (
-        db.query(models.Action)
-        .filter(models.Action.adventure_id == adventure_id)
-        .order_by(models.Action.index)
-        .all()
+    limit = max(1, min(limit, ACTION_PAGE * 4))
+    actions, total, has_more = action_window(
+        db, adventure_id, before_id=before_id, limit=limit
+    )
+    return schemas.ActionPage(
+        actions=[schemas.ActionOut.model_validate(a) for a in actions],
+        total=total,
+        has_more=has_more,
     )
 
 

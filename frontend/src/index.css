@@ -332,6 +332,31 @@ button:disabled { opacity: 0.45; cursor: default; transform: none; box-shadow: n
   white-space: pre-wrap;
   padding-bottom: 16px;
 }
+/* The head of a windowed transcript: how much story is still above, and the
+   way back to it. Deliberately quiet — it is a seam in the page, not a
+   feature — and it sits inside .story so it inherits the story face. */
+.story-earlier {
+  text-align: center;
+  margin: 4px 0 22px;
+  font-size: 0.9rem;
+  /* No action-in animation here: this appears above content the reader is
+     already looking at, and a fade would read as the story moving. */
+}
+.story-earlier .dim { color: var(--text-dim); font-style: italic; }
+.story-earlier button {
+  background: none;
+  border: none;
+  border-bottom: 1px solid rgba(159, 199, 209, 0.3);
+  color: var(--text-dim);
+  font: inherit;
+  font-style: italic;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+.story-earlier button:hover {
+  color: var(--accent-bright);
+  border-bottom-color: var(--accent-bright);
+}
 .story .action {
   position: relative;
   margin-bottom: 15px;

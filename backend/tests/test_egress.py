@@ -1,9 +1,19 @@
 """Guards on how much the database is asked for.
 
-context_snapshot holds the entire assembled prompt for a turn (~74 KB/row in
-production, 94% of the database). It used to be pulled for every action on
-every adventure load and every turn, to read two tiny things out of it. These
-tests fail if that regresses.
+context_snapshot holds the entire assembled prompt for a turn — 163 KB a row
+averaged over production, 232 KB on the longest adventure, and 89% of the
+database. It used to be pulled for every action on every adventure load and
+every turn, to read two tiny things out of it. These tests fail if that
+regresses.
+
+Two kinds of guard live here, and both are needed:
+
+* **column guards** assert which columns a statement names. That is the shape
+  both of this project's egress blowouts took — one query quietly carrying a
+  column nobody read.
+* **byte ceilings** assert what a request actually costs. Every column guard
+  would still pass if a response grew tenfold within the columns it is allowed
+  to read, which is what a story that keeps getting longer does.
 
     python -m pytest tests/test_egress.py -v
 """
@@ -16,21 +26,34 @@ os.environ["AIDND_DB_PATH"] = _tmp.name
 os.environ.pop("AIDND_DATABASE_URL", None)
 os.environ.pop("DATABASE_URL", None)
 
+import json
+import random
+
 import pytest
 from fastapi import Depends
 from fastapi.testclient import TestClient
 from sqlalchemy import event, text
+from sqlalchemy.orm import undefer
 
 from app import auth, limits, migrations, models
 from app.context import history
 from app.database import Base, SessionLocal, engine, get_db
 from app.main import app
+from tools import dbmeter
+from tools.fakeprose import prose
 
 # A stand-in for the real thing: the assembled prompt, which is what makes the
 # column enormous, plus the small world_state slice the UI actually needs.
+#
+# Varied text, not `"x" * 20_000`. The column is stored compressed now
+# (migration 43), and a repeated character compresses about a thousandfold —
+# which would make the byte ceilings below pass against a fixture that costs
+# nothing, testing nothing. Prose-shaped filler compresses like the prompts
+# this stands in for.
+_SNAPSHOT_RNG = random.Random(20_260_817)
 BIG_SNAPSHOT = {
-    "system": "x" * 20_000,
-    "story": "y" * 40_000,
+    "system": prose(_SNAPSHOT_RNG, 20_000),
+    "story": prose(_SNAPSHOT_RNG, 40_000),
     "world_state": {
         "delta": {"player.hp": -15},
         "report": {"applied": [{"path": "player.hp", "old": 100, "new": 85}]},
@@ -190,16 +213,37 @@ def test_snapshot_is_still_reachable_on_demand(client):
     action_id = r.json()["actions"][0]["id"]
     r = client.get(f"/api/adventures/{client.adv_id}/actions/{action_id}/context")
     assert r.status_code == 200, r.text
-    assert r.json()["system"] == "x" * 20_000
+    # Round-tripped through zlib and back to a dict, byte for byte.
+    assert r.json()["system"] == BIG_SNAPSHOT["system"]
+    assert r.json()["story"] == BIG_SNAPSHOT["story"]
 
 
 # ------------------------------------------------------------------ backfill
+
+def as_json_snapshot_column(db) -> None:
+    """Put actions.context_snapshot back as JSON, the way it was before 43.
+
+    Migration 36 lifts world_delta out of the snapshot with SQL JSON
+    functions, so it can only run while the column still *is* JSON. In a real
+    upgrade it always is — 36 runs seven migrations before 43 compresses the
+    column into a BLOB — but `create_all` builds today's schema, so a test
+    calling that backfill has to rebuild the schema it was written against.
+    """
+    db.execute(text("ALTER TABLE actions DROP COLUMN context_snapshot"))
+    db.execute(text("ALTER TABLE actions ADD COLUMN context_snapshot JSON"))
+    db.execute(
+        text("UPDATE actions SET context_snapshot = :snapshot"),
+        {"snapshot": json.dumps(BIG_SNAPSHOT)},
+    )
+    db.commit()
+
 
 def test_backfill_populates_world_delta_from_existing_snapshots(client):
     """Migration 36 lifts the slice out server-side, without reading the
     snapshots into Python."""
     db = SessionLocal()
     try:
+        as_json_snapshot_column(db)
         db.execute(text("UPDATE actions SET world_delta = NULL"))
         db.commit()
         assert db.query(models.Action).filter(models.Action.world_delta.isnot(None)).count() == 0
@@ -250,3 +294,185 @@ def test_backfill_leaves_actions_without_world_state_alone(client):
         assert all(a.world_delta is None for a in db.query(models.Action).all())
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------- byte ceilings
+#
+# The tests above assert which *columns* a statement names, which is the shape
+# both of this project's egress blowouts took. They would all still pass if a
+# response quietly grew tenfold within the columns it is allowed to read — and
+# a story that keeps getting longer does exactly that. These put a number on it.
+#
+# Ceilings are per action rather than absolute, so they mean the same thing
+# whatever size the fixture is set to, and they are generous: the point is to
+# catch a tenfold regression, not to freeze today's byte count.
+
+ACTIONS_IN_FIXTURE = 12
+
+# 3 kB an action against a real 994 B, measured on production 2026-08-17.
+# Anything that pulls a deferred column blows past this by two orders of
+# magnitude — see test_the_ceiling_discriminates below.
+PAGE_LOAD_BYTES_PER_ACTION = 3_000
+
+
+@pytest.fixture()
+def meter():
+    """A byte meter on the shared engine, removed again afterwards.
+
+    Requested *after* `client` in a test's arguments so that building the
+    fixture — a write path nobody plays — is not charged to any scope.
+    """
+    m = dbmeter.Meter()
+    m.attach(engine)
+    try:
+        yield m
+    finally:
+        m.detach()
+
+
+def fetched(meter) -> int:
+    return meter.scopes[-1].total.fetched
+
+
+def test_page_load_stays_under_its_byte_ceiling(client, meter):
+    with meter.scope("page load"):
+        r = client.get(f"/api/adventures/{client.adv_id}")
+    assert r.status_code == 200
+
+    budget = ACTIONS_IN_FIXTURE * PAGE_LOAD_BYTES_PER_ACTION
+    assert fetched(meter) < budget, (
+        f"page load fetched {fetched(meter):,} B for {ACTIONS_IN_FIXTURE} "
+        f"actions, over the {budget:,} B budget"
+    )
+
+
+def test_the_action_list_stays_under_its_byte_ceiling(client, meter):
+    with meter.scope("action list"):
+        r = client.get(f"/api/adventures/{client.adv_id}/actions")
+    assert r.status_code == 200
+
+    budget = ACTIONS_IN_FIXTURE * PAGE_LOAD_BYTES_PER_ACTION
+    assert fetched(meter) < budget, (
+        f"the action list fetched {fetched(meter):,} B, over {budget:,} B"
+    )
+
+
+def test_reading_one_action_does_not_cost_the_whole_story(client, meter):
+    """The snapshot is reachable on demand, and that request should pay for
+    one row's worth — not the adventure's."""
+    db = SessionLocal()
+    try:
+        action_id = db.query(models.Action.id).order_by(models.Action.id).first()[0]
+    finally:
+        db.close()
+
+    with meter.scope("one snapshot"):
+        r = client.get(f"/api/adventures/{client.adv_id}/actions/{action_id}/context")
+    assert r.status_code == 200, r.text
+
+    one_snapshot = len(json.dumps(BIG_SNAPSHOT))
+    assert fetched(meter) < one_snapshot * 2, (
+        f"fetching one action's snapshot cost {fetched(meter):,} B; one "
+        f"snapshot is {one_snapshot:,} B"
+    )
+
+
+def _fat_adventures(user_id: int, count: int = 5, body: int = 20_000) -> None:
+    """Adventures whose bodies are heavy and whose index cards are not.
+
+    script_state, world_state and story_summary belong to the play screen. The
+    index shows a title, a stamp and a snippet, and used to load all of it.
+    """
+    db = SessionLocal()
+    try:
+        for i in range(count):
+            db.add(models.Adventure(
+                user_id=user_id,
+                title=f"Adventure {i}",
+                script_state={"log": "s" * body},
+                world_state={"player": {"notes": "w" * body}},
+                story_summary="y" * body,
+                memory="m" * body,
+            ))
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_the_index_does_not_read_the_adventure_body(client, sql_log):
+    db = SessionLocal()
+    try:
+        user_id = db.query(models.User.id).first()[0]
+    finally:
+        db.close()
+    _fat_adventures(user_id)
+
+    r = client.get("/api/adventures")
+    assert r.status_code == 200
+    assert len(r.json()) == 6  # the fixture's one, plus five
+
+    listing = [
+        s for s in sql_log
+        if "FROM adventures" in s and s.lstrip().upper().startswith("SELECT")
+    ]
+    assert listing, "expected a listing query"
+    for column in ("script_state", "world_state", "story_summary", "memory",
+                   "authors_note", "ai_instructions", "placeholders"):
+        assert not any(column in s for s in listing), (
+            f"the index read adventures.{column}, which nothing on that "
+            f"screen displays"
+        )
+
+
+def test_the_index_stays_under_its_byte_ceiling(client, meter):
+    db = SessionLocal()
+    try:
+        user_id = db.query(models.User.id).first()[0]
+    finally:
+        db.close()
+    _fat_adventures(user_id)
+
+    with meter.scope("index"):
+        r = client.get("/api/adventures")
+    assert r.status_code == 200
+
+    # Six adventures carrying 80 kB of body each. A card is a title, a stamp
+    # and a 220-character snippet; 4 kB apiece is already generous.
+    budget = 6 * 4_000
+    assert fetched(meter) < budget, (
+        f"the index fetched {fetched(meter):,} B for six adventures, over "
+        f"{budget:,} B — it is reading the bodies again"
+    )
+
+
+def test_the_ceiling_discriminates(client, meter):
+    """A ceiling is only worth having if the thing it excludes would breach it.
+
+    This is the regression the byte tests exist to catch, performed on purpose:
+    undefer the snapshot and the same twelve rows cost several times the whole
+    budget. If this ever stops exceeding it, the fixture has gone too small for
+    the tests above to mean anything.
+
+    The margin used to be a hundredfold and is now about six. That is not the
+    guard weakening — it is migration 43 compressing the column, and the
+    fixture text being prose-shaped so it compresses like a real prompt rather
+    than like a repeated character.
+    """
+    budget = ACTIONS_IN_FIXTURE * PAGE_LOAD_BYTES_PER_ACTION
+    db = SessionLocal()
+    try:
+        with meter.scope("undeferred"):
+            rows = (
+                db.query(models.Action)
+                .options(undefer(models.Action.context_snapshot))
+                .all()
+            )
+            assert len(rows) == ACTIONS_IN_FIXTURE
+    finally:
+        db.close()
+
+    assert fetched(meter) > budget * 3, (
+        "undeferring the snapshot cost only "
+        f"{fetched(meter):,} B against a {budget:,} B budget — the fixture is "
+        "too small for the byte ceilings above to catch anything"
+    )

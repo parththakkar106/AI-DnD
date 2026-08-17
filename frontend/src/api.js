@@ -86,6 +86,17 @@ export const api = {
   createAdventure: (data) => request('/adventures', { method: 'POST', body: JSON.stringify(data) }),
   updateAdventure: (id, data) => request(`/adventures/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteAdventure: (id) => request(`/adventures/${id}`, { method: 'DELETE' }),
+  // A page of the story, walking backwards. `beforeId` is the oldest action
+  // already on screen; omit it for the newest window. Anchored on an action
+  // rather than an offset so a turn landing mid-scroll cannot shift the page
+  // out from under the reader.
+  getActions: (advId, { beforeId, limit } = {}) => {
+    const params = new URLSearchParams()
+    if (beforeId != null) params.set('before_id', beforeId)
+    if (limit != null) params.set('limit', limit)
+    const query = params.toString()
+    return request(`/adventures/${advId}/actions${query ? `?${query}` : ''}`)
+  },
   updateAction: (advId, actionId, text) =>
     request(`/adventures/${advId}/actions/${actionId}`, { method: 'PATCH', body: JSON.stringify({ text }) }),
   deleteAction: (advId, actionId) =>

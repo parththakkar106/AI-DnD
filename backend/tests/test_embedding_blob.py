@@ -111,9 +111,9 @@ def test_cosine_moved_but_still_reachable_from_memorybank():
 
 # -------------------------------------------------------------- set_vector
 
-def test_set_vector_writes_both_columns(db, adventure):
-    """Until the follow-up migration drops the JSON column, it has to stay
-    correct — a rollback reads it."""
+def test_set_vector_writes_the_blob_and_the_flag(db, adventure):
+    """The two columns that describe a vector move together, or a reader that
+    trusts `embedded` gets a NULL blob."""
     memory = models.Memory(adventure_id=adventure.id, text="a fact")
     db.add(memory)
     db.commit()
@@ -123,7 +123,6 @@ def test_set_vector_writes_both_columns(db, adventure):
     db.commit()
     db.expire_all()
 
-    assert memory.embedding == vector
     assert list(vectors.unpack(memory.embedding_blob)) == vector
     assert memory.embedded is True
 
@@ -140,24 +139,40 @@ def test_set_vector_none_clears_both(db, adventure):
     db.commit()
     db.expire_all()
 
-    assert memory.embedding is None
     assert memory.embedding_blob is None
     assert memory.embedded is False
 
 
 # --------------------------------------------------------------- the backfill
 
+def add_legacy_json_column(db) -> None:
+    """Put `memories.embedding` back for the length of a test.
+
+    Migration 42 dropped it and the model no longer declares it, so
+    `create_all` does not produce it — but everything below is testing the
+    upgrade *from* a database that still has it, which is the only state in
+    which the backfill has any work to do. Re-adding it by hand is what keeps
+    these tests honest about the schema they claim to be starting from.
+    """
+    db.execute(text("ALTER TABLE memories ADD COLUMN embedding JSON"))
+    db.commit()
+
+
 def seed_json_only(db, adventure, count: int, dims: int = 64) -> dict[int, list[float]]:
     """Memories as they exist before the migration: JSON vector, no blob."""
+    add_legacy_json_column(db)
     rng = random.Random(count)
     expected = {}
     for i in range(count):
         vector = sample_vector(rng, dims)
-        memory = models.Memory(
-            adventure_id=adventure.id, text=f"fact {i}", embedding=vector
-        )
+        memory = models.Memory(adventure_id=adventure.id, text=f"fact {i}")
         db.add(memory)
         db.flush()
+        # Raw, because the ORM no longer knows this column exists.
+        db.execute(
+            text("UPDATE memories SET embedding = :v WHERE id = :id"),
+            {"v": json.dumps(vector), "id": memory.id},
+        )
         expected[memory.id] = vector
     db.commit()
     db.execute(text("UPDATE memories SET embedding_blob = NULL, embedded = false"))
@@ -193,6 +208,7 @@ def test_backfill_reaches_past_one_batch(db, adventure):
 
 
 def test_backfill_leaves_unembedded_memories_alone(db, adventure):
+    add_legacy_json_column(db)
     db.add(models.Memory(adventure_id=adventure.id, text="not embedded yet"))
     db.commit()
 
@@ -273,6 +289,14 @@ def test_bootstrap_adds_the_columns_and_backfills_them(db, adventure):
     # The flag has to follow the vector, not the row: a memory that was never
     # embedded must still read as not embedded afterwards.
     assert by_id[unembedded_id] == (None, False)
+
+    # ...and migration 42, at the end of the same run, takes the JSON column
+    # away. Ordering matters: 38 reads it, 42 drops it, and an upgrade that
+    # ran them the other way round would arrive with an empty bank.
+    with engine.begin() as conn:
+        columns = {row[1] for row in conn.execute(text("PRAGMA table_info(memories)"))}
+    assert "embedding" not in columns
+    assert {"embedding_blob", "embedded"} <= columns
 
 
 def test_migration_38_is_spelled_for_both_dialects():
