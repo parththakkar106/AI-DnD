@@ -357,6 +357,22 @@ cd ../frontend && AIDND_API_PORT=8010 npm run dev      # → localhost:5173
 Everything in it is synthetic and no real adventure is read. `*.db` is gitignored, so
 the fixture never lands in a commit.
 
+**A fixture to check correctness against, rather than bytes.** The measuring fixture
+leaves every column it does not weigh at its default, which turns out to be exactly the
+set a story tree has to migrate — `state_before`/`world_state_before` NULL on all 600
+rows, no RPG scenario, no adventure scripts, both cursors 0, and retry attempts whose
+text is byte-identical with `variant_index` always 0. `--rich` fills in those and only
+those:
+
+```
+cd backend
+.venv/Scripts/python.exe -m tools.stress_session --rich --actions 30 --memories 12
+```
+
+Prefer it small — it exists for variety per row, not for rows. **Its byte figures are
+not comparable to a plain run**, and it does not replace the scale fixture, which still
+holds the egress ceilings.
+
 On Windows the report's box-drawing characters crash the default cp1252 console;
 prefix with `PYTHONIOENCODING=utf-8`.
 

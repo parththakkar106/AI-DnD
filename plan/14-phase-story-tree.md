@@ -178,6 +178,42 @@ A pre-migration (**schema 45**) fixture is needed too, built by a script rather 
 committed as a binary — but its only consumer is the SP1 migration test, so it lands
 there.
 
+#### `--rich`: a correctness fixture beside the scale one
+
+The measuring fixture is sized from production and leaves every column it does not weigh
+at its default. Checked against a freshly built one, that is exactly the set of columns a
+tree has to migrate: `state_before`/`world_state_before` NULL on all 600 rows, no
+scenario and so no RPG layer, no adventure scripts, both cursors 0, and 100 retry
+histories whose two attempts carry **byte-identical text with `variant_index` always 0** —
+so "which attempt is live?", the one question SP4's migration answers, had no observable
+answer.
+
+`tools.stress_session --rich` fills in precisely those and nothing else:
+
+```
+cd backend
+.venv/Scripts/python.exe -m tools.stress_session --rich --actions 30 --memories 12
+```
+
+An RPG scenario built from the real seed schema with a world state played forward (hp
+100 → 71, flags flipping partway); per-action `state_before`/`world_state_before`
+snapshots that are monotonic, so a bad rollback reads as a wrong number rather than as
+nothing; a gold script on the adventure; story cards; non-zero memory and summary
+cursors with a real `story_summary`; pinned and forgotten memories; retry attempts with
+distinct texts, counts of 2 *and* 3, and a live attempt that is **often not the last one
+written**; and a second adventure, so "does this leak across adventures?" is answerable —
+a branch clause that forgot its adventure would still look correct on a database holding
+exactly one.
+
+It is a correctness fixture, so prefer it small: what it is for is variety per row, not
+rows. **Its byte figures are not comparable to a plain run** and it does not replace the
+scale fixture — the plain one still holds the egress ceilings, and was re-measured
+unchanged (1.8 kB, actions 1.7 kB) after `--rich` was added.
+
+The invariant `text == variants[variant_index]["text"]` holds on every retried row, and
+is asserted when the fixture is built. SP4's migration reads exactly that to decide which
+sibling becomes the head.
+
 ### SP1 — Schema and migration *(no behaviour change)*
 
 | File | Change |
