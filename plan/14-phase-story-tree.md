@@ -157,7 +157,9 @@ even there only where the change is deliberate and named below.
   is far shorter. The cap has to count the tree but be explained as the tree, or move.
 - **The holdback cannot die in SP3.** `settled_story_actions` exists because retry
   mutates a row in place. Retry stops mutating in SP4, so the holdback is only safe to
-  delete there — deleting it in SP3 reopens the exact bug it was written for.
+  delete there — deleting it in SP3 reopens the exact bug it was written for. It survived
+  SP3 as `memorybank.settled_after`, which is the `- 1` in "how much story is past the
+  mark"; that subtraction is the whole of it.
 
 ## Subphases
 
@@ -356,6 +358,63 @@ on branch B is invisible from branch A, and shared ancestors are visible from bo
 Memory retrieval reads the *full* lineage (it cannot be windowed) but stays sparse:
 assert the byte cost on a deep fork.
 
+**Done, 2026-08-18** (branch `sp3-node-cursors`). **330 tests green**, the 318 the branch
+started from plus 12 — 11 in `test_branch_clause`'s new sibling `test_memory_nodes.py`
+and one on migration 56. The baseline contract passes **unmodified**, which was the pass
+condition. `app/context/cursors.py` is the new module; migrations 53–56 add
+`memory_cursor_branch_id/_depth` and `summary_cursor_branch_id/_depth` and translate the
+old counts into them.
+
+Seven things worth not rediscovering:
+
+- **An anchor is a coordinate, not a pointer, and that is what deleted the machinery.**
+  Half of this subphase was expected to be rewriting the cursor bookkeeping in depth
+  terms. None of it needed rewriting: `count_after(41)` is well defined with node 41
+  deleted, and deleting node 12 does not change what "past node 41" means. So
+  `note_action_removed`, `_rewind_cursors_to_index`, `position_of_index` and the
+  post-turn clamp did not become depth-shaped versions of themselves — they became
+  nothing. **If a mark still needs correcting when the story changes, it is still a
+  position.**
+- **The clamp had its own trap and it also goes.** `run_post_turn` clamped both cursors
+  to the story length every pass, deliberately against the *full* count, because
+  clamping to the settled count rewound a caught-up adventure a step and re-covered an
+  action. An anchor past the tip is not a broken value: `settled_after` reports nothing
+  to do, and the story growing back past it resumes exactly where it left off.
+- **`prune_dangling_memories` became a lookup, and got stricter by accident.** A memory
+  hangs off the node its block ends on, so "what did this node produce?" is
+  `(branch_id, depth)` — `memorybank.forget_node`. The scan it replaces could only ever
+  notice damage *after* the fact (a covered range past `max(index)`), and could not
+  notice at all when the node was deleted from the middle of a story that still had
+  later actions. Withdrawing the memory is half the job: the ground it covered is still
+  behind the mark, so the mark goes back to `source_start - 1` — a depth, whether or not
+  a row still sits there.
+- **A memory with no node had to be spelled out in the clause.** A hand-written memory
+  summarises nothing, so it carries a branch and a NULL depth. Every ancestor entry in a
+  lineage clause is capped `depth <= fork`, and NULL fails that — so a typed memory would
+  have become invisible at the first fork after it was written, with nothing to see but a
+  prompt that stopped mentioning it. `Path.clause(unanchored=True)` is that case, and
+  actions never pass it: an action with no depth is a pre-tree row no read should see.
+- **Retrieval reads the whole lineage, and it is free.** Measured on two stories of 84
+  actions and 14 memories each, one flat and one forked twenty times: **1,807 B against
+  1,823 B**. The clause carries 22 branch terms instead of one, and the clause is not what
+  crosses the wire. The egress shapes are otherwise byte-identical to SP1's — index
+  1.8 kB, page load 62.7 kB, turn 733.8 kB.
+- **Three reads stay adventure-wide, deliberately.** Embedding and eviction are facts
+  about the row and about the bank, not about the path — skipping a sibling's memories
+  would only mean embedding them at the moment somebody switched to them, and evicting the
+  memories of a story nobody is reading is the right thing to evict first. The Memories
+  drawer is management rather than retrieval, and hiding a branch's memories there would
+  make them unfindable in a phase whose rule is that nothing is removed automatically.
+- **The v1 bundle still speaks positions, in exactly two places.** Export counts the
+  anchor back into a position; import translates the other way, but only after the
+  actions exist, because that is the one moment the two coordinate systems can be lined
+  up. `cursors.position_of` and `cursors.anchor_at_position` are the whole of what still
+  knows about positions, and SP6's v2 format retires them.
+
+Migrations 53–56 rewrite `adventures`, not `actions` — a few hundred rows against a few
+hundred thousand — so **this deploy needs no `VACUUM FULL` of its own**. The one SP1 owes
+is still owed.
+
 ### SP4 — Variants become sibling nodes
 
 Retry stops mutating a row. It writes a sibling leaf at the same depth.
@@ -412,7 +471,9 @@ jsdom has no layout, so scroll position still needs eyes.
 ### SP8 — Drop the legacy columns
 
 Only once the tree is proven live. Migration drops `index`, `variants`, `variant_index`,
-`variant_count`, followed by `VACUUM FULL actions;`.
+`variant_count`, followed by `VACUUM FULL actions;`. **Also `adventures.memory_cursor`
+and `summary_cursor`** — unread since SP3, kept only so a rolled-back build resumes from
+a real number. They are on `adventures`, so dropping them costs no vacuum.
 
 **Verify:** full suite; egress ceilings; a measured before/after size, aggregates only.
 

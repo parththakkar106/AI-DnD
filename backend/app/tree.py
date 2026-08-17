@@ -131,6 +131,24 @@ def place_memory(
     return branch
 
 
+def attach_memory(memory: models.Memory, node: models.Action) -> None:
+    """Hang a memory off the node it was derived from.
+
+    The general rule, of which the memory bank is the first instance: anything
+    derived from the story attaches to the node that produced it, and is then
+    visible from exactly the paths that node is on. A fork inherits its
+    ancestors' memories because it inherits their nodes — nothing is copied and
+    nothing is recreated — and a memory made on a sibling is invisible here
+    because that node is not on this path.
+
+    Not `place_memory`: this takes the branch from the *node*, which is not
+    always the head. A block of story can end before the fork the current
+    branch was made at, and the memory belongs where the ground is.
+    """
+    memory.branch_id = node.branch_id
+    memory.depth = node.depth
+
+
 def place_new_nodes(session: Session) -> None:
     """Place every unplaced node about to be inserted. Runs on every flush.
 

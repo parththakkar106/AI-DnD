@@ -99,6 +99,13 @@ PRE_TREE_DDL = (
 # action never renumbered the ones after it. The gap has to survive as a gap.
 GAPPED_INDEXES = (0, 1, 2, 4)
 STRAIGHT_INDEXES = (0, 1)
+# "Blank" holds an action whose text is nothing but whitespace. It is a row of
+# the adventure but not of the *story*, so a cursor counting covered actions
+# never counted it — and migration 56 has to skip it the same way, using a
+# frozen copy of the story-text predicate. This is the one duplicated
+# definition in the change, so it gets the one case that can tell.
+BLANK_INDEXES = (0, 1, 2, 3)
+BLANK_AT = 2
 
 
 @pytest.fixture()
@@ -123,11 +130,20 @@ def pre_tree():
             "demo_turns_date) VALUES (1, 'v45@example.com', 0, CURRENT_TIMESTAMP, 0, '')"
         ))
 
+        # The cursors as schema 45 held them: counts of covered story actions.
+        # Gapped's story is 0,1,2,4 — so "3 covered" is the node at depth 2 and
+        # "4 covered" is the node at depth 4, which is the whole reason a count
+        # and a depth are not the same number. Straight is caught up past its
+        # own end (5 covered, 2 actions), which is a state the older rule left
+        # behind and the clamp used to paper over every post-turn pass.
+        cursors_at = {"Gapped": (3, 4), "Straight": (5, 0), "Empty": (0, 0),
+                      "Blank": (3, 0)}
         ids = {}
-        for name in ("Gapped", "Straight", "Empty"):
+        for name in ("Gapped", "Straight", "Empty", "Blank"):
             conn.execute(text(
-                "INSERT INTO adventures (user_id, title) VALUES (1, :title)"
-            ), {"title": name})
+                "INSERT INTO adventures (user_id, title, memory_cursor, summary_cursor) "
+                "VALUES (1, :title, :mc, :sc)"
+            ), {"title": name, "mc": cursors_at[name][0], "sc": cursors_at[name][1]})
             ids[name] = conn.execute(text(
                 "SELECT id FROM adventures WHERE title = :title"
             ), {"title": name}).scalar()
@@ -135,14 +151,16 @@ def pre_tree():
         for adventure_id, indexes in (
             (ids["Gapped"], GAPPED_INDEXES),
             (ids["Straight"], STRAIGHT_INDEXES),
+            (ids["Blank"], BLANK_INDEXES),
         ):
             for index in indexes:
+                blank = adventure_id == ids["Blank"] and index == BLANK_AT
                 conn.execute(text(
                     'INSERT INTO actions (adventure_id, "index", type, text) '
                     "VALUES (:a, :i, :t, :x)"
                 ), {"a": adventure_id, "i": index,
                     "t": "start" if index == 0 else "do",
-                    "x": f"Turn {index}."})
+                    "x": " \n\t " if blank else f"Turn {index}."})
 
         # One memory that summarised a block of story, and one written by hand,
         # which summarised nothing and so belongs to no node.
@@ -218,7 +236,7 @@ def test_one_root_branch_per_adventure_with_its_own_lineage(pre_tree):
     branches = rows(
         "SELECT id, adventure_id, parent_branch_id, fork_depth, lineage FROM branches"
     )
-    assert len(branches) == 3, "one branch per adventure, including the empty one"
+    assert len(branches) == 4, "one branch per adventure, including the empty one"
     for branch_id, _adventure_id, parent, fork_depth, lineage in branches:
         assert parent is None, "a migrated branch is a root; nothing forked yet"
         assert fork_depth is None
@@ -263,6 +281,54 @@ def test_memories_attach_to_the_node_they_summarised(pre_tree):
     assert manual and all(depth is None and branch is not None for depth, branch in manual)
 
 
+def test_the_cursors_become_the_nodes_they_named(pre_tree):
+    """SP3, migration 56. A count of covered actions and a depth are different
+    numbers the moment the story has a gap in it, which every adventure anyone
+    has ever deleted from does."""
+    migrations.bootstrap(engine)
+
+    def marks(title):
+        [row] = rows(
+            "SELECT memory_cursor_depth, summary_cursor_depth, "
+            "memory_cursor_branch_id, summary_cursor_branch_id "
+            "FROM adventures WHERE title = :t", t=title
+        )
+        return row
+
+    # Gapped's story is 0,1,2,4. "3 covered" is the *third* action, at depth 2 —
+    # reading the count as a depth would have handed the summarizer node 3,
+    # which does not exist, and quietly skipped node 4 forever.
+    memory_depth, summary_depth, memory_branch, summary_branch = marks("Gapped")
+    assert (memory_depth, summary_depth) == (2, 4)
+    root = scalar(
+        "SELECT id FROM branches WHERE adventure_id = "
+        "(SELECT id FROM adventures WHERE title = 'Gapped')"
+    )
+    assert memory_branch == summary_branch == root
+
+    # Straight was caught up under the older rule: 5 covered, 2 actions. There
+    # is no fifth node to name, and the number meant "caught up", so it lands
+    # on the tip rather than on nothing.
+    memory_depth, summary_depth, _, summary_branch = marks("Straight")
+    assert memory_depth == 1
+    assert (summary_depth, summary_branch) == (migrations.NO_DEPTH, None)
+
+    # Nothing covered stays nothing covered, and names no branch.
+    assert marks("Empty") == (migrations.NO_DEPTH, migrations.NO_DEPTH, None, None)
+
+    # A whitespace-only action is a row but not a story action, so it was never
+    # counted — "3 covered" of 0,1,[blank],3 is the node at depth 3, not 2. The
+    # migration's copy of the story-text predicate is the only place that rule
+    # is written twice, so this is the case that catches it drifting.
+    assert marks("Blank")[0] == 3
+
+    # The legacy columns are left exactly as they were: a rolled-back build
+    # reads them, and this migration is not the one that drops them.
+    assert rows(
+        "SELECT memory_cursor, summary_cursor FROM adventures ORDER BY title"
+    ) == [(3, 0), (0, 0), (3, 4), (5, 0)]  # Blank, Empty, Gapped, Straight
+
+
 def test_the_branch_clause_index_exists(pre_tree):
     """SP2's reads are only cheap if this exists — and `create_all` does not add
     an index to a table it did not create, which is what migration 52 is for."""
@@ -279,7 +345,9 @@ def test_running_it_again_changes_nothing(pre_tree):
     snapshot = (
         rows("SELECT id, branch_id, depth FROM actions ORDER BY id"),
         rows("SELECT id, adventure_id, lineage FROM branches ORDER BY id"),
-        rows("SELECT id, head_branch_id, head_depth FROM adventures ORDER BY id"),
+        rows("SELECT id, head_branch_id, head_depth, memory_cursor_branch_id, "
+             "memory_cursor_depth, summary_cursor_branch_id, summary_cursor_depth "
+             "FROM adventures ORDER BY id"),
         rows("SELECT id, branch_id, depth FROM memories ORDER BY id"),
     )
 
@@ -290,11 +358,14 @@ def test_running_it_again_changes_nothing(pre_tree):
     migrations.bootstrap(engine)
     with engine.begin() as conn:
         migrations._backfill_tree(conn)
+        migrations._backfill_cursor_anchors(conn)
 
     assert (
         rows("SELECT id, branch_id, depth FROM actions ORDER BY id"),
         rows("SELECT id, adventure_id, lineage FROM branches ORDER BY id"),
-        rows("SELECT id, head_branch_id, head_depth FROM adventures ORDER BY id"),
+        rows("SELECT id, head_branch_id, head_depth, memory_cursor_branch_id, "
+             "memory_cursor_depth, summary_cursor_branch_id, summary_cursor_depth "
+             "FROM adventures ORDER BY id"),
         rows("SELECT id, branch_id, depth FROM memories ORDER BY id"),
     ) == snapshot
 

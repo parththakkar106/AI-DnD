@@ -14,10 +14,9 @@ story.
 
 Three rules hold everything together:
 
-* **One definition of "story action".** The cursors in memorybank are
-  *positions* in this filtered, depth-ordered list, so SQL and Python must
-  agree on membership exactly or a cursor silently points at a different
-  action. `_STORY_TEXT` and `is_story_text()` are that one definition, written
+* **One definition of "story action".** Membership decides what a reader sees
+  and what the summarizer is handed, so SQL and Python must agree on it
+  exactly. `_STORY_TEXT` and `is_story_text()` are that one definition, written
   twice; keep them in step.
 * **Never load twice.** If `adventure.actions` is already in memory (the
   scripting pipeline hands the whole history to user scripts, as AI Dungeon
@@ -32,6 +31,12 @@ Three rules hold everything together:
 Ordering is by `depth` now, not `index`. The two hold the same numbers until
 retry stops mutating rows (SP4), but only one of them is a position along a
 path.
+
+SP3 added the reads that count *from a node* rather than from the start —
+`count_after`, `after`, `newest_settled`. The memory bank used to ask for
+"positions 12 to 18 of the story", which is a question whose answer moves when
+an action is deleted from in front of it. It now asks for "the six actions
+after depth 41", which is the same question a fork has to answer anyway.
 """
 
 from sqlalchemy import func, inspect as sa_inspect
@@ -162,6 +167,7 @@ def _count_query(
     adventure: models.Adventure,
     path: lineage.Path,
     exclude_action_id: int | None,
+    entries: int | None = None,
 ):
     """A real `SELECT count(...)`.
 
@@ -172,7 +178,7 @@ def _count_query(
     that greps the SQL cannot tell the two apart.
     """
     return db.query(func.count(models.Action.id)).filter(
-        *_filters(adventure, path, exclude_action_id)
+        *_filters(adventure, path, exclude_action_id, entries)
     )
 
 
@@ -311,28 +317,85 @@ def slice_(
     )
 
 
-def position_of_index(adventure: models.Adventure, index: int) -> int:
-    """The position the story action with `Action.index == index` occupies —
-    i.e. how many story actions come before it.
+def depth_of(action: models.Action) -> int:
+    """`action.depth`, with the no-depth case spelled once.
 
-    Translates between the two coordinate systems that keep tripping this code
-    up: cursors are positions, `Memory.source_start/_end` are `Action.index`
-    values, and the two diverge the moment anything is deleted.
+    A row with no depth is a pre-tree row, which no path contains — so it can
+    only turn up in an already-loaded collection, and it sorts before the story
+    rather than after it.
     """
-    in_memory = _from_memory(adventure, None)
+    return action.depth if action.depth is not None else lineage.NO_DEPTH
+
+
+def count_after(
+    adventure: models.Adventure, depth: int, exclude_action_id: int | None = None
+) -> int:
+    """How many story actions lie past `depth` on the path.
+
+    The node-anchored replacement for "the story is N long and the cursor is at
+    M". Deleting an action from in front of the boundary makes this number
+    smaller, which is true; it does not make the boundary point somewhere else,
+    which is the bug the positions had.
+
+    `covering_after` says exactly which lineage entries can hold a node deeper
+    than the boundary, so a cursor near the tip names one branch however many
+    forks are below it.
+    """
+    in_memory = _from_memory(adventure, exclude_action_id)
     if in_memory is not None:
-        return next(
-            (i for i, a in enumerate(in_memory) if a.index >= index), len(in_memory)
-        )
+        return sum(1 for a in in_memory if depth_of(a) > depth)
     db = _session(adventure)
     if db is None:
         return 0
+    path = _path(db, adventure)
     return (
-        _count_query(db, adventure, _path(db, adventure), None)
-        .filter(models.Action.index < index)
+        _count_query(
+            db, adventure, path, exclude_action_id, path.covering_after(depth)
+        )
+        .filter(models.Action.depth > depth)
         .scalar()
         or 0
     )
+
+
+def after(
+    adventure: models.Adventure,
+    depth: int,
+    limit: int,
+    exclude_action_id: int | None = None,
+) -> list[models.Action]:
+    """The oldest `limit` story actions past `depth`, oldest first.
+
+    "The next block the summarizer has not seen", asked as a fact about the
+    story rather than as an offset into a list that shifts underneath it.
+    """
+    if limit <= 0:
+        return []
+    in_memory = _from_memory(adventure, exclude_action_id)
+    if in_memory is not None:
+        return [a for a in in_memory if depth_of(a) > depth][:limit]
+    db = _session(adventure)
+    if db is None:
+        return []
+    path = _path(db, adventure)
+    return (
+        _query(db, adventure, path, exclude_action_id, path.covering_after(depth))
+        .filter(models.Action.depth > depth)
+        .order_by(*_OLDEST_FIRST)
+        .limit(limit)
+        .all()
+    )
+
+
+def newest_settled(adventure: models.Adventure) -> models.Action | None:
+    """The newest story action that is not the newest one — see
+    `memorybank.settled_story_actions` for why one is always held back.
+
+    Two rows, not a count and an offset: this is the node an anchor moves to
+    when derived work catches up with the settled end of the story.
+    """
+    rows = tail(adventure, 2)
+    return rows[0] if len(rows) == 2 else None
 
 
 def max_action_index(adventure: models.Adventure) -> int:

@@ -138,6 +138,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from app import auth, limits, memorybank, models, security, seed, tree, worldstate
+from app.context import cursors
 from app.database import Base, SessionLocal, engine, get_db
 from app.main import app
 from app.providers import PromptParts
@@ -348,8 +349,11 @@ def add_rich_extras(db, args, rng: random.Random, user, adventure) -> None:
     adventure.scenario_id = scenario.id
     adventure.world_state = rich_world_state(schema, args.actions)
     adventure.script_state = rich_script_state(args.actions)
-    # The post-turn passes SP3 rewrites only do anything when summarization is
-    # on and the cursors are somewhere other than the start.
+    # The post-turn passes only do anything when summarization is on and the
+    # marks are somewhere other than the start. Written as positions here and
+    # translated into anchors once the actions exist (see build_fixture) — a
+    # position is what a database being migrated to SP3 still holds, so the
+    # fixture carries both and they have to say the same thing.
     adventure.auto_summarize = True
     adventure.story_summary = RICH_SUMMARY
     adventure.memory_cursor = max(0, args.actions - 8)
@@ -535,6 +539,14 @@ def build_fixture(args, rng: random.Random) -> tuple[int, int]:
             db.add(memory)
 
         if args.rich:
+            # The memory/summary marks as nodes, translated from the positions
+            # `add_rich_layers` set now that there are actions to point at —
+            # through the same call the v1 importer uses. A fixture stamped
+            # LATEST never meets a migration, so if this is skipped it is the
+            # one database whose marks are only positions.
+            db.flush()
+            cursors.anchor_at_position(adventure, cursors.MEMORY, adventure.memory_cursor)
+            cursors.anchor_at_position(adventure, cursors.SUMMARY, adventure.summary_cursor)
             add_second_adventure(db, rng, user)
             _assert_live_variant_invariant(db, adventure.id)
 
