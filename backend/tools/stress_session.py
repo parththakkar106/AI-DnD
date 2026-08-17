@@ -40,9 +40,25 @@ AIDND_STRESS_DATABASE_URL to a **throwaway** Postgres database:
 The harness writes, so it refuses any target whose database name does not say
 'stress' or 'scratch'. Never point it at a database holding real users.
 
-Calibration, against the two figures measured directly on production
-(2026-08-16): a 200-action page load reported 426.7 kB here against 423 KB
-there, and one turn on a 100-memory bank reported 3,258.7 kB against 3,153 kB.
+Calibration. The fixture is sized from production, re-measured 2026-08-17
+against the live Neon database (aggregates only — counts and octet_length
+sums, never row contents):
+
+    per action, text      886 B      -> --narration-bytes 1700, alternating
+                                        with a one-line player input
+    longest adventure     607 actions -> --actions 600
+    context_snapshot      232 KB/row  -> --snapshot-bytes 232000
+    memory bank, largest  100 memories, 6,144 B a vector
+
+The previous defaults were wrong in both directions at once and happened to
+land near the right total: actions were modelled at ~2.1 KB against a real
+886 B, and stories at 200 actions against a real 607. Width was flattering,
+length was not, and length is what a page load pays for.
+
+Filler text is generated word by word rather than repeated. A repeated
+sentence compresses about a hundredfold and prose three- or fourfold, so the
+old fixture would have made any compression measurement on context_snapshot
+meaningless.
 """
 
 import os
@@ -95,31 +111,72 @@ from .dbmeter import Meter, kb
 
 EMBEDDING_DIMS = 1536
 
-# ~74 KB, which is what a real snapshot weighs in production: the assembled
-# prompt is nearly all of it.
-SNAPSHOT_SYSTEM = "You are a masterful storyteller. " * 400
-SNAPSHOT_STORY = "The corridor narrows and the torchlight gutters. " * 1200
+# ~232 KB, measured on production's largest adventure (2026-08-17). The old
+# figure here was 74 KB, taken from the comment in models.py; the real column
+# averages 163 KB a row across the whole table and 232 KB on the adventure that
+# matters, because the assembled prompt grows with the story behind it.
+#
+# Built from varied text rather than one sentence repeated. A repeated sentence
+# compresses about a hundredfold and real prose three- or fourfold, so a
+# fixture made of repeats would make any compression measurement meaningless —
+# and shrinking this column is the open question it exists to answer.
+SNAPSHOT_SYSTEM = None  # set by _build_text()
+SNAPSHOT_STORY = None
 
-_PARAGRAPH = (
-    "The corridor narrows until your shoulders brush wet stone, and the "
-    "torchlight gutters in a draught that smells of cold iron. Somewhere ahead, "
-    "water is moving. You count nine paces before the passage opens into a "
-    "chamber whose ceiling is lost in the dark, and the sound of your own "
-    "breathing comes back to you a half-second late.\n\n"
-    "Gwen catches your sleeve without a word and points at the floor, where a "
-    "line of pale grit has been laid across the threshold in a deliberate arc.\n\n"
-)
+_WORDS = (
+    "corridor narrows shoulders brush wet stone torchlight gutters draught "
+    "smells cold iron somewhere ahead water moving count nine paces passage "
+    "opens chamber ceiling lost dark sound breathing comes back half second "
+    "late Gwen catches sleeve without word points floor line pale grit laid "
+    "across threshold deliberate arc quartermaster bandit camp above ford "
+    "tunnels exchange key lantern rope knife bread rain mud hill road gate "
+    "watchman silver debt promise fever horse cart river bridge mill barley "
+    "smoke rafters bench ale ledger seal wax parchment ink candle shutter "
+    "hinge bolt cellar barrel salt fish nets harbour tide gull mast canvas"
+).split()
+
+
+def prose(rng: random.Random, nbytes: int) -> str:
+    """Filler of about `nbytes`, varied enough to compress like prose.
+
+    Not decoration. A sentence repeated N times compresses roughly a
+    hundredfold and English roughly three- or fourfold, so a fixture built out
+    of repeats would report a compression ratio that says nothing about the
+    real column — and that ratio is the whole question for context_snapshot.
+    """
+    out: list[str] = []
+    total = 0
+    while total < nbytes:
+        sentence = " ".join(rng.choice(_WORDS) for _ in range(rng.randint(8, 18)))
+        chunk = sentence.capitalize() + ". "
+        out.append(chunk)
+        total += len(chunk)
+    return "".join(out)[:nbytes]
+
+
 PLAYER_INPUT = "> You crouch and look more closely at the grit on the floor."
 
-# Rebound by main() to --narration-bytes. An AI action's length is what makes a
-# page load expensive, and it is the one fixture dimension that cannot be
-# guessed from the schema: production averages ~2.1 KB across all actions,
-# which is ~4 KB of narration alternating with a one-line player input.
-NARRATION = _PARAGRAPH
+# All three are bound by _build_text() from the fixture arguments.
+NARRATION = None
 MEMORY_TEXT = (
     "You found a bandit camp above the ford and agreed to guide Gwen through "
     "the tunnels in exchange for the iron key she took from the quartermaster."
 )
+
+
+def _build_text(args, rng: random.Random) -> None:
+    """Size the three variable-length fixture strings from the arguments.
+
+    Separate from build_fixture so the sizes are decided once, before anything
+    is written, and so a shape's cost is a function of the flags rather than of
+    how many rows happened to be generated first.
+    """
+    global NARRATION, SNAPSHOT_SYSTEM, SNAPSHOT_STORY
+    NARRATION = prose(rng, args.narration_bytes)
+    # The assembled prompt is a system block and the story so far; the split
+    # is roughly one to five in production.
+    SNAPSHOT_SYSTEM = prose(rng, args.snapshot_bytes // 6)
+    SNAPSHOT_STORY = prose(rng, args.snapshot_bytes - args.snapshot_bytes // 6)
 
 
 # --------------------------------------------------------------- fake network
@@ -321,8 +378,13 @@ def parse_args(argv=None):
     p = argparse.ArgumentParser(
         prog="tools.stress_session", description=__doc__.splitlines()[0]
     )
-    p.add_argument("--actions", type=int, default=200,
-                   help="story actions in the fixture (default: 200)")
+    # 607 is production's longest adventure as of 2026-08-17, and length is
+    # the dimension the old default (200) got wrong: real actions are lighter
+    # than this fixture used to make them, but real stories run three times
+    # longer, and length is what a page load pays for.
+    p.add_argument("--actions", type=int, default=600,
+                   help="story actions in the fixture (default: 600, "
+                        "production's longest adventure is 607)")
     p.add_argument("--memories", type=int, default=100,
                    help="memories, all embedded (default: 100)")
     # Deliberately not the app's default (80): a measuring instrument should
@@ -330,10 +392,17 @@ def parse_args(argv=None):
     p.add_argument("--capacity", type=int, default=200,
                    help="Settings.memory_bank_capacity; lower it below "
                         "--memories to exercise eviction (default: 200)")
-    p.add_argument("--narration-bytes", type=int, default=4000,
-                   help="length of an AI action's text; production averages "
-                        "~2.1 KB per action alternating with player input "
-                        "(default: 4000)")
+    # Production's longest adventure carries 886 B of text per action averaged
+    # over both kinds. AI actions alternate with a one-line player input, so
+    # the AI half has to be about twice that.
+    p.add_argument("--narration-bytes", type=int, default=1700,
+                   help="length of an AI action's text; alternating with a "
+                        "one-line player input this averages ~890 B/action, "
+                        "which is what production measures (default: 1700)")
+    p.add_argument("--snapshot-bytes", type=int, default=232_000,
+                   help="context_snapshot per action; 232 KB is the average "
+                        "on production's longest adventure, 163 KB is the "
+                        "average across the whole table (default: 232000)")
     p.add_argument("--shapes", default=",".join(SHAPES),
                    help=f"comma-separated subset of: {', '.join(SHAPES)}")
     p.add_argument("--repeat", type=int, default=1,
@@ -354,11 +423,8 @@ def main(argv=None) -> int:
     if unknown:
         sys.exit(f"unknown shape(s): {', '.join(unknown)}")
 
-    global NARRATION
-    repeats = max(1, -(-args.narration_bytes // len(_PARAGRAPH)))
-    NARRATION = (_PARAGRAPH * repeats)[: args.narration_bytes]
-
     rng = random.Random(args.seed)
+    _build_text(args, random.Random(args.seed ^ 0x5F5F))
     adv_id, user_id = build_fixture(args, rng)
     install_fakes(user_id, rng)
 
@@ -367,7 +433,8 @@ def main(argv=None) -> int:
     # bytes would drown everything the shapes report.
     meter.attach(engine)
 
-    print(f"fixture: {args.actions} actions × {args.narration_bytes} B · "
+    print(f"fixture: {args.actions} actions × {args.narration_bytes} B "
+          f"(+{args.snapshot_bytes // 1024} kB snapshot, deferred) · "
           f"{args.memories} memories × {EMBEDDING_DIMS} dims · "
           f"capacity {args.capacity}")
     if args.no_embeddings:
