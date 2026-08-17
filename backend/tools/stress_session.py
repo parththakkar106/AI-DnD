@@ -226,19 +226,19 @@ class FakeEmbeddings:
 # underneath all of it. Measured on a freshly built default fixture, the
 # columns a story tree has to migrate correctly look like this:
 #
-#   state_before / world_state_before   NULL on all 600 rows. SP4 moves these
-#                                       from *before* to *after* snapshots, and
-#                                       a migration over NULLs proves nothing.
+#   state_after / world_state_after     the same value on all 600 rows (they
+#                                       were state_before, and NULL, until SP4
+#                                       turned them round). A rollback over
+#                                       identical snapshots proves nothing.
 #   scenario_id / world_state           absent. No RPG layer, so the cooldown
 #                                       clock SP5 must not advance never runs.
 #   adventure_scripts                   none. script_state rollback is exactly
 #                                       what a branch switch reuses.
 #   memory_cursor / summary_cursor      both 0. SP3 replaces the cursors.
-#   variants                            two attempts of byte-identical text,
-#                                       variant_index always 0 — so "which
-#                                       attempt is live?", the one question
-#                                       SP4's migration has to answer, has no
-#                                       observable answer.
+#   sibling attempts                    two of byte-identical text with the
+#                                       first always live — so "which attempt
+#                                       is live?", the one question SP4 has to
+#                                       answer, has no observable answer.
 #
 # --rich fills in exactly those and changes nothing else, so the measuring
 # fixture's numbers stay comparable run to run. It is a *correctness* fixture:
@@ -305,29 +305,23 @@ def rich_world_state(schema: dict, turn: int) -> dict:
     return ws
 
 
-def rich_variants(rng: random.Random, index: int) -> tuple[list, int]:
-    """Distinguishable retry attempts, and which one is live.
+def rich_attempts(rng: random.Random, index: int) -> tuple[list[str], int]:
+    """Distinguishable retry attempts, and which one the story tells.
 
-    Every attempt in the default fixture carries the same text with
-    variant_index pinned at 0. That is the one thing SP4 has to get right and
-    the one thing that fixture cannot witness, so here the texts differ, the
-    counts differ, and the live one is often not the last.
+    Every attempt in the default fixture carries the same text with the live
+    one pinned at 0. That is the one thing SP4 has to get right and the one
+    thing that fixture cannot witness, so here the texts differ, the counts
+    differ, and the live one is often not the last.
     """
     count = 3 if index % 12 == 1 else 2
-    entries = [
-        {
-            "text": f"[attempt {n + 1} of {count} at turn {index}] {prose(rng, 240)}",
-            "reasoning": None,
-            "script_state": rich_script_state(index),
-            "created_at": f"2026-01-01T00:{index % 60:02d}:{n:02d}",
-        }
+    texts = [
+        f"[attempt {n + 1} of {count} at turn {index}] {prose(rng, 240)}"
         for n in range(count)
     ]
     # Deliberately not always the newest: a player who retried twice and then
-    # went back to the first take is the case that breaks a migration which
-    # assumes the live attempt is the last one written.
-    live = 0 if index % 18 == 1 else count - 1
-    return entries, live
+    # went back to the first take is the case that breaks anything assuming the
+    # live attempt is the last one written.
+    return texts, (0 if index % 18 == 1 else count - 1)
 
 
 def add_rich_extras(db, args, rng: random.Random, user, adventure) -> None:
@@ -387,7 +381,7 @@ def add_second_adventure(db, rng: random.Random, user) -> int:
             adventure_id=other.id, index=i,
             type="ai" if i % 2 else "do",
             text=f"[second adventure] turn {i}. {prose(rng, 200)}",
-            state_before=rich_script_state(i),
+            state_after=rich_script_state(i),
         )
         tree.place_action(db, other, action)
         db.add(action)
@@ -404,28 +398,31 @@ def add_second_adventure(db, rng: random.Random, user) -> int:
 
 
 def _assert_live_variant_invariant(db, adventure_id: int) -> None:
-    """`text` mirrors the live attempt, on every retried row.
+    """Exactly one attempt per turn is live, on every turn.
 
-    Checked here rather than trusted, because SP4's migration reads exactly
-    this to decide which sibling node becomes the head of the turn. A fixture
-    that quietly violated it would let a wrong migration look right.
+    Checked here rather than trusted, because a coordinate with two live
+    siblings tells its story twice and a coordinate with none drops a turn out
+    of it — and both fail by *reading* wrong, never by raising. A fixture that
+    quietly violated it would let wrong code look right.
     """
-    rows = (
+    groups: dict[tuple, list[models.Action]] = {}
+    for action in (
         db.query(models.Action)
-        .filter(models.Action.adventure_id == adventure_id,
-                models.Action.variant_count > 0)
+        .filter(models.Action.adventure_id == adventure_id)
         .all()
-    )
-    for action in rows:
-        entries = action.variants or []
-        live = entries[action.variant_index]["text"]
-        if live != action.text:
+    ):
+        groups.setdefault((action.branch_id, action.depth), []).append(action)
+    retried = 0
+    for (branch_id, depth), rows in groups.items():
+        live = [a for a in rows if a.live]
+        if len(live) != 1:
             sys.exit(
-                f"fixture is inconsistent: action index {action.index} has text "
-                f"that is not its live attempt (variant_index="
-                f"{action.variant_index} of {len(entries)})."
+                f"fixture is inconsistent: branch {branch_id} depth {depth} has "
+                f"{len(live)} live attempts out of {len(rows)}."
             )
-    if not rows:
+        if len(rows) > 1:
+            retried += 1
+    if not retried:
         sys.exit("--rich built no retried actions; raise --actions above 6.")
 
 
@@ -476,47 +473,55 @@ def build_fixture(args, rng: random.Random) -> tuple[int, int]:
             retried = is_ai and i % 6 == 1
             if args.rich:
                 # Distinguishable attempts, and a live one that is often not
-                # the last written. `text` must mirror the live attempt — that
-                # invariant is what SP4's migration reads to decide which
-                # sibling becomes the head.
-                entries, live = rich_variants(rng, i) if retried else ([], 0)
-                body = entries[live]["text"] if retried else (
-                    f"[turn {i}] {NARRATION}" if is_ai else f"[turn {i}] {PLAYER_INPUT}"
-                )
+                # the last written.
+                texts, live = rich_attempts(rng, i) if retried else ([], 0)
+                if not retried:
+                    texts = [f"[turn {i}] {NARRATION}" if is_ai
+                             else f"[turn {i}] {PLAYER_INPUT}"]
             else:
-                entries, live = (
-                    [{"text": NARRATION, "reasoning": None, "script_state": {},
-                      "created_at": "2026-01-01T00:00:00"} for _ in range(2)]
-                    if retried else []
-                ), 0
-                body = NARRATION if is_ai else PLAYER_INPUT
-            action = models.Action(
-                adventure_id=adventure.id,
-                index=i,
-                type="ai" if is_ai else "do",
-                text=body,
-                context_snapshot={"system": SNAPSHOT_SYSTEM, "story": SNAPSHOT_STORY},
-                world_delta={"delta": {"player.hp": -3},
-                             "applied": [{"path": "player.hp", "old": 88, "new": 85}]},
-                # Every third AI turn was retried once, so the retry history is
-                # carrying weight a list response must not pay for.
-                variants=entries or None,
-                variant_count=len(entries),
-                variant_index=live,
-                # NULL unless --rich. These are the columns a story tree turns
-                # from *before* pictures into *after* ones, so a fixture that
-                # leaves them unset cannot witness that change.
-                state_before=rich_script_state(i) if args.rich else None,
-                world_state_before=(
-                    rich_world_state(schema, i) if args.rich else None
-                ),
-            )
-            # A fresh database is built by create_all and stamped LATEST, so no
-            # migration ever runs against it and the tree backfill never sees
-            # it. The fixture has to stamp its own nodes, or it would be the one
-            # database in the project whose actions have no branch.
-            tree.place_action(db, adventure, action)
-            db.add(action)
+                texts = [NARRATION, NARRATION] if retried else [
+                    NARRATION if is_ai else PLAYER_INPUT
+                ]
+                live = 0
+            for n, body in enumerate(texts):
+                action = models.Action(
+                    adventure_id=adventure.id,
+                    index=i,
+                    type="ai" if is_ai else "do",
+                    text=body,
+                    # The turn's assembled prompt is stored once, on the
+                    # attempt the story tells; a superseded sibling keeps only
+                    # its own slices. That is the invariant `app/attempts.py`
+                    # maintains, and a fixture that ignored it would multiply
+                    # the biggest column in the database by the retry count.
+                    context_snapshot=(
+                        {"system": SNAPSHOT_SYSTEM, "story": SNAPSHOT_STORY}
+                        if n == live else
+                        {"raw_output": body}
+                    ),
+                    world_delta={"delta": {"player.hp": -3},
+                                 "applied": [{"path": "player.hp", "old": 88, "new": 85}]},
+                    # Every third AI turn was retried once, so a turn is
+                    # sometimes several rows sharing one coordinate.
+                    live=(n == live),
+                    variant_index=n,
+                    variant_count=len(texts) if len(texts) > 1 else 0,
+                    # Monotonic under --rich, so a bad rollback reads as a
+                    # wrong number rather than as nothing. Left to
+                    # `tree.stamp_outcome` otherwise, which writes the
+                    # adventure's (unchanging) state — true, and no witness.
+                    state_after=rich_script_state(i) if args.rich else None,
+                    world_state_after=(
+                        rich_world_state(schema, i) if args.rich else None
+                    ),
+                )
+                # A fresh database is built by create_all and stamped LATEST,
+                # so no migration ever runs against it and the tree backfill
+                # never sees it. The fixture has to stamp its own nodes, or it
+                # would be the one database in the project whose actions have
+                # no branch.
+                tree.place_action(db, adventure, action)
+                db.add(action)
 
         for i in range(args.memories):
             memory = models.Memory(
@@ -717,7 +722,7 @@ def parse_args(argv=None):
                         "blind spot, where the bank's cost is invisible")
     p.add_argument("--rich", action="store_true",
                    help="populate the columns the measuring fixture leaves at "
-                        "their defaults: state_before/world_state_before, an "
+                        "their defaults: state_after/world_state_after, an "
                         "RPG scenario and live world state, adventure scripts, "
                         "non-zero memory/summary cursors, pinned and forgotten "
                         "memories, distinguishable retry attempts, and a second "

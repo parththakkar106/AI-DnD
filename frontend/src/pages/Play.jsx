@@ -1692,8 +1692,15 @@ export default function Play() {
                       busy={busy}
                       previewIndex={previewing ? previewing.index : null}
                       onPreview={setPreview}
-                      onSwitched={(updated) =>
-                        setActions((prev) => prev.map((a) => (a.id === updated.id ? updated : a)))}
+                      onSwitched={(updated) => {
+                        // Matched on the action we asked about, not on the one
+                        // that came back. Since the story tree made every
+                        // attempt its own row (phase 14 SP4), switching moves
+                        // the story onto a *different* row rather than
+                        // rewriting this one, so the reply carries a new id.
+                        setActions((prev) => prev.map(
+                          (a) => (a.id === action.id ? updated : a)))
+                      }}
                       onError={(message) => setToast({ text: message, isError: true })}
                     />
                   )}

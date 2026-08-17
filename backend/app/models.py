@@ -324,6 +324,17 @@ class Action(Base):
         ForeignKey("branches.id", ondelete="CASCADE"), nullable=True
     )
     depth: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Phase 14, SP4: whether this node is the one the story tells at its
+    # coordinate. Retry no longer rewrites a row — it writes a *sibling* at the
+    # same (branch, depth), so a coordinate can hold several attempts and
+    # exactly one of them is on the path. `lineage.Path.clause` is the only
+    # place that reads this, for the same reason it is the only place that
+    # knows about branches: an attempt leaking into a read is a story quietly
+    # telling itself twice.
+    #
+    # A node with no siblings is live, which is why the default is True and why
+    # every pre-SP4 row is correct without being visited.
+    live: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     type: Mapped[str] = mapped_column(String(20))  # start|do|say|story|continue|ai
     text: Mapped[str] = mapped_column(Text, default="")
     # Reasoning-model "thinking" that preceded the text (AI actions only).
@@ -348,30 +359,58 @@ class Action(Base):
     # and for re-attaching the emit block when replaying history to the model.
     # Mirrors the active variant, same as text/reasoning/context_snapshot.
     world_delta: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    # Copy of Adventure.script_state as it was immediately BEFORE this action's
-    # script hooks ran, so undo/retry can roll the shared scoreboard back.
-    # NULL for actions created before this column existed. Deferred: only ever
-    # read for the one action being undone or retried.
+    # LEGACY (SP4): Adventure.script_state / world_state as they were
+    # immediately BEFORE this action's script hooks ran. Unwritten since SP4
+    # and read by nothing — the *after* pair below replaced them, because a
+    # sibling attempt needs its own outcome and a "before" picture is shared by
+    # every attempt at the turn. Kept for one release so a rolled-back build
+    # still finds a real snapshot on every row it wrote itself; SP8 drops them
+    # beside `index` and `variants`.
     state_before: Mapped[dict | None] = mapped_column(
         JSON, nullable=True, deferred=True
     )
-    # Phase 12: same idea for the RPG world_state, so undo/retry rolls it back too.
     world_state_before: Mapped[dict | None] = mapped_column(
         JSON, nullable=True, deferred=True
     )
-    # Retry history (AI actions): every attempt made for this turn, oldest
-    # first, INCLUDING the active one. NULL/empty means never retried — the row
-    # is its own only version. `variant_index` says which entry `text`,
-    # `reasoning` and `context_snapshot` currently mirror; retry appends and
-    # points here instead of deleting the row, so nothing is lost.
+    # Phase 14, SP4: the shared script scoreboard and the RPG world state as
+    # they stood once this node had been played — *its* outcome, not its
+    # starting position.
     #
-    # Deferred for the same reason as context_snapshot: a list response only
-    # ever needs the *count* (see variant_count below), but the column holds
-    # every discarded attempt's full narration, so loading it in bulk made each
-    # retry a permanent tax on every later page load of that adventure.
+    # Two things want this and neither can use a "before" picture. Switching
+    # between siblings has to put back the state the chosen attempt produced,
+    # and the attempts differ precisely in what they produced. And rolling back
+    # to before a turn is "the state the node in front of it left behind",
+    # which is one lookup on the path rather than a snapshot that has to be
+    # taken from inside the turn being rolled back.
+    #
+    # NULL on rows written before SP4 that the migration could not derive one
+    # for, and tolerated everywhere: a missing snapshot means "leave the live
+    # state alone", never "reset it".
+    #
+    # Deferred: only ever read for the one node being switched to, undone or
+    # retried past.
+    state_after: Mapped[dict | None] = mapped_column(
+        JSON, nullable=True, deferred=True
+    )
+    world_state_after: Mapped[dict | None] = mapped_column(
+        JSON, nullable=True, deferred=True
+    )
+    # LEGACY (SP4): retry history as a JSON repeating group. Every attempt at
+    # this turn is its own row now — see `live` above and `app/attempts.py` —
+    # so nothing reads this. Kept until SP8 for the same reason `index` is, and
+    # read exactly once more on the way out: migration 60 is what turns each
+    # entry into the sibling row it should always have been.
     variants: Mapped[list | None] = mapped_column(JSON, nullable=True, deferred=True)
-    # len(variants), maintained on write by set_variants() so the deferred
-    # column above never has to be fetched just to count it. 0 = never retried.
+    # Where the row sits in its sibling group: `variant_index` is this
+    # attempt's ordinal, oldest first, and `variant_count` is how many attempts
+    # the group holds (0, not 1, when the turn was never retried — the pager
+    # reads that as "nothing to page through").
+    #
+    # A cache of two facts about the group, maintained in one place
+    # (`attempts.renumber`) for the same reason it used to be a cache of
+    # `len(variants)`: a page response wants them for every row and must not
+    # pay a query per turn to get them. SP7 replaces the pager with the branch
+    # view and SP8 drops both columns.
     variant_count: Mapped[int] = mapped_column(Integer, default=0)
     variant_index: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

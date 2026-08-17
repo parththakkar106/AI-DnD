@@ -102,6 +102,12 @@ class Path:
         after it was typed. An action with no depth is a pre-tree row that no
         read should see, so actions never pass this.
 
+        Actions also have to be *live* (SP4). A coordinate can hold several
+        attempts at the same turn, and the story tells one of them; the losing
+        siblings sit at the same branch and depth and are excluded here, once,
+        so that no read of the story has to know that retries exist. Only
+        `app/attempts.py` looks past this.
+
         An empty path yields `false`, not "no filter": an adventure whose nodes
         carry no branch has no story, and the loud version of that is an empty
         page, not every branch at once.
@@ -109,7 +115,10 @@ class Path:
         entries = self.entries if count is None else self.entries[:count]
         if not entries:
             return false()
-        return or_(*[self._entry_clause(model, b, d, unanchored) for b, d in entries])
+        on_path = or_(*[self._entry_clause(model, b, d, unanchored) for b, d in entries])
+        if model is models.Action:
+            return and_(on_path, models.Action.live.is_(True))
+        return on_path
 
     @staticmethod
     def _entry_clause(model, branch_id: int, max_depth: int | None, unanchored=False):
@@ -128,7 +137,12 @@ class Path:
         Used where the rows are already in memory (the scripting pipeline hands
         user scripts the whole history), so an already-loaded collection can be
         cut down to the path without a second read.
+
+        `live` is checked first, and only on rows that have the attribute:
+        memories have no siblings to lose to.
         """
+        if getattr(node, "live", True) is False:
+            return False
         for branch_id, max_depth in self.entries:
             if node.branch_id != branch_id:
                 continue

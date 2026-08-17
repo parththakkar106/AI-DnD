@@ -22,6 +22,8 @@ script and test ever written too, and its breach is a story quietly missing
 turns. So the invariant is enforced at the flush instead of asked for.
 """
 
+import copy
+
 from sqlalchemy import func, insert, update
 from sqlalchemy.orm import Session
 
@@ -149,6 +151,27 @@ def attach_memory(memory: models.Memory, node: models.Action) -> None:
     memory.depth = node.depth
 
 
+def stamp_outcome(adventure: models.Adventure, action: models.Action) -> None:
+    """Give a node the state it left behind, if its writer did not.
+
+    The floor under `attempts.snapshot_outcome`, and it is here for the same
+    reason `place_action` has one: from SP4 a node with no outcome is a node
+    undo and retry cannot roll back past, and it fails by leaving the
+    scoreboard where it was rather than by raising. The turn engine records the
+    outcome itself and this skips those rows; what it catches is every fixture,
+    script and import that writes a story straight through the ORM.
+
+    What it writes is the truth as of the flush: a writer that changes no state
+    between two nodes leaves the same state behind both of them.
+    """
+    if action.state_after is None:
+        state = adventure.script_state if isinstance(adventure.script_state, dict) else {}
+        action.state_after = copy.deepcopy(state)
+    if action.world_state_after is None:
+        world = adventure.world_state if isinstance(adventure.world_state, dict) else {}
+        action.world_state_after = copy.deepcopy(world)
+
+
 def place_new_nodes(session: Session) -> None:
     """Place every unplaced node about to be inserted. Runs on every flush.
 
@@ -178,11 +201,15 @@ def place_new_nodes(session: Session) -> None:
             place = place_memory
         else:
             continue
-        if obj.branch_id is not None or obj.adventure_id is None:
+        if obj.adventure_id is None:
             continue
         adventure = session.get(models.Adventure, obj.adventure_id)
         if adventure is None:
             continue
+        if isinstance(obj, models.Action):
+            stamp_outcome(adventure, obj)
+        if obj.branch_id is not None:
+            continue  # already placed at its call site
         head = heads.get(adventure.id)
         if head is None:
             head = heads[adventure.id] = head_branch(session, adventure)

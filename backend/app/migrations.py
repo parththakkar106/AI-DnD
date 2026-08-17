@@ -19,6 +19,7 @@ migrations added from Phase 9 on must run on both dialects.
 
 import json
 import re
+from datetime import datetime
 
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
@@ -226,6 +227,30 @@ MIGRATIONS: list[tuple[int, str | dict[str, str]]] = [
     (54, "ALTER TABLE adventures ADD COLUMN memory_cursor_depth INTEGER NOT NULL DEFAULT -1"),
     (55, "ALTER TABLE adventures ADD COLUMN summary_cursor_branch_id INTEGER"),
     (56, "ALTER TABLE adventures ADD COLUMN summary_cursor_depth INTEGER NOT NULL DEFAULT -1"),
+    # Phase 14, SP4 — a retry stops rewriting a row and writes a sibling beside
+    # it. `live` says which sibling the story tells; `state_after` /
+    # `world_state_after` give each attempt its own outcome to be switched back
+    # to. The legacy `variants` / `variant_index` / `state_before` /
+    # `world_state_before` columns stay, unread, until SP8.
+    #
+    # **This rewrites every row of `actions` three times** (one ADD COLUMN
+    # backfill pass each on Postgres) and then inserts a row per discarded
+    # attempt, so the deploy that ships it must be followed by, once:
+    #
+    #     VACUUM FULL actions;
+    #
+    # on the direct endpoint, not -pooler. Same 144 MB lesson as SP1's.
+    (57, "ALTER TABLE actions ADD COLUMN live BOOLEAN NOT NULL DEFAULT true"),
+    (58, "ALTER TABLE actions ADD COLUMN state_after JSON"),
+    (59, "ALTER TABLE actions ADD COLUMN world_state_after JSON"),
+    # The two data passes, hung off a version of their own so they run after
+    # all three columns exist: derive the after-snapshots from the before-ones
+    # (_backfill_state_after), then split each `variants` list into sibling
+    # rows (_split_variants_into_siblings). The index below is the one those
+    # siblings make worth having — a group lookup is (branch_id, depth) with a
+    # handful of rows behind it, which ix_actions_branch_depth already serves,
+    # so this is a no-op statement that gives the passes a version to hang on.
+    (60, "CREATE INDEX IF NOT EXISTS ix_actions_branch_depth ON actions (branch_id, depth)"),
 ]
 
 LATEST_VERSION = max((v for v, _ in MIGRATIONS), default=1)
@@ -237,6 +262,7 @@ EMBEDDING_BLOB_VERSION = 38
 SNAPSHOT_COMPRESS_VERSION = 43
 TREE_BACKFILL_VERSION = 52
 CURSOR_ANCHOR_VERSION = 56
+SIBLING_SPLIT_VERSION = 60
 
 # An adventure with no actions has no tip. -1 keeps "the next node goes at
 # head_depth + 1" true without a special case (mirrors tree.NO_DEPTH).
@@ -569,6 +595,210 @@ def _backfill_cursor_anchors(conn) -> None:
         """))
 
 
+# The per-attempt slices of a context snapshot, frozen here as they stood at
+# version 60 (`adventures.VARIANT_SNAPSHOT_KEYS`, now `attempts.ATTEMPT_KEYS`).
+# Everything else in a snapshot is the assembled prompt, which every attempt at
+# one turn shares — which is why a discarded attempt's row carries only these.
+_ATTEMPT_KEYS = ("world_state", "script", "raw_output")
+
+
+def _backfill_state_after(conn) -> None:
+    """Turn each action's "before" snapshots into the "after" ones SP4 reads.
+
+    The state a node left behind is the state the node in front of it started
+    from, so `state_after` of action *n* is `state_before` of action *n + 1* —
+    exactly, not approximately: the hooks that ran between them are this turn's,
+    and both snapshots were taken with them already applied. The newest action
+    of an adventure has nothing in front of it, and what it left behind is
+    simply what the adventure is carrying right now.
+
+    Two statements per column rather than one COALESCE, because the second is
+    guarded on there being no later action at all — a row whose successor
+    predates `state_before` must stay NULL rather than inherit the tip's state.
+
+    Ordered by `index`, which is still the story's order at version 60: SP4 is
+    the first migration where `depth` and `index` can disagree, and it has not
+    run yet when this does.
+    """
+    for column, live in (
+        ("state_after", "script_state"),
+        ("world_state_after", "world_state"),
+    ):
+        before = column.replace("_after", "_before")
+        conn.execute(text(f"""
+            UPDATE actions SET {column} = (
+                SELECT n.{before} FROM actions n
+                WHERE n.adventure_id = actions.adventure_id
+                  AND n."index" > actions."index"
+                ORDER BY n."index", n.id LIMIT 1
+            )
+            WHERE actions.{column} IS NULL
+        """))
+        conn.execute(text(f"""
+            UPDATE actions SET {column} = (
+                SELECT adv.{live} FROM adventures adv
+                WHERE adv.id = actions.adventure_id
+            )
+            WHERE actions.{column} IS NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM actions n
+                  WHERE n.adventure_id = actions.adventure_id
+                    AND n."index" > actions."index"
+              )
+        """))
+
+
+def _split_variants_into_siblings(conn) -> None:
+    """Give every discarded retry attempt the row it should always have had.
+
+    `actions.variants` is a JSON repeating group: attempts at one turn, oldest
+    first, with `variant_index` naming the one the row's own `text` mirrors.
+    SP4 makes each attempt a node — same branch, same depth, `live` on exactly
+    one of them — so this reads the list one last time and writes it out as
+    siblings.
+
+    The row that already exists keeps its attempt (the one it mirrors) and its
+    context snapshot, which is the assembled prompt for the whole turn and is
+    stored once per turn, never once per attempt. A sibling's snapshot carries
+    only the slices that actually differ between attempts, which is precisely
+    what the JSON entry held — so this changes how the bytes are arranged and
+    not how many there are.
+
+    In Python rather than SQL because the shape of the work is "iterate a JSON
+    array and insert a row per element", which the two dialects spell
+    differently and neither spells well. It is bounded by the number of turns
+    anyone has ever retried, not by the size of the table, and it reads no
+    `context_snapshot` at all.
+
+    Resumable: a group that already has as many rows as its `variant_count`
+    claims has been split, and is skipped.
+    """
+    actions = Base.metadata.tables["actions"]
+    last_id = 0
+    while True:
+        rows = conn.execute(
+            text("""
+                SELECT id, adventure_id, branch_id, depth, "index", type,
+                       created_at, variants, variant_index
+                FROM actions
+                WHERE variants IS NOT NULL AND id > :last
+                ORDER BY id LIMIT :batch
+            """),
+            {"last": last_id, "batch": BACKFILL_BATCH},
+        ).mappings().all()
+        if not rows:
+            return
+        last_id = rows[-1]["id"]
+        for row in rows:
+            entries = row["variants"]
+            if isinstance(entries, str):
+                entries = json.loads(entries)
+            if not isinstance(entries, list) or len(entries) < 2:
+                continue
+            _split_one_action(conn, actions, row, entries)
+
+
+def _split_one_action(conn, actions, row, entries: list) -> None:
+    live_index = row["variant_index"] or 0
+    live_index = min(max(live_index, 0), len(entries) - 1)
+    already = conn.execute(
+        text("""
+            SELECT COUNT(*) FROM actions
+            WHERE adventure_id = :adv AND branch_id = :branch AND depth = :depth
+        """),
+        {"adv": row["adventure_id"], "branch": row["branch_id"], "depth": row["depth"]},
+    ).scalar()
+    if already and already >= len(entries):
+        return  # a previous run of this pass already split it
+    # The live attempt's own recorded outcome beats the one _backfill_state_after
+    # derived from the turn in front of it — they agree, but only one of them is
+    # a fact about this attempt. Left alone where the entry has none to give
+    # (an adventure with no RPG layer stores no world state per attempt), so a
+    # derived value is never overwritten with a NULL.
+    kept = {"live": True, "variant_count": len(entries), "variant_index": live_index}
+    live_state = _entry_script_state(entries[live_index])
+    live_world = _entry_world_state(entries[live_index])
+    if live_state is not None:
+        kept["state_after"] = live_state
+    if live_world is not None:
+        kept["world_state_after"] = live_world
+    # Through the Table rather than text(), here and below: these values are
+    # dicts headed for JSON columns, and the column type is the only thing that
+    # knows how to spell one on this dialect.
+    conn.execute(actions.update().where(actions.c.id == row["id"]).values(**kept))
+    siblings = [
+        {
+            "adventure_id": row["adventure_id"],
+            "index": row["index"],
+            "branch_id": row["branch_id"],
+            "depth": row["depth"],
+            "live": False,
+            "type": row["type"],
+            "text": str(entry.get("text") or ""),
+            "reasoning": entry.get("reasoning"),
+            "context_snapshot": _attempt_snapshot(entry) or None,
+            "world_delta": _entry_world_delta(entry),
+            "state_before": None,
+            "world_state_before": None,
+            "state_after": _entry_script_state(entry),
+            "world_state_after": _entry_world_state(entry),
+            "variants": None,
+            "variant_count": len(entries),
+            "variant_index": i,
+            "created_at": _entry_created_at(entry, row["created_at"]),
+        }
+        for i, entry in enumerate(entries)
+        if i != live_index and isinstance(entry, dict)
+    ]
+    if siblings:
+        conn.execute(actions.insert(), siblings)
+
+
+def _entry_script_state(entry) -> dict | None:
+    state = (entry or {}).get("script_state")
+    return state if isinstance(state, dict) else None
+
+
+def _entry_world_state(entry) -> dict | None:
+    state = ((entry or {}).get("world_state") or {}).get("state")
+    return state if isinstance(state, dict) else None
+
+
+def _entry_world_delta(entry) -> dict | None:
+    ws = (entry or {}).get("world_state")
+    if not isinstance(ws, dict):
+        return None
+    return {
+        "delta": ws.get("delta") or {},
+        "applied": (ws.get("report") or {}).get("applied") or [],
+    }
+
+
+def _attempt_snapshot(entry) -> dict:
+    return {k: entry[k] for k in _ATTEMPT_KEYS if isinstance(entry, dict) and k in entry}
+
+
+def _entry_created_at(entry, fallback):
+    """The attempt's own timestamp, falling back to the row's.
+
+    Only ever cosmetic — sibling order is `variant_index`, which this pass
+    writes explicitly, precisely so that nothing depends on two attempts made
+    in the same second sorting the way they were made.
+    """
+    raw = (entry or {}).get("created_at")
+    if isinstance(raw, str) and raw:
+        try:
+            return datetime.fromisoformat(raw)
+        except ValueError:
+            pass
+    if isinstance(fallback, str):
+        try:
+            return datetime.fromisoformat(fallback)
+        except ValueError:
+            return None
+    return fallback
+
+
 def _get_version(conn) -> int:
     if conn.dialect.name == "sqlite":
         return conn.execute(text("PRAGMA user_version")).scalar() or 1
@@ -626,6 +856,13 @@ def bootstrap(engine: Engine) -> None:
                     _backfill_tree(conn)
                 if version == CURSOR_ANCHOR_VERSION:
                     _backfill_cursor_anchors(conn)
+                # Order matters: the split reads what the first pass wrote for
+                # the rows it does not touch, and overwrites it for the ones it
+                # does — an attempt's own outcome beats one derived from the
+                # turn after it.
+                if version == SIBLING_SPLIT_VERSION:
+                    _backfill_state_after(conn)
+                    _split_variants_into_siblings(conn)
                 current = version
         _set_version(conn, current)
         _encrypt_plaintext_api_keys(conn)

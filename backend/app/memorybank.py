@@ -4,9 +4,7 @@
 After each turn, a fire-and-forget task (`run_post_turn`) runs with its own DB
 session:
   - every MEMORY_INTERVAL actions (starting at MEMORY_START), each uncovered
-    block of actions is summarized into a short "memory". Summarization only
-    ever reads *settled* actions (see settled_story_actions) — the newest action
-    is held back one turn because it is still retryable;
+    block of actions is summarized into a short "memory";
   - every SUMMARY_INTERVAL actions, the Story Summary is rewritten folding in
     the new memories (the user-edited text is always the base, never clobbered);
   - new memories are embedded (OpenAI-compatible /v1/embeddings) and the bank
@@ -154,48 +152,6 @@ def _vectors_for(db: Session, adventure_id: int, ids: list[int]) -> dict[int, ar
             if blob:
                 cached[memory_id] = vectors.unpack(blob)
     return cached
-
-
-def settled_count(adventure: models.Adventure) -> int:
-    """How many story actions are old enough to summarize: all but the newest.
-
-    See settled_story_actions for why one action is held back. Counting rather
-    than listing keeps the post-turn pass off the whole story.
-    """
-    return max(history.count(adventure) - 1, 0)
-
-
-def settled_after(adventure: models.Adventure, depth: int) -> int:
-    """How many settled story actions lie past `depth`.
-
-    "How much story this pass has not read yet". The newest action is never
-    settled, so it is the one subtracted — and a cursor sitting at or past the
-    tip (undo moved the story back behind it) comes out at zero or below and
-    simply does no work, which is what the position cursors needed a clamp
-    every post-turn pass to achieve.
-    """
-    return history.count_after(adventure, depth) - 1
-
-
-def settled_story_actions(adventure: models.Adventure) -> list[models.Action]:
-    """Story actions old enough to summarize: everything but the newest one.
-
-    The plain-list form of the rule. The passes below use `settled_count` and
-    `settled_after` instead, which express the same thing without reading the
-    whole story; this stays as the statement of what they must agree with.
-
-    Only the *last* action can be retried, so once an action has another action
-    after it, its text is final. Summarizing right up to the newest action meant
-    a memory could describe an attempt the player then retried away — the
-    memory's cursor has already advanced, so it is never regenerated, leaving a
-    memory (and, downstream, a story summary) describing narration that is no
-    longer in the story. Holding one action back costs a turn of latency and
-    makes that unreachable.
-
-    The result is always a prefix of the story, so an anchor set from it can
-    never sit past the settled end and no action is ever skipped.
-    """
-    return story_actions(adventure)[:-1]
 
 
 def forget_node(db: Session, adventure: models.Adventure, action: models.Action) -> int:
@@ -401,9 +357,9 @@ async def _create_due_memories(
         # but this loop is the only thing that moves the anchor, so both
         # numbers have to be current.
         anchor = cursors.MEMORY.depth(db, adventure)
-        if settled_after(adventure, anchor) < MEMORY_INTERVAL:
-            return  # no full block of settled story past the mark
-        if settled_count(adventure) < MEMORY_START:
+        if history.count_after(adventure, anchor) < MEMORY_INTERVAL:
+            return  # no full block of story past the mark
+        if history.count(adventure) < MEMORY_START:
             return  # ...and the adventure is too short to have started at all
         # (that order on purpose: the common answer is "nothing due", and the
         # first question answers it without asking how long the story is)
@@ -440,13 +396,13 @@ async def _update_story_summary(
     adventure: models.Adventure, settings: models.Settings, db: Session
 ) -> None:
     anchor = cursors.SUMMARY.depth(db, adventure)
-    uncovered = settled_after(adventure, anchor)
+    uncovered = history.count_after(adventure, anchor)
     if uncovered < SUMMARY_INTERVAL:
         return
     # Where the summary will stand once this run succeeds. Read before the AI
-    # call, not after: the mark is the settled end of the story as this pass
-    # saw it, and a turn landing meanwhile must not be quietly claimed as read.
-    caught_up = history.newest_settled(adventure)
+    # call, not after: the mark is the end of the story as this pass saw it,
+    # and a turn landing meanwhile must not be quietly claimed as read.
+    caught_up = history.newest(adventure)
     if caught_up is None:
         return
 

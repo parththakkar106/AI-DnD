@@ -28,12 +28,12 @@ Three rules hold everything together:
   SQL does. This is the line that would silently assemble a prompt out of two
   different stories, which is why `lineage.Path` owns both halves of it.
 
-Ordering is by `depth` now, not `index`. The two hold the same numbers until
-retry stops mutating rows (SP4), but only one of them is a position along a
-path.
+Ordering is by `depth` now, not `index`. Since SP4 the two can hold the same
+number on *different rows* — attempts at one turn share both — so only `depth`
+plus the branch clause's `live` test says which of them the story is.
 
 SP3 added the reads that count *from a node* rather than from the start —
-`count_after`, `after`, `newest_settled`. The memory bank used to ask for
+`count_after`, `after`, `newest`. The memory bank used to ask for
 "positions 12 to 18 of the story", which is a question whose answer moves when
 an action is deleted from in front of it. It now asks for "the six actions
 after depth 41", which is the same question a fork has to answer anyway.
@@ -202,8 +202,9 @@ def story_actions(
     or `count` anywhere the caller only needs part of it.
 
     `exclude_action_id` drops one action from the story — used by retry, where
-    the row being regenerated is still attached to the adventure (it holds the
-    variant history) but must not appear in the context assembled to replace it.
+    the attempt being replaced is still the live node of its turn (it stays
+    live until a replacement exists) but must not appear in the context
+    assembled to replace it.
     """
     in_memory = _from_memory(adventure, exclude_action_id)
     if in_memory is not None:
@@ -387,15 +388,20 @@ def after(
     )
 
 
-def newest_settled(adventure: models.Adventure) -> models.Action | None:
-    """The newest story action that is not the newest one — see
-    `memorybank.settled_story_actions` for why one is always held back.
+def newest(adventure: models.Adventure) -> models.Action | None:
+    """The newest story action, or None on an empty story.
 
-    Two rows, not a count and an offset: this is the node an anchor moves to
-    when derived work catches up with the settled end of the story.
+    A row, not a count and an offset: this is the node an anchor moves to when
+    derived work catches up with the end of the story.
+
+    It used to be the *second* newest — the memory bank held one action back
+    because retry rewrote a row, so a memory covering the newest action could
+    end up describing narration the player had retried away. Since SP4 a retry
+    writes a sibling instead, and the coordinate's derived work is withdrawn
+    when the story at it changes, so there is nothing left to hold back.
     """
-    rows = tail(adventure, 2)
-    return rows[0] if len(rows) == 2 else None
+    rows = tail(adventure, 1)
+    return rows[0] if rows else None
 
 
 def max_action_index(adventure: models.Adventure) -> int:
