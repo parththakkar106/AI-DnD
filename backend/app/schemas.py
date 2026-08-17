@@ -203,6 +203,26 @@ class VariantSelect(BaseModel):
     index: int = Field(ge=0)
 
 
+class BranchOut(ORMModel):
+    """One line through the story tree (Phase 14, SP5).
+
+    Enough to draw the tree and nothing more: `fork_depth` is where this line
+    leaves its parent and `depth` is where it currently ends, so a fork is two
+    numbers rather than a walk. `own_actions` counts the turns played on this
+    branch itself — the rest of its story is borrowed from its ancestors, which
+    is the whole point and also why the number is smaller than the reader
+    expects.
+    """
+
+    id: int
+    parent_branch_id: int | None = None
+    fork_depth: int | None = None
+    depth: int
+    own_actions: int = 0
+    is_head: bool = False
+    created_at: datetime
+
+
 class ActionUpdate(BaseModel):
     text: ActionText
 
