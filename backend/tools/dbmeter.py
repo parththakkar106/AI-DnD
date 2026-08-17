@@ -174,7 +174,26 @@ class Meter:
 
         metered_creator._dbmeter = self
         pool._creator = metered_creator
-        self._attached_pools.append(pool)
+        self._attached_pools.append((engine, pool, creator))
+
+    def detach(self) -> None:
+        """Put every metered engine back as it was.
+
+        A script exits and takes the wrapping with it; a test does not, and one
+        test leaving the shared engine metered would go on charging bytes to a
+        scope nobody opened. Pooled connections are dropped again on the way
+        out for the same reason attach drops them on the way in.
+        """
+        while self._attached_pools:
+            engine, pool, creator = self._attached_pools.pop()
+            pool._creator = creator
+            engine.dispose()
+
+    def __enter__(self) -> "Meter":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.detach()
 
     # ------------------------------------------------------------- reporting
 
