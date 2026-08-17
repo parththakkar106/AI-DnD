@@ -6,6 +6,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from .compression import CompressedJSON
 from .database import Base
 
 
@@ -220,12 +221,19 @@ class Action(Base):
     # Reasoning-model "thinking" that preceded the text (AI actions only).
     reasoning: Mapped[str | None] = mapped_column(Text, nullable=True)
     # The full assembled prompt for this turn, for the Insights viewer. By far
-    # the biggest column in the database (~74 KB/row in production), and needed
-    # by exactly one endpoint, one action at a time — so it is deferred: never
-    # loaded unless something actually touches the attribute. Bulk readers must
-    # NOT touch it; that is what `world_delta` below exists for.
+    # the biggest column in the database — 163 KB a row averaged over
+    # production and 232 KB on the longest adventure, 89% of everything stored
+    # — and needed by exactly one endpoint, one action at a time.
+    #
+    # Two separate defences, because it is expensive in two separate ways.
+    # `deferred=True` is the read defence: never loaded unless something
+    # touches the attribute, so a page load pays nothing for it. Bulk readers
+    # must NOT touch it; that is what `world_delta` below exists for.
+    # CompressedJSON is the *storage* defence: this is the column that decides
+    # when the free tier's 512 MB runs out. Still a dict either way — see
+    # compression.py.
     context_snapshot: Mapped[dict | None] = mapped_column(
-        JSON, nullable=True, deferred=True
+        CompressedJSON, nullable=True, deferred=True
     )
     # The small slice of the snapshot that IS needed in bulk: this turn's RPG
     # state changes, for the inline chips under an AI message (world_changes)

@@ -27,6 +27,7 @@ os.environ.pop("AIDND_DATABASE_URL", None)
 os.environ.pop("DATABASE_URL", None)
 
 import json
+import random
 
 import pytest
 from fastapi import Depends
@@ -39,12 +40,20 @@ from app.context import history
 from app.database import Base, SessionLocal, engine, get_db
 from app.main import app
 from tools import dbmeter
+from tools.fakeprose import prose
 
 # A stand-in for the real thing: the assembled prompt, which is what makes the
 # column enormous, plus the small world_state slice the UI actually needs.
+#
+# Varied text, not `"x" * 20_000`. The column is stored compressed now
+# (migration 43), and a repeated character compresses about a thousandfold —
+# which would make the byte ceilings below pass against a fixture that costs
+# nothing, testing nothing. Prose-shaped filler compresses like the prompts
+# this stands in for.
+_SNAPSHOT_RNG = random.Random(20_260_817)
 BIG_SNAPSHOT = {
-    "system": "x" * 20_000,
-    "story": "y" * 40_000,
+    "system": prose(_SNAPSHOT_RNG, 20_000),
+    "story": prose(_SNAPSHOT_RNG, 40_000),
     "world_state": {
         "delta": {"player.hp": -15},
         "report": {"applied": [{"path": "player.hp", "old": 100, "new": 85}]},
@@ -204,16 +213,37 @@ def test_snapshot_is_still_reachable_on_demand(client):
     action_id = r.json()["actions"][0]["id"]
     r = client.get(f"/api/adventures/{client.adv_id}/actions/{action_id}/context")
     assert r.status_code == 200, r.text
-    assert r.json()["system"] == "x" * 20_000
+    # Round-tripped through zlib and back to a dict, byte for byte.
+    assert r.json()["system"] == BIG_SNAPSHOT["system"]
+    assert r.json()["story"] == BIG_SNAPSHOT["story"]
 
 
 # ------------------------------------------------------------------ backfill
+
+def as_json_snapshot_column(db) -> None:
+    """Put actions.context_snapshot back as JSON, the way it was before 43.
+
+    Migration 36 lifts world_delta out of the snapshot with SQL JSON
+    functions, so it can only run while the column still *is* JSON. In a real
+    upgrade it always is — 36 runs seven migrations before 43 compresses the
+    column into a BLOB — but `create_all` builds today's schema, so a test
+    calling that backfill has to rebuild the schema it was written against.
+    """
+    db.execute(text("ALTER TABLE actions DROP COLUMN context_snapshot"))
+    db.execute(text("ALTER TABLE actions ADD COLUMN context_snapshot JSON"))
+    db.execute(
+        text("UPDATE actions SET context_snapshot = :snapshot"),
+        {"snapshot": json.dumps(BIG_SNAPSHOT)},
+    )
+    db.commit()
+
 
 def test_backfill_populates_world_delta_from_existing_snapshots(client):
     """Migration 36 lifts the slice out server-side, without reading the
     snapshots into Python."""
     db = SessionLocal()
     try:
+        as_json_snapshot_column(db)
         db.execute(text("UPDATE actions SET world_delta = NULL"))
         db.commit()
         assert db.query(models.Action).filter(models.Action.world_delta.isnot(None)).count() == 0
@@ -419,9 +449,14 @@ def test_the_ceiling_discriminates(client, meter):
     """A ceiling is only worth having if the thing it excludes would breach it.
 
     This is the regression the byte tests exist to catch, performed on purpose:
-    undefer the snapshot and the same twelve rows cost two orders of magnitude
-    more. If this ever stops exceeding the budget, the fixture has gone too
-    small for the tests above to mean anything.
+    undefer the snapshot and the same twelve rows cost several times the whole
+    budget. If this ever stops exceeding it, the fixture has gone too small for
+    the tests above to mean anything.
+
+    The margin used to be a hundredfold and is now about six. That is not the
+    guard weakening — it is migration 43 compressing the column, and the
+    fixture text being prose-shaped so it compresses like a real prompt rather
+    than like a repeated character.
     """
     budget = ACTIONS_IN_FIXTURE * PAGE_LOAD_BYTES_PER_ACTION
     db = SessionLocal()
@@ -436,8 +471,8 @@ def test_the_ceiling_discriminates(client, meter):
     finally:
         db.close()
 
-    assert fetched(meter) > budget * 10, (
+    assert fetched(meter) > budget * 3, (
         "undeferring the snapshot cost only "
-        f"{fetched(meter):,} B — the fixture is too small for the byte "
-        "ceilings above to catch anything"
+        f"{fetched(meter):,} B against a {budget:,} B budget — the fixture is "
+        "too small for the byte ceilings above to catch anything"
     )

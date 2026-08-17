@@ -108,6 +108,7 @@ from app.providers import PromptParts
 from app.routers import adventures
 
 from .dbmeter import Meter, kb
+from .fakeprose import prose
 
 EMBEDDING_DIMS = 1536
 
@@ -122,37 +123,6 @@ EMBEDDING_DIMS = 1536
 # and shrinking this column is the open question it exists to answer.
 SNAPSHOT_SYSTEM = None  # set by _build_text()
 SNAPSHOT_STORY = None
-
-_WORDS = (
-    "corridor narrows shoulders brush wet stone torchlight gutters draught "
-    "smells cold iron somewhere ahead water moving count nine paces passage "
-    "opens chamber ceiling lost dark sound breathing comes back half second "
-    "late Gwen catches sleeve without word points floor line pale grit laid "
-    "across threshold deliberate arc quartermaster bandit camp above ford "
-    "tunnels exchange key lantern rope knife bread rain mud hill road gate "
-    "watchman silver debt promise fever horse cart river bridge mill barley "
-    "smoke rafters bench ale ledger seal wax parchment ink candle shutter "
-    "hinge bolt cellar barrel salt fish nets harbour tide gull mast canvas"
-).split()
-
-
-def prose(rng: random.Random, nbytes: int) -> str:
-    """Filler of about `nbytes`, varied enough to compress like prose.
-
-    Not decoration. A sentence repeated N times compresses roughly a
-    hundredfold and English roughly three- or fourfold, so a fixture built out
-    of repeats would report a compression ratio that says nothing about the
-    real column — and that ratio is the whole question for context_snapshot.
-    """
-    out: list[str] = []
-    total = 0
-    while total < nbytes:
-        sentence = " ".join(rng.choice(_WORDS) for _ in range(rng.randint(8, 18)))
-        chunk = sentence.capitalize() + ". "
-        out.append(chunk)
-        total += len(chunk)
-    return "".join(out)[:nbytes]
-
 
 PLAYER_INPUT = "> You crouch and look more closely at the grit on the floor."
 
