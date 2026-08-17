@@ -107,10 +107,192 @@ number — `A4` and `B4` are alternatives, not duplicates.
 
 ## Open
 
-- **Export/import bundle format** (`routers/adventures.py:1008-1112`) encodes `variants`
-  and `variantIndex`. Needs a versioned format change and a legacy reader.
 - **`retry_of.index` reuse** stops the world-state cooldown clock advancing on a re-run of
-  the same turn. Whatever replaces it must preserve that.
-- **Phased or single migration?** Undecided. A tree touches the memory bank, the context
-  builder, undo/retry and the UI at once, which argues for phasing behind a flag.
-- **What the branch-management UI actually looks like** — unscoped, and it gates release.
+  the same turn. Whatever replaces it must preserve that. (Carried into SP5 below.)
+
+Everything else that stood open here was decided on 2026-08-17 — see the next section.
+
+---
+
+# Implementation plan (decided 2026-08-17)
+
+Four decisions, taken before any code was written:
+
+| Question | Decision |
+|---|---|
+| Phased or single migration? | **Structural-first, no runtime flag.** SP1–SP4 migrate to the tree *representation* with behaviour identical to today. Branching features layer on after. |
+| How destructive is the migration? | **Keep the legacy columns for one release.** `index`, `variants`, `variant_index`, `variant_count` stay, unread, until the tree is proven live (SP8 drops them). |
+| Branch-management UI scope | **Full tree visualisation** — a spatial view of forks, not just a picker. |
+| Export bundle | **`ai-dnd-adventure-v2`**, with a v1 legacy reader so existing bundles keep importing. |
+
+**Why no feature flag.** A linear story *is* a tree with one branch, so the intermediate
+states are not half-migrated — they are the same product with a superset schema
+underneath. That makes "current adventures are unaffected" a literal, testable pass
+condition for every subphase up to SP4, which a flag would have replaced with two live
+code paths through the context builder, the memory bank, undo and retry at once.
+
+## The regression contract
+
+`tests/test_story_tree_baseline.py` (built in SP0) drives the whole product over HTTP —
+create, play, retry, switch, undo, page with `before_id`, memories, summary, export — and
+asserts only on API responses, never internals.
+
+**It must pass unmodified through SP1, SP2 and SP3.** That is the contract those
+subphases are verified against. SP4 is the first subphase permitted to change it, and
+even there only where the change is deliberate and named below.
+
+## Traps found while reading (these are the ones that bite quietly)
+
+- **`history._from_memory()` slices `adventure.actions`.** The "never load twice"
+  shortcut returns whatever is already in the session — which under a tree is *every
+  branch's* actions, not the path. It would silently assemble context from siblings.
+  This is the single highest-risk line in the change; SP2 must make the shortcut
+  branch-aware or delete it.
+- **`scripting/pipeline.py::_history()` and `_info()` read `adventure.actions` directly**,
+  and hand it to user scripts as the documented history API. Same trap, user-visible.
+- **`Adventure.actions` is `order_by="Action.index"`.** Ordering it by `depth` is not
+  enough — the collection is still every branch. Anything iterating it needs the path.
+- **`limits.check_row_cap("actions")` counts every action in the adventure.** With no
+  auto-pruning, a branched adventure hits `MAX_ACTIONS_PER_ADVENTURE` while its *story*
+  is far shorter. The cap has to count the tree but be explained as the tree, or move.
+- **The holdback cannot die in SP3.** `settled_story_actions` exists because retry
+  mutates a row in place. Retry stops mutating in SP4, so the holdback is only safe to
+  delete there — deleting it in SP3 reopens the exact bug it was written for.
+
+## Subphases
+
+Each ships independently, on its own branch, green before the next starts.
+
+### SP0 — Baseline and regression net *(no product change)*
+
+- `tests/test_story_tree_baseline.py` — the contract above. 24 tests covering opening a
+  windowed adventure, the turn engine (do/say/story/continue), script effects, retry and
+  variant switching, undo, paging up to the start, edit/delete, memories, export/import
+  round-trip, and world state.
+
+**Done, 2026-08-17.** 259 existing tests green (17.8s), then **283 green** with the
+baseline added, against unmodified `main`. That is the number every subphase below is
+measured against.
+
+A pre-migration (**schema 45**) fixture is needed too, built by a script rather than
+committed as a binary — but its only consumer is the SP1 migration test, so it lands
+there.
+
+### SP1 — Schema and migration *(no behaviour change)*
+
+| File | Change |
+|---|---|
+| `app/models.py` | New `Branch` model. `Action.branch_id`, `Action.depth`. `Adventure.head_branch_id`, `head_depth`. `Memory.branch_id`, `Memory.depth`. Legacy columns untouched. |
+| `app/migrations.py` | Migrations 46+: create `branches`; add columns; index `(branch_id, depth)`; backfill. Dialect map wherever BLOB/BYTEA-style spellings diverge. |
+
+Backfill: one branch per adventure, `lineage = [(A, ∞)]`; `actions.branch_id = A`,
+`depth = index`; `adventures.head_*` from `max(index)`; memories take branch A and a
+depth derived from `source_end`.
+
+**Verify:** baseline test unmodified. New `tests/test_tree_migration.py` — every action
+carries a branch and `depth == old index`, no row lost, head pointers correct, memories
+mapped. Bootstrap run twice is a no-op. `tests/test_egress.py` ceilings unmoved (two
+integers a row). **Post-deploy `VACUUM FULL actions;` is mandatory** — this rewrites
+every row, which is the 144 MB lesson at the top of `STATUS.md`.
+
+### SP2 — The branch clause *(reads move to lineage; still one branch)*
+
+One module owns the clause; every action read goes through it. A forgotten clause shows
+the wrong story, quietly, which is why it is one module and not a convention.
+
+| File | Change |
+|---|---|
+| `app/context/lineage.py` *(new)* | Lineage computation and the branch clause. The only place that knows how a path is selected. |
+| `app/context/history.py` | `_filters` takes the clause; order by `depth`; `window_covering` keeps its shape. **Fix `_from_memory`.** |
+| `app/routers/adventures.py` | `action_window` anchors on the anchor's `depth`; `last_action`, `next_index`→`next_depth`, `_latest_narration`. |
+| `app/scripting/pipeline.py` | `_history()`/`_info()` read the path, not the collection. |
+
+**Verify:** baseline test unmodified. `test_history_window.py`, `test_action_paging.py`
+green. New test builds a **two-branch fixture directly in the DB** and asserts the design
+doc's own example reads back as `A0 A1 A2 A3 B4 B5 C6 C7`, and that a sibling's nodes are
+invisible. Egress: a 20-fork fixture costs within a small factor of a 1-fork one —
+clause count is bounded by the context window, not by fork count.
+
+### SP3 — Memories and summary attach to nodes
+
+Cursors stop being positions in a shifting list. `memory_cursor`/`summary_cursor` become
+node-anchored `(branch_id, depth)`.
+
+Deleted: `position_of_index`, `note_action_removed`, `_rewind_cursors_to_index`,
+`prune_dangling_memories`, and their call sites in `undo_turn` and `delete_action`.
+**Kept until SP4:** `settled_story_actions` and the holdback (see traps).
+
+**Verify:** baseline test unmodified. `test_memory_settling.py` and
+`test_memory_retrieval.py` updated, plus a new branch-isolation test — a memory created
+on branch B is invisible from branch A, and shared ancestors are visible from both.
+Memory retrieval reads the *full* lineage (it cannot be windowed) but stays sparse:
+assert the byte cost on a deep fork.
+
+### SP4 — Variants become sibling nodes
+
+Retry stops mutating a row. It writes a sibling leaf at the same depth.
+
+Deleted: `set_variants`, `variant_of`, `apply_variant`, `VARIANT_SNAPSHOT_KEYS`, and the
+holdback. Node state moves from *before* to *after* snapshots (`state_after`,
+`world_state_after`) — a sibling needs its own outcome, so this belongs here rather than
+in its own subphase. Pre-column rows are NULL and must stay tolerated.
+
+A migration converts existing `variants` JSON into sibling rows — reading the legacy
+column that decision 2 kept, which is the whole reason it was kept.
+
+`/variants` and `/variant` keep their URLs and response shapes here, re-implemented over
+sibling rows, so the frontend keeps working until SP7 replaces it.
+
+**Verify:** the first subphase allowed to move the baseline test, and only for
+`variant_count`/`variant_index` semantics — the retry *outcomes* must not move.
+`test_retry_variants.py` rewritten against siblings but asserting the same observable
+results, including that the gold script is not double-applied. `test_state_revert.py`
+against after-snapshots. Migration test: attempt count preserved, the active attempt
+becomes the head.
+
+### SP5 — Fork on continue
+
+Playing past a non-head sibling promotes it: a `branches` row with `parent_branch_id`,
+`fork_depth`, and a `lineage` computed once from the parent's. Nothing is copied.
+`adventures.head_*` moves. **The cooldown clock must not advance on a re-run of the same
+turn** — the one item still open above.
+
+**Verify:** a fork creates exactly one branch row and copies no actions; lineage is
+correct and capped at each `fork_depth`; both branches read independently; switching
+restores the right script/world state; the cooldown test from `test_worldstate.py`
+still holds across a retry.
+
+### SP6 — Export/import v2
+
+`ai-dnd-adventure-v2` carries branches and nodes; import accepts v1 and v2, mapping a v1
+bundle's linear actions plus `variants` onto one branch with siblings.
+`limits.check_bundle_lists` learns about branches.
+
+**Verify:** v2 round-trip of a branched adventure is lossless; a v1 bundle still imports;
+a bundle claiming more branches than rows is rejected rather than half-applied.
+
+### SP7 — Frontend: full tree visualisation
+
+`VariantPager` is removed. A spatial tree view replaces it, plus switch, rename and
+delete-with-confirm. `api.js` gains the branch endpoints.
+
+**Verify:** this is where the standing open gap gets closed — **drive the 600-action
+`--keep` fixture in a browser by hand**, on the same scroll path that has never been
+driven and already hid one bug. A vitest + jsdom harness covers the prepend arithmetic;
+jsdom has no layout, so scroll position still needs eyes.
+
+### SP8 — Drop the legacy columns
+
+Only once the tree is proven live. Migration drops `index`, `variants`, `variant_index`,
+`variant_count`, followed by `VACUUM FULL actions;`.
+
+**Verify:** full suite; egress ceilings; a measured before/after size, aggregates only.
+
+## Standing constraints
+
+- **No production data is read at any point in this phase.** Migrations, the e2e
+  baseline and every egress measurement run on local SQLite and the synthetic `--keep`
+  fixture. If a real Postgres is ever needed for a write path, it is a throwaway
+  database whose name contains `stress`/`scratch`, and it is asked for first.
+- **Any migration that rewrites `actions` is followed by `VACUUM FULL actions;`** on the
+  direct endpoint, not `-pooler`. SP1, SP4 and SP8 each rewrite every row.
