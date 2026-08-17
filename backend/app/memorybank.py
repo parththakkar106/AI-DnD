@@ -86,13 +86,15 @@ def set_vector(memory: models.Memory, vector: list[float] | None) -> None:
     """Store (or clear) a memory's embedding.
 
     Every column that describes the vector moves together: `embedding_blob` is
-    what the ranking reads, `embedded` is the flag everything else reads, and
-    the JSON `embedding` stays correct behind both until the follow-up
-    migration drops it. Going through one function is what keeps them in step —
-    and it is also the only place a stored vector can change, which is what
-    makes the cache below safe to invalidate here and nowhere else.
+    what the ranking reads and `embedded` is the flag everything else reads.
+    Going through one function is what keeps them in step — and it is also the
+    only place a stored vector can change, which is what makes the cache below
+    safe to invalidate here and nowhere else.
+
+    The one caller that legitimately cannot come through here is the bulk
+    clear in `routers/settings.py` when the embedding model changes. It has to
+    set the same two columns by hand; see the note there.
     """
-    memory.embedding = vector
     memory.embedding_blob = None if vector is None else vectors.pack(vector)
     memory.embedded = vector is not None
     cached = _vector_cache.get(memory.adventure_id)

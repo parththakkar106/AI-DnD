@@ -26,7 +26,7 @@ import asyncio
 from datetime import timedelta
 
 import pytest
-from sqlalchemy import event
+from sqlalchemy import event, inspect as sa_inspect
 
 from app import memorybank, models
 from app.database import Base, SessionLocal, engine
@@ -206,13 +206,14 @@ def memory_selects(statements):
     ]
 
 
-def test_the_json_column_is_never_selected(db, adventure, settings, bank, sql_log):
-    """`memories.embedding` is dead weight kept only until a follow-up
-    migration drops it. If anything still reads it, dropping it breaks."""
-    retrieve(adventure, settings, StubEmbedder())
-    offenders = [s for s in memory_selects(sql_log) if "memories.embedding " in s
-                 or s.rstrip().endswith("memories.embedding")]
-    assert offenders == [], f"the JSON column was read:\n{offenders[0][:300]}"
+def test_the_json_column_is_gone(db):
+    """`memories.embedding` held the vectors before migration 38 and nothing
+    read it afterwards; migration 42 dropped it. Bringing it back would restore
+    4 MB of dead weight and a second place vectors can be written from — which
+    is how the model-switch bug happened (test_embedding_model_switch.py)."""
+    columns = {c["name"] for c in sa_inspect(engine).get_columns("memories")}
+    assert "embedding" not in columns
+    assert {"embedding_blob", "embedded"} <= columns
 
 
 def test_the_catalogue_query_carries_no_vectors(db, adventure, settings, bank, sql_log):

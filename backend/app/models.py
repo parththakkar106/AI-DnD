@@ -158,10 +158,6 @@ class Memory(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     adventure_id: Mapped[int] = mapped_column(ForeignKey("adventures.id", ondelete="CASCADE"))
     text: Mapped[str] = mapped_column(Text, default="")
-    # Superseded by embedding_blob and still written alongside it, so a
-    # rollback finds the vectors, until a follow-up migration drops it. Nothing
-    # reads it.
-    embedding: Mapped[list | None] = mapped_column(JSON, nullable=True, deferred=True)
     # The vector, little-endian float32. Deferred because it is wider than the
     # rest of the row put together and exactly one code path wants it: anything
     # bulk-loading memories (the Memories drawer, eviction, the embed queue)

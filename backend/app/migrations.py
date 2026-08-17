@@ -144,6 +144,12 @@ MIGRATIONS: list[tuple[int, str | dict[str, str]]] = [
     # so anyone who picked a value keeps it — same rule as migration 29.
     # Adventures already over 80 evict down on their next turn.
     (41, "UPDATE settings SET memory_bank_capacity = 80 WHERE memory_bank_capacity = 200"),
+    # The JSON vectors, gone. Migration 38 left them in place so a rollback
+    # could still find them; production has since been verified reading from
+    # embedding_blob (schema_version 41, 134/134 backfilled), so the column is
+    # now 4 MB of a 99.6 MB database holding nothing anyone reads. DROP COLUMN
+    # is spelled the same on both dialects — SQLite has had it since 3.35.
+    (42, "ALTER TABLE memories DROP COLUMN embedding"),
 ]
 
 LATEST_VERSION = max((v for v, _ in MIGRATIONS), default=1)
