@@ -18,36 +18,42 @@ project page points at (`docs/index.html`), not the service name in the blueprin
 
 ---
 
-## Needs a human
+## Needs a human: one VACUUM after the next deploy
 
-**The free tier's storage ceiling is closer than the egress work suggested.** The Neon
-database is 99.6 MB of a 512 MB allowance and `actions.context_snapshot` is essentially
-all of it. See "Storage, which this plan did not cost" in `plan/13`. This is now the
-most likely thing to break the deploy, ahead of anything on the read path.
+Migration 43 compresses `context_snapshot`, and **Postgres does not hand the disk back
+on its own.** `DROP COLUMN` only marks a column dropped, and the backfill leaves a dead
+tuple per row, so `actions` gets *bigger* before it gets smaller — peaking near twice
+its size while both columns are live. Once the deploy is up and healthy, run once:
+
+```sql
+VACUUM FULL actions;
+```
+
+It needs exclusive access to the table and free space equal to the finished copy. On
+the 2026-08-17 figures: 99.6 MB now, peaking near 200 during the migration, settling
+around 53 afterwards, against a 512 MB tier. Skipping it is safe and simply leaves the
+win unrealised — the database keeps working, it just stays large.
+
+Same caveat applies to migration 42 dropping `memories.embedding` (4 MB).
 
 ---
 
 ## Pick up here
 
-**`plan/13-memory-embedding-cost.md`, step 6 — infinite scroll upward in `Play.jsx`.**
+**`plan/14-phase-story-tree.md` — the tree itself.** `plan/13` is finished. Its design
+is settled in `plan/14` and nothing about it has been built.
 
-Opening a finished adventure is comfortably the largest single read in the app — a turn
-is now 122 kB, Insights 118 kB, the Memories drawer 24 kB. Measured on production
-(2026-08-17), the largest real adventure is **607 actions and 589.5 kB in one
-response**; the 426.7 kB the harness reports is a 200-action fixture whose actions are
-about **twice as heavy as real ones** (994 B/action in production). So the fixture
-overstates width and understates length — real stories get *longer* than it models,
-which is the direction that hurts. The backend already has the
-windowing primitives (`context/history.py`: `tail_range`, `slice_`, `count`), and
-`GET /adventures/{id}/actions` exists. What is missing is a paged shape for it and a
-`Play.jsx` that loads the newest turns and fetches older ones as the reader scrolls up.
+Two things from the egress work are worth carrying into it:
 
-Watch for: the story is a flat list today, and **the story tree replaces it**
-(`plan/14-phase-story-tree.md`). Paging that reads by *position from the end* survives
-that change; paging that assumes `Action.index` is a dense 0..n sequence does not.
+- **Paging already anticipates the tree.** `action_window` in `routers/adventures.py`
+  anchors on an action id and orders by comparing `Action.index`, never by treating
+  index as a position. A branch changes which actions are on the path, not how two of
+  them order, so the anchor survives; anything counting offsets would not.
+- **Weigh new columns in bytes.** A tree adds parent/branch columns to `actions`, which
+  is already the table that fills the disk. `tests/test_egress.py` has byte ceilings
+  now — they will tell you.
 
-After that: the tree itself. Its design is settled in `plan/14`; nothing about it has
-been built.
+**Before the next deploy:** one `VACUUM FULL actions;` — see below.
 
 ---
 
@@ -115,7 +121,41 @@ Migrations 39/40 add `memories.embedded`, migration 41 drops the capacity defaul
 
 ---
 
-## What happened on 2026-08-17
+## What happened on 2026-08-17, part two
+
+Everything left open in `plan/13` closed, plus two bugs that fell out of doing it.
+
+| shape | before today | after |
+|---|---|---|
+| page load, 600 actions | 606.0 kB | **62.6 kB** — and no longer grows with the story |
+| adventures index, 6 fat adventures | 469.7 kB | **0.3 kB** |
+| `context_snapshot` on disk | ~89 MB | ~43 MB (3.5x, after a VACUUM) |
+| database total | 99.6 MB | ~53 MB projected |
+
+**The story is a window now.** `GET /adventures/{id}` returns the newest 60 actions and
+`action_count`; older pages come from `GET /{id}/actions?before_id=`. Anchored on an
+action, never an offset — an offset counted back from the newest shifts every older
+position the moment a turn lands, which is exactly when someone is scrolling. `Play.jsx`
+prepends and restores scroll position in a `useLayoutEffect`, before paint.
+
+**`context_snapshot` is compressed** (migrations 43–45, `app/compression.py`) via a
+TypeDecorator, so every call site still reads and writes a dict. Verified end to end on
+a throwaway Neon database: 720,864 B of JSON to 204,293 B of bytea, every row equal.
+
+**The JSON vector column is gone** (migration 42) — and dropping it exposed that
+changing your embedding model had silently stopped re-embedding the bank since
+migration 38. The settings route cleared the dead column and left `embedded` true, so
+`_embed_pending` never saw those rows and retrieval kept ranking against the old
+model's vectors. Nothing reported it: `cosine` returns 0.0 on a width mismatch.
+`tests/test_embedding_model_switch.py`.
+
+**Byte ceilings exist** (`tests/test_egress.py`), including one test whose only job is
+to prove the ceilings would catch something.
+
+**List responses name their columns.** The index was loading whole Adventure entities —
+seven text and JSON columns, ~15 kB a row — to render a title and a snippet.
+
+## What happened on 2026-08-17, part one
 
 No new behaviour — a verification pass on what shipped the day before, because every
 number in the section above had been measured on SQLite against a synthetic fixture.
@@ -169,25 +209,21 @@ with `pg_total_relation_size`, and do not mix them up.
 
 ---
 
-## Still open from `plan/13`
+## `plan/13` is closed
 
-- **Step 6, infinite scroll upward** — the pick-up item above.
-- **Query-count / byte assertions per endpoint**, extending `tests/test_egress.py`
-  against production-sized fixtures. `dbmeter` is importable from tests (`from tools
-  import dbmeter`) and was built with this in mind; nothing uses it there yet.
-- **Explicit column projections on read paths**, so the next heavy column is opt-**in**.
-  Done for the memory paths, not as a general rule.
-- **Drop `memories.embedding`** (the JSON column) in a follow-up migration. It is still
-  written by `set_vector` and read by nothing, kept so a rollback finds the vectors.
-  `tests/test_memory_retrieval.py` has a guard asserting nothing selects it. Measured
-  on production: dropping it reclaims 4.05 MB, 4% of the database.
-- **`context_snapshot` and the 512 MB ceiling** — new, and now the biggest open item.
-  See the two sections named above. The egress case for leaving it in the database
-  still stands; the storage case does not.
+All six of its open items landed on 2026-08-17. What is left is not from that plan:
 
-Deliberately not taken: moving `context_snapshot` out of the database (~$0.02/mo, costs
-nothing on reads now that it is deferred), and pgvector (breaks the SQLite dev parity
-this codebase protects on purpose).
+- **The VACUUM**, above. Until it runs, the storage win is on paper.
+- **Nothing verifies the scroll behaviour in a browser.** The paging is covered by
+  `tests/test_action_paging.py` and was exercised against a running backend, but the
+  frontend has no test runner and the prepend-and-restore is the part most likely to
+  feel wrong. Worth thirty seconds of scrolling a long adventure before trusting it.
+- **`ACTION_PAGE = 60` is a guess.** It should be a page or two of reading. If loading
+  older turns feels like it interrupts, that is the number to move.
+
+Deliberately not taken: moving `context_snapshot` out of the database entirely
+(compressing it bought the same runway for a much smaller change), and pgvector (breaks
+the SQLite dev parity this codebase protects on purpose).
 
 ---
 
@@ -195,7 +231,7 @@ this codebase protects on purpose).
 
 ```
 cd backend
-.venv/Scripts/python.exe -m pytest tests/          # 225 tests
+.venv/Scripts/python.exe -m pytest tests/          # 259 tests
 .venv/Scripts/python.exe -m tools.stress_session   # egress report (SQLite)
 
 # Same harness against a real Postgres. The target must be a THROWAWAY database

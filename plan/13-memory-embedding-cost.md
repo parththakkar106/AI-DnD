@@ -164,8 +164,10 @@ additions the plan did not anticipate:
   forgotten. Vectors are held as `array("f")` — 6 KB each, matching the column;
   a list of Python floats would have been eight times the plan's RAM estimate.
 
-Remaining: **step 6, infinite scroll upward in `Play.jsx`.** The page load is
-unchanged at 426.7 kB and is now the largest single read in the app.
+**Step 6 landed on 2026-08-17**, along with everything else this plan left open — see
+"Closing the plan" at the end. The page load is a window of 60 actions now: 62.6 kB on
+a 600-action fixture, down from 606.0 kB, and no longer a function of the story's
+length.
 
 ## Guardrails to add with this work
 
@@ -272,3 +274,44 @@ helps and does not solve it.
 
 None of the numbers above required reading a single row of anyone's content: counts,
 `octet_length` sums and catalog sizes only.
+
+## Closing the plan, 2026-08-17
+
+Everything above landed the same day the verification did.
+
+| | before | after |
+|---|---|---|
+| page load, 600 actions | 606.0 kB | **62.6 kB**, and flat in story length |
+| adventures index, 6 adventures | 469.7 kB | **0.3 kB** |
+| `context_snapshot` stored | ~89 MB | ~43 MB (after a VACUUM) |
+| a played turn | 6.4 MB (2026-08-16) | 123 kB |
+
+**Step 6, the window.** `GET /adventures/{id}` returns the newest `ACTION_PAGE`
+actions and the story's length; `GET /{id}/actions?before_id=` walks back from there.
+Anchored on an action rather than an offset — the offset version breaks precisely when
+a turn lands mid-scroll, handing the reader one action twice and hiding another — and
+that choice is also what makes it survive the story tree, since it compares indices to
+order a branch rather than treating them as positions.
+
+**Byte assertions.** `tests/test_egress.py` now carries per-action budgets as well as
+column guards, plus one test whose only job is to fail if the fixture ever gets too
+small for the budgets to catch anything.
+
+**Column projections.** `ACTION_LIST_COLUMNS` and `MEMORY_LIST_COLUMNS` name what a
+list response renders, and the adventures index selects four columns instead of the
+entity. That one was not just future-proofing: an Adventure carries seven text and JSON
+columns the index never shows.
+
+**The JSON vector column is gone**, and dropping it exposed a live bug — changing your
+embedding model had stopped re-embedding the bank the day migration 38 shipped. See
+`tests/test_embedding_model_switch.py`.
+
+**Storage.** `context_snapshot` is zlib-compressed through a TypeDecorator
+(`app/compression.py`, migrations 43–45), so the call sites never learned about it.
+3.5x on real Postgres. **This does not shrink anything until `VACUUM FULL actions`
+runs** — Postgres marks dropped columns rather than reclaiming them, and the backfill
+leaves a dead tuple per row.
+
+Not done: nothing exercises the scroll behaviour in a browser. The frontend has no test
+runner, and prepend-and-restore-scroll is the part most likely to feel wrong even when
+it is correct.
