@@ -347,6 +347,74 @@ def test_reading_one_action_does_not_cost_the_whole_story(client, meter):
     )
 
 
+def _fat_adventures(user_id: int, count: int = 5, body: int = 20_000) -> None:
+    """Adventures whose bodies are heavy and whose index cards are not.
+
+    script_state, world_state and story_summary belong to the play screen. The
+    index shows a title, a stamp and a snippet, and used to load all of it.
+    """
+    db = SessionLocal()
+    try:
+        for i in range(count):
+            db.add(models.Adventure(
+                user_id=user_id,
+                title=f"Adventure {i}",
+                script_state={"log": "s" * body},
+                world_state={"player": {"notes": "w" * body}},
+                story_summary="y" * body,
+                memory="m" * body,
+            ))
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_the_index_does_not_read_the_adventure_body(client, sql_log):
+    db = SessionLocal()
+    try:
+        user_id = db.query(models.User.id).first()[0]
+    finally:
+        db.close()
+    _fat_adventures(user_id)
+
+    r = client.get("/api/adventures")
+    assert r.status_code == 200
+    assert len(r.json()) == 6  # the fixture's one, plus five
+
+    listing = [
+        s for s in sql_log
+        if "FROM adventures" in s and s.lstrip().upper().startswith("SELECT")
+    ]
+    assert listing, "expected a listing query"
+    for column in ("script_state", "world_state", "story_summary", "memory",
+                   "authors_note", "ai_instructions", "placeholders"):
+        assert not any(column in s for s in listing), (
+            f"the index read adventures.{column}, which nothing on that "
+            f"screen displays"
+        )
+
+
+def test_the_index_stays_under_its_byte_ceiling(client, meter):
+    db = SessionLocal()
+    try:
+        user_id = db.query(models.User.id).first()[0]
+    finally:
+        db.close()
+    _fat_adventures(user_id)
+
+    with meter.scope("index"):
+        r = client.get("/api/adventures")
+    assert r.status_code == 200
+
+    # Six adventures carrying 80 kB of body each. A card is a title, a stamp
+    # and a 220-character snippet; 4 kB apiece is already generous.
+    budget = 6 * 4_000
+    assert fetched(meter) < budget, (
+        f"the index fetched {fetched(meter):,} B for six adventures, over "
+        f"{budget:,} B — it is reading the bodies again"
+    )
+
+
 def test_the_ceiling_discriminates(client, meter):
     """A ceiling is only worth having if the thing it excludes would breach it.
 

@@ -6,7 +6,7 @@ import threading
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func
-from sqlalchemy.orm import Session, undefer
+from sqlalchemy.orm import Session, load_only, undefer
 
 from .. import auth, images, limits, memorybank, models, schemas, worldstate
 from ..context import build_context
@@ -19,6 +19,44 @@ from .settings import get_settings
 router = APIRouter(prefix="/api/adventures", tags=["adventures"])
 
 CurrentUser = Depends(auth.get_current_user)
+
+# Exactly what schemas.ActionOut renders, named rather than implied.
+#
+# `deferred=True` in models.py already keeps the four heavy columns out of a
+# bulk read, but it makes narrowness the default that a *future* column has to
+# remember to ask for — and both egress blowouts this project has had were a
+# column nobody remembered. Listing what a list response carries inverts that:
+# a new column costs nothing here until someone adds it to this tuple.
+#
+# `world_delta` is on the list because ActionOut.world_changes is computed from
+# it. Leaving it off would not save the bytes, it would spend them one row at a
+# time as a lazy load, which is worse.
+ACTION_LIST_COLUMNS = (
+    models.Action.adventure_id,
+    models.Action.index,
+    models.Action.type,
+    models.Action.text,
+    models.Action.reasoning,
+    models.Action.world_delta,
+    models.Action.variant_count,
+    models.Action.variant_index,
+    models.Action.created_at,
+)
+
+# Exactly what schemas.MemoryOut renders. `embedded` is a real column and is on
+# the list; the vector it describes is not, and must never be.
+MEMORY_LIST_COLUMNS = (
+    models.Memory.adventure_id,
+    models.Memory.text,
+    models.Memory.pinned,
+    models.Memory.forgotten,
+    models.Memory.embedded,
+    models.Memory.use_count,
+    models.Memory.last_used_at,
+    models.Memory.source_start,
+    models.Memory.source_end,
+    models.Memory.created_at,
+)
 
 
 def get_adventure_or_404(
@@ -85,9 +123,18 @@ def _latest_narration(db: Session, adventure_ids: list[int]) -> dict[int, str]:
 
 @router.get("", response_model=list[schemas.AdventureListItem])
 def list_adventures(db: Session = Depends(get_db), user: models.User = CurrentUser):
+    # Four columns of Adventure, named, rather than the entity. The entity is
+    # sixteen columns wide and carries script_state, world_state, placeholders,
+    # story_summary, memory, authors_note and ai_instructions — ~15 kB a row in
+    # production, none of it on this screen, all of it fetched once per
+    # adventure every time the index loads. Naming the columns also means the
+    # next wide column added to Adventure has to opt *in* to being listed here.
     rows = (
         db.query(
-            models.Adventure,
+            models.Adventure.id,
+            models.Adventure.scenario_id,
+            models.Adventure.title,
+            models.Adventure.updated_at,
             func.count(models.Action.id),
             models.Scenario.title,
             models.Scenario.image,
@@ -112,22 +159,23 @@ def list_adventures(db: Session = Depends(get_db), user: models.User = CurrentUs
         .order_by(models.Adventure.updated_at.desc())
         .all()
     )
-    narration = _latest_narration(db, [adv.id for adv, *_ in rows])
+    narration = _latest_narration(db, [row[0] for row in rows])
     return [
         schemas.AdventureListItem(
-            id=adv.id,
-            scenario_id=adv.scenario_id,
+            id=adv_id,
+            scenario_id=scenario_id,
             scenario_title=scenario_title,
-            title=adv.title,
-            updated_at=adv.updated_at,
+            title=title,
+            updated_at=updated_at,
             action_count=count,
-            snippet=_snippet(narration.get(adv.id, "")),
+            snippet=_snippet(narration.get(adv_id, "")),
             # The art belongs to the scenario, so the cache-busting stamp is the
             # scenario's updated_at, not the adventure's.
-            image_url=images.public_url(adv.scenario_id, image or "", scenario_updated),
+            image_url=images.public_url(scenario_id, image or "", scenario_updated),
             icon=icon or "",
         )
-        for adv, count, scenario_title, image, icon, scenario_updated in rows
+        for (adv_id, scenario_id, title, updated_at, count,
+             scenario_title, image, icon, scenario_updated) in rows
     ]
 
 
@@ -1455,7 +1503,19 @@ def action_context(
 def list_memories(
     adventure_id: int, db: Session = Depends(get_db), user: models.User = CurrentUser
 ):
-    return get_adventure_or_404(adventure_id, db, user).memories
+    get_adventure_or_404(adventure_id, db, user)
+    # A query naming its columns, not a walk of `adventure.memories`. The walk
+    # is what retrieval used to do, and it is the reason a turn cost megabytes:
+    # a relationship load takes whole entities, so it picks up whatever the
+    # model happens to carry. `embedding_blob` is deferred and so would stay
+    # out today — this is about the next wide column, not that one.
+    return (
+        db.query(models.Memory)
+        .options(load_only(*MEMORY_LIST_COLUMNS))
+        .filter(models.Memory.adventure_id == adventure_id)
+        .order_by(models.Memory.id)
+        .all()
+    )
 
 
 @router.post("/{adventure_id}/memories", response_model=schemas.MemoryOut, status_code=201)
@@ -1522,6 +1582,7 @@ def list_actions(
     get_adventure_or_404(adventure_id, db, user)
     return (
         db.query(models.Action)
+        .options(load_only(*ACTION_LIST_COLUMNS))
         .filter(models.Action.adventure_id == adventure_id)
         .order_by(models.Action.index)
         .all()
