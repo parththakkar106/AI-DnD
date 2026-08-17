@@ -1324,6 +1324,9 @@ export default function Play() {
   // the reader back where they were. See the layout effect below.
   const restoreScrollRef = useRef(null)
   const loadingOlderRef = useRef(false)
+  // Earliest time another attempt is allowed after a failure. See the catch
+  // in loadOlder.
+  const retryAfterRef = useRef(0)
 
   // The drop cap belongs to the story's first narrated beat. `start` is the
   // scenario's opening prompt, so it's usually that; an adventure begun blank
@@ -1367,6 +1370,7 @@ export default function Play() {
   // and two in-flight requests would fetch the same page twice.
   const loadOlder = useCallback(async () => {
     if (loadingOlderRef.current || !hasMore) return
+    if (Date.now() < retryAfterRef.current) return
     const oldest = actions[0]
     if (!oldest) return
     loadingOlderRef.current = true
@@ -1374,6 +1378,12 @@ export default function Play() {
     try {
       const page = await api.getActions(id, { beforeId: oldest.id })
       if (page.actions.length) {
+        // Reading backwards is the opposite of following along, so stop
+        // autoscrolling. Without this the bottom-pinning effect below fires on
+        // the same `actions` change and throws the reader to the end of the
+        // story — worst exactly where the button matters, on a window short
+        // enough that it never scrolled and so never un-pinned itself.
+        pinnedRef.current = false
         // Record the height before the prepend; the layout effect below uses
         // it to keep the reader looking at the same paragraph.
         restoreScrollRef.current = {
@@ -1391,7 +1401,11 @@ export default function Play() {
       setHasMore(page.has_more)
     } catch {
       // Leave hasMore alone: a failed fetch should let the reader try again
-      // by scrolling, not permanently hide the rest of their story.
+      // by scrolling, not permanently hide the rest of their story. But hold
+      // off briefly first — parked near the top, momentum scrolling fires this
+      // dozens of times a second, and against an endpoint that is failing that
+      // is a retry storm rather than a retry.
+      retryAfterRef.current = Date.now() + 3000
     } finally {
       loadingOlderRef.current = false
       setLoadingOlder(false)
