@@ -95,6 +95,46 @@ Two things from the egress work are worth carrying into it:
 lesson of the 144 MB above — a rewrite doubles the table and only a `VACUUM FULL` gives
 it back. Phase 14's migration rewrites every row.
 
+**There is a 600-action adventure to test against now** — `--keep`, below. The tree's
+frontend work lands on the same scroll path that has still never been driven by hand, so
+drive it before rewriting it.
+
+---
+
+## What happened on 2026-08-17, part three
+
+No behaviour change. A way to get a long adventure in front of a browser, because the
+one open gap needed a subject and there wasn't one.
+
+**`tools.stress_session --keep PATH`.** The harness already built a production-shaped
+600-action adventure and then threw it away with the temp file; `--keep` writes it
+somewhere durable and makes the app able to serve it. Two edits are needed for that, and
+both are the kind of thing that costs an hour to rediscover:
+
+- **`create_all()` does not stamp the schema version.** `bootstrap()` reads a
+  populated-but-unstamped database as ancient and replays every migration against a
+  schema that already has the columns. `--keep` stamps `PRAGMA user_version` to
+  `LATEST_VERSION`.
+- **The fixture's user is a registered one.** In local mode `get_current_user()` looks
+  for the row with `email IS NULL` and `is_guest` false, so without clearing the email
+  the app opens on an empty library and nothing owns the 600 actions.
+
+`--keep` is read before argparse exists (`_early_keep`), because where the database
+lives has to be settled before `app.database` is imported — the same constraint the
+`AIDND_STRESS_DATABASE_URL` block at the top of the module already lives under. SQLite
+only; combining it with a Postgres target is rejected rather than half-honoured.
+
+Verified: the fixture boots with no manual step, `action_count` 600, the first payload
+carries 60 actions, and `before_id` walks back through 9 more pages to the start — 600
+seen, `has_more` false at the end. 259 tests pass.
+
+**Snapshots can be shrunk for this.** `--snapshot-bytes 2000` keeps the file at ~2.5 MB
+instead of ~140 MB. `context_snapshot` is deferred and never reaches the browser, so it
+changes nothing about what scrolling exercises — but do not shrink it when *measuring*,
+where it is most of the point.
+
+**Port 8010, not 8000.** Covered below, and now printed by `--keep` itself.
+
 ---
 
 ## What happened on 2026-08-16
@@ -259,7 +299,10 @@ with `pg_total_relation_size`, and do not mix them up.
 All six of its open items landed on 2026-08-17, and are live. What is left is not from
 that plan:
 
-- **Nothing has ever exercised the scroll in a browser.** This is the one real gap, and
+- **Nothing has ever exercised the scroll in a browser** — still true, but there is now
+  something to exercise it *on*: `--keep` builds a 600-action adventure the app will
+  serve (see 2026-08-17 part three). The subject is no longer the excuse; only the
+  looking is left. This is the one real gap, and
   it has already cost something: re-reading that path after shipping turned up a bug
   where loading earlier turns scrolled *past* them to the end of the story, worst on
   the short-window case the button exists for (fixed, PR #2). One bug found by reading
@@ -268,7 +311,9 @@ that plan:
   scroll-position arithmetic still needs eyes.
 - **`ACTION_PAGE = 60` is a guess.** It should be a page or two of reading. If loading
   older turns feels like it interrupts, that is the number to move
-  (`routers/adventures.py`).
+  (`routers/adventures.py`). One data point: at 600 actions it takes the window plus
+  **nine** more pages to reach the start, which is a lot of button presses for anyone
+  going back to the beginning.
 - ~~Post-vacuum sizes unmeasured~~ — measured 2026-08-17, and the vacuum that mattered
   was run then too. 65.0 MB. See the top of this file.
 - **Anyone who switched embedding models has a stale bank.** The bug is fixed, but
@@ -295,8 +340,26 @@ AIDND_STRESS_DATABASE_URL=postgresql://…/stress_scratch \
     .venv/Scripts/python.exe -m tools.stress_session
 ```
 
+**A long adventure to scroll**, instead of a temp file the report discards. The
+snapshots are shrunk because they never reach the browser — 2.5 MB rather than 140 MB —
+and `--shapes list` skips the measurement work the fixture does not need:
+
+```
+cd backend
+.venv/Scripts/python.exe -m tools.stress_session \
+    --keep ./scroll_fixture.db --snapshot-bytes 2000 --shapes list
+
+AIDND_DB_PATH=$PWD/scroll_fixture.db \
+    .venv/Scripts/python.exe -m uvicorn app.main:app --port 8010
+cd ../frontend && AIDND_API_PORT=8010 npm run dev      # → localhost:5173
+```
+
+Everything in it is synthetic and no real adventure is read. `*.db` is gitignored, so
+the fixture never lands in a commit.
+
 On Windows the report's box-drawing characters crash the default cp1252 console;
 prefix with `PYTHONIOENCODING=utf-8`.
 
 Port 8000 is shared with the job-pipeline app, which will squat it and silently shadow
-the AI-DnD API — free it before running the backend, or move the vite proxy.
+the AI-DnD API — free it before running the backend, or move the vite proxy with
+`AIDND_API_PORT`, which is what the `--keep` recipe above does.
