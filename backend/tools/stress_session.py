@@ -64,6 +64,24 @@ meaningless.
 import os
 import sys
 import tempfile
+from pathlib import Path
+
+
+def _early_keep(argv: list[str]) -> str:
+    """--keep, read before argparse exists.
+
+    Where the database lives has to be decided before app.database is
+    imported, and that import is three lines below. argparse still declares
+    the flag, so --help documents it and a typo is still an error."""
+    for i, arg in enumerate(argv):
+        if arg == "--keep" and i + 1 < len(argv):
+            return argv[i + 1]
+        if arg.startswith("--keep="):
+            return arg.split("=", 1)[1]
+    return ""
+
+
+_keep = _early_keep(sys.argv[1:])
 
 # Must precede the app import: database.py reads these at module scope.
 #
@@ -78,6 +96,11 @@ import tempfile
 # must say it is disposable.
 _stress_url = os.environ.get("AIDND_STRESS_DATABASE_URL", "").strip()
 if _stress_url:
+    if _keep:
+        sys.exit(
+            "--keep writes a SQLite file for the app to serve; it cannot be\n"
+            "combined with AIDND_STRESS_DATABASE_URL."
+        )
     _dbname = _stress_url.rsplit("/", 1)[-1].split("?")[0]
     if not any(mark in _dbname.lower() for mark in ("stress", "scratch")):
         sys.exit(
@@ -86,6 +109,17 @@ if _stress_url:
             "throwaway database with 'stress' or 'scratch' in the name."
         )
     os.environ["AIDND_DATABASE_URL"] = _stress_url
+    os.environ.pop("DATABASE_URL", None)
+elif _keep:
+    # A fixture to boot the app against rather than a temp file the report
+    # discards. Rebuilt from empty every run: build_fixture() assumes an empty
+    # database on the SQLite path, and a second run would otherwise stack a
+    # second adventure beside the first.
+    _keep_path = Path(_keep).resolve()
+    _keep_path.parent.mkdir(parents=True, exist_ok=True)
+    _keep_path.unlink(missing_ok=True)
+    os.environ["AIDND_DB_PATH"] = str(_keep_path)
+    os.environ.pop("AIDND_DATABASE_URL", None)
     os.environ.pop("DATABASE_URL", None)
 else:
     _tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
@@ -100,6 +134,7 @@ import random
 
 from fastapi import Depends
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 
 from app import auth, limits, memorybank, models, security
 from app.database import Base, SessionLocal, engine, get_db
@@ -341,6 +376,44 @@ def _check(response) -> None:
         sys.exit(f"shape failed: {response.status_code} {response.text[:400]}")
 
 
+# ------------------------------------------------------------------- --keep
+
+
+def make_bootable() -> None:
+    """Two edits that turn a measurement fixture into a database the app will
+    actually serve. Both exist because build_fixture() builds a database for
+    the meter, not for a browser."""
+    from app.migrations import LATEST_VERSION
+
+    with engine.begin() as conn:
+        # create_all() builds the current schema but leaves the stamp at its
+        # default, and bootstrap() reads a stamped-but-not-fresh database as
+        # ancient — it would replay all of the migrations against a schema
+        # that already has every column, and fail on the first one.
+        conn.execute(text(f"PRAGMA user_version = {LATEST_VERSION}"))
+        # In local mode (AIDND_MULTI_USER unset) get_current_user() looks for
+        # the row with email IS NULL and is_guest false. The fixture's user is
+        # a registered one, so without this nothing owns the adventure and the
+        # app opens on an empty library.
+        conn.execute(text("UPDATE users SET email = NULL, is_guest = 0"))
+
+
+def print_keep_notes(path: str, actions: int) -> None:
+    port = 8010
+    print()
+    print(f"fixture kept: {path}")
+    print(f"  {actions} actions, bootable in local mode. To scroll it:")
+    print()
+    print(f"    cd backend && AIDND_DB_PATH={path} \\")
+    print(f"        .venv/Scripts/python.exe -m uvicorn app.main:app --port {port}")
+    print(f"    cd frontend && AIDND_API_PORT={port} npm run dev")
+    print()
+    # 8000 is the vite proxy's default and another local app squats it, which
+    # shadows this API with its own SPA catch-all and looks like an empty
+    # database rather than a proxy problem.
+    print(f"  Port {port} rather than 8000 on purpose; AIDND_API_PORT points vite at it.")
+
+
 # ----------------------------------------------------------------------- main
 
 
@@ -380,6 +453,13 @@ def parse_args(argv=None):
     p.add_argument("--no-embeddings", action="store_true",
                    help="unset the embedding model — reproduces the round-two "
                         "blind spot, where the bank's cost is invisible")
+    # Read at import time by _early_keep as well — the database location has
+    # to be settled before app.database loads. Declared here so it appears in
+    # --help and an unknown spelling is still rejected.
+    p.add_argument("--keep", metavar="PATH", default="",
+                   help="write the fixture to PATH and leave it bootable, so "
+                        "the app can serve it in a browser (default: a temp "
+                        "file, discarded). SQLite only")
     p.add_argument("--seed", type=int, default=7)
     p.add_argument("--statements", type=int, default=5,
                    help="heaviest statements to print per shape (default: 5)")
@@ -424,6 +504,12 @@ def main(argv=None) -> int:
 
     app.dependency_overrides.clear()
     adventures._active_turns.clear()
+
+    # After the shapes, not before: make_bootable() writes, and the meter is
+    # still attached until the report above is rendered.
+    if args.keep:
+        make_bootable()
+        print_keep_notes(os.environ["AIDND_DB_PATH"], args.actions)
     return 0
 
 
