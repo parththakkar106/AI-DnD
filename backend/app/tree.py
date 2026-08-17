@@ -28,6 +28,7 @@ from sqlalchemy import func, insert, update
 from sqlalchemy.orm import Session
 
 from . import models
+from .context import lineage
 
 # The head depth of an adventure with no actions. Keeps "the next node goes at
 # head_depth + 1" true with no special case, and mirrors migrations.NO_DEPTH.
@@ -87,6 +88,93 @@ def head_branch(db: Session, adventure: models.Adventure) -> models.Branch:
     branch = root_branch(db, adventure)
     adventure.head_branch_id = branch.id
     return branch
+
+
+def fork(db: Session, adventure: models.Adventure, node: models.Action) -> models.Branch:
+    """Take the story down `node`, on a branch of its own.
+
+    `node` is a discarded attempt at a turn the story has already moved past.
+    Making it live where it stands would orphan every turn played after it —
+    they were written as a continuation of the attempt that won — so it moves
+    onto a new branch instead, forked from the depth just before it. The parent
+    keeps its story, complete and untouched; the new branch borrows everything
+    up to the fork and owns exactly one node.
+
+    **One row is inserted and one row is moved. Nothing is copied.** That is
+    the whole claim of the design: a fork costs a `branches` row and the
+    ancestry cached on it, whatever the story behind it is worth.
+
+    Nothing derived moves with it, and that is not an omission. A memory hangs
+    off the coordinate its block ends on, and what it describes is whatever
+    attempt was live there — which stays on the parent. From the new branch it
+    is simply out of range: the lineage caps the parent at `fork_depth`, so the
+    memory sits one depth past the border and neither the retrieval clause nor
+    the cursors can see it. The block is summarized again, from the text this
+    branch actually tells, without a line of bookkeeping.
+
+    One thing does stay behind: the attempts this node leaves. They are still
+    takes on the parent's turn, and one of them has to be the parent's story —
+    the oldest, so the line the parent keeps is the one it was written on.
+    """
+    parent = db.get(models.Branch, node.branch_id)
+    if parent is None or node.depth is None:
+        raise ValueError("cannot fork from a node that is not on a branch")
+    fork_depth = node.depth - 1
+    # The attempts this node is leaving, read *before* it moves. The session
+    # does not autoflush, so asking afterwards would still find the node here
+    # and renumber it back into the group it just left.
+    remaining = [
+        row for row in db.query(models.Action)
+        .filter(
+            models.Action.adventure_id == adventure.id,
+            models.Action.branch_id == parent.id,
+            models.Action.depth == node.depth,
+        )
+        .order_by(models.Action.variant_index, models.Action.id)
+        .all()
+        if row is not node
+    ]
+    # The parent's ancestry, every entry capped at the fork. Only the first can
+    # actually move — an older entry is already capped at the fork depth of the
+    # branch beneath it, which is shallower than any node on the parent — but
+    # capping them all says the invariant instead of relying on it.
+    inherited = [
+        [branch_id, fork_depth if cap is None else min(cap, fork_depth)]
+        for branch_id, cap in lineage.entries_of(parent)
+    ]
+    # Inserted through Core, and its lineage written second, for the reason
+    # `root_branch` spells out: this can run inside a flush, and the lineage
+    # names the row's own id.
+    new_id = db.execute(
+        insert(models.Branch).values(
+            adventure_id=adventure.id,
+            parent_branch_id=parent.id,
+            fork_depth=fork_depth,
+            lineage=[],
+            created_at=models.utcnow(),
+        )
+    ).inserted_primary_key[0]
+    db.execute(
+        update(models.Branch)
+        .where(models.Branch.id == new_id)
+        .values(lineage=[[new_id, None]] + inherited)
+    )
+
+    depth = node.depth
+    node.branch_id = new_id
+    node.live = True
+    node.variant_index = 0
+    node.variant_count = 0
+
+    if remaining and not any(row.live for row in remaining):
+        remaining[0].live = True
+    for i, row in enumerate(remaining):
+        row.variant_index = i
+        row.variant_count = len(remaining) if len(remaining) > 1 else 0
+
+    adventure.head_branch_id = new_id
+    adventure.head_depth = depth
+    return db.get(models.Branch, new_id)
 
 
 def place_action(

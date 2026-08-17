@@ -5,7 +5,7 @@ import threading
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func
-from sqlalchemy.orm import Session, load_only
+from sqlalchemy.orm import Session, load_only, undefer
 from sqlalchemy.orm.attributes import set_committed_value
 
 from .. import (
@@ -585,6 +585,18 @@ def next_index(adventure: models.Adventure) -> int:
     return context_history.max_action_index(adventure) + 1
 
 
+def next_depth(adventure: models.Adventure) -> int:
+    """Where the next node played onto this story goes: one past the tip.
+
+    Not `next_index`, which the two agreed on until SP5. `index` has to stay
+    unique across the whole adventure — it is the v1 bundle's key — so on a
+    story forked at depth 6 after twenty turns it would hand the next node
+    depth 21 and leave a fourteen-deep hole in the middle of a path. A depth is
+    a position along *this* story, and the branch is what makes it unambiguous.
+    """
+    return adventure.head_depth + 1
+
+
 def last_action(adventure: models.Adventure, db: Session) -> models.Action | None:
     """The newest action of any kind on the story being played, or None.
 
@@ -740,10 +752,7 @@ async def _generate_turn(
     # second take on turn 12 is still turn 12. (It was `retry_of.index` until
     # SP4, which held the same number; depth is the one that stays true once a
     # branch has its own numbering.)
-    # `next_index` because `tree.place_action` still derives a new node's depth
-    # from its legacy index while the two columns coexist; they hold the same
-    # number, and SP8 removes the question.
-    ai_depth = retry_of.depth if retry_of is not None else next_index(adventure)
+    ai_depth = retry_of.depth if retry_of is not None else next_depth(adventure)
     stat_schema = adventure.scenario.stat_schema if adventure.scenario else None
     if worldstate.has_schema(stat_schema):
         text, delta = worldstate.extract_delta(text)
@@ -765,7 +774,8 @@ async def _generate_turn(
         # shares its depth: it is the same turn. Two rows then hold one index,
         # which `max_action_index` (a maximum, not a count) survives, and
         # nothing else still reads the column.
-        index=retry_of.index if retry_of is not None else ai_depth,
+        index=retry_of.index if retry_of is not None else next_index(adventure),
+        depth=ai_depth,
         type="ai",
         text=text,
         reasoning=reasoning,
@@ -832,6 +842,7 @@ async def run_player_turn(
         player_action = models.Action(
             adventure_id=adventure.id,
             index=next_index(adventure),
+            depth=next_depth(adventure),
             type=payload.type,
             text=modified,
         )
@@ -1031,6 +1042,190 @@ def delete_turn(
         db.delete(attempt)
 
 
+# ---------- Branches (Phase 14, SP5) ----------
+#
+# Attempts pile up at the tip as siblings and cost nothing. One becomes a
+# *branch* at the moment the player takes the story down it and leaves the line
+# that moved past it — which is the same event as "a turn is played past it",
+# seen from the side that has to do the work. Doing it here rather than on the
+# next turn means a branch is only ever created for a divergence somebody
+# actually built on, and the line being left is never disturbed.
+
+
+def current_window(db: Session, adventure: models.Adventure) -> schemas.ActionPage:
+    actions, total, has_more = action_window(db, adventure)
+    return schemas.ActionPage(
+        actions=[schemas.ActionOut.model_validate(a) for a in actions],
+        total=total,
+        has_more=has_more,
+    )
+
+
+@router.get("/{adventure_id}/branches", response_model=list[schemas.BranchOut])
+def list_branches(
+    adventure_id: int, db: Session = Depends(get_db), user: models.User = CurrentUser
+):
+    """Every branch of the adventure, with where each one leaves its parent.
+
+    The shape a tree view is drawn from: `fork_depth` says where the line
+    splits off and `depth` where it currently ends, so the whole picture is one
+    query over `branches` plus one grouped query over `actions` — never one per
+    branch, which is how a spatial view of a hundred forks stops being a
+    hundred round trips.
+    """
+    adventure = get_adventure_or_404(adventure_id, db, user)
+    branches = (
+        db.query(models.Branch)
+        .filter(models.Branch.adventure_id == adventure.id)
+        .order_by(models.Branch.id)
+        .all()
+    )
+    owned = {
+        branch_id: (count, tip)
+        for branch_id, count, tip in db.query(
+            models.Action.branch_id,
+            func.count(models.Action.id),
+            func.max(models.Action.depth),
+        )
+        .filter(
+            models.Action.adventure_id == adventure.id,
+            models.Action.live.is_(True),
+        )
+        .group_by(models.Action.branch_id)
+        .all()
+    }
+    out = []
+    for branch in branches:
+        count, tip = owned.get(branch.id, (0, None))
+        out.append(schemas.BranchOut(
+            id=branch.id,
+            parent_branch_id=branch.parent_branch_id,
+            fork_depth=branch.fork_depth,
+            # A branch with nothing of its own sits at its fork point: that is
+            # the last node its story contains, borrowed but the tip all the
+            # same. Mirrors tree.refresh_head.
+            depth=tip if tip is not None else (
+                branch.fork_depth if branch.fork_depth is not None else tree.NO_DEPTH
+            ),
+            own_actions=count,
+            is_head=(branch.id == adventure.head_branch_id),
+            created_at=branch.created_at,
+        ))
+    return out
+
+
+@router.post(
+    "/{adventure_id}/branches/{branch_id}/switch", response_model=schemas.ActionPage
+)
+def switch_branch(
+    adventure_id: int,
+    branch_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = CurrentUser,
+):
+    """Read and play a different branch of the story.
+
+    Nothing is copied and nothing is rewritten — the head pointer moves, and
+    the shared script/world state comes back to what that branch's tip left
+    behind. That last part is why a switch is safe at all: the scoreboard and
+    the RPG layer are per-adventure, so a branch that did not restore them
+    would be told a story with another branch's numbers under it (the
+    world-state cooldown clock included, which lives inside the snapshot).
+    """
+    adventure = get_adventure_or_404(adventure_id, db, user)
+    branch = db.get(models.Branch, branch_id)
+    if branch is None or branch.adventure_id != adventure.id:
+        raise HTTPException(404, "Branch not found")
+    acquire_turn_lock(adventure_id)
+    try:
+        adventure.head_branch_id = branch.id
+        tree.refresh_head(db, adventure)
+        attempts.restore_state(adventure, db_tip(db, adventure))
+        adventure.updated_at = models.utcnow()
+        db.commit()
+        db.refresh(adventure)
+        return current_window(db, adventure)
+    finally:
+        _active_turns.discard(adventure_id)
+
+
+def db_tip(db: Session, adventure: models.Adventure) -> models.Action | None:
+    """The newest node of the story as it now stands, with its outcome loaded."""
+    return (
+        db.query(models.Action)
+        .filter(
+            models.Action.adventure_id == adventure.id,
+            lineage.path_of(db, adventure).clause(models.Action),
+        )
+        .options(
+            undefer(models.Action.state_after),
+            undefer(models.Action.world_state_after),
+        )
+        .order_by(models.Action.depth.desc(), models.Action.id.desc())
+        .first()
+    )
+
+
+@router.post(
+    "/{adventure_id}/actions/{action_id}/fork", response_model=schemas.ActionPage
+)
+def fork_from_attempt(
+    adventure_id: int,
+    action_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = CurrentUser,
+):
+    """Take the story down this attempt, forking a branch if it has to.
+
+    Three cases, and the first two are not forks:
+
+    * the attempt is already the one the story tells — nothing to do;
+    * its turn is the tip, so the attempts are still leaves nobody has built
+      on: switch, exactly as `/variant` does, and no branch is created;
+    * the story has moved past its turn: fork. The attempt gets a branch of its
+      own and the line it is leaving keeps every turn it has.
+    """
+    adventure = get_adventure_or_404(adventure_id, db, user)
+    action = db.get(models.Action, action_id)
+    if action is None or action.adventure_id != adventure_id:
+        raise HTTPException(404, "Action not found")
+    # Asked before the shape of the turn is, because a fork leaves the promoted
+    # attempt alone on its branch: a client that repeats the call — a double
+    # click, a retried request — must get the same answer, not a complaint that
+    # the turn it just forked has nothing to fork to.
+    if action.live and action.branch_id == adventure.head_branch_id:
+        return current_window(db, adventure)
+    if len(attempts.group(db, action)) < 2:
+        raise HTTPException(
+            400, "This turn has only one take, so there is nothing to fork to."
+        )
+    acquire_turn_lock(adventure_id)
+    try:
+        newest = last_action(adventure, db)
+        at_the_tip = (
+            newest is not None
+            and newest.branch_id == action.branch_id
+            and newest.depth == action.depth
+        )
+        if at_the_tip:
+            # The story at this coordinate is about to say something else, so
+            # what was derived from it is withdrawn — the same move retry
+            # makes. A fork needs none of that: it leaves the coordinate, and
+            # its memory, exactly where they are (see `tree.fork`).
+            memorybank.forget_node(db, adventure, action)
+            cursors.rewind_all(adventure, action.branch_id, (action.depth or 0) - 1)
+            attempts.make_live(db, adventure, action)
+        else:
+            tree.fork(db, adventure, action)
+            attempts.restore_state(adventure, action)
+        adventure.updated_at = models.utcnow()
+        db.commit()
+        db.refresh(adventure)
+        return current_window(db, adventure)
+    finally:
+        _active_turns.discard(adventure_id)
+
+
 @router.post("/{adventure_id}/undo", response_model=schemas.ActionPage)
 def undo_turn(
     adventure_id: int, db: Session = Depends(get_db), user: models.User = CurrentUser
@@ -1059,8 +1254,20 @@ def undo_turn(
             raise HTTPException(400, "Nothing to undo")
         last = newest[0]
         before_that = newest[1] if len(newest) > 1 else None
+        # Only ground this branch owns. Everything before the fork is borrowed
+        # from an ancestor and is *its* story too, so taking back a turn here
+        # must never reach across and delete a turn out of another branch. The
+        # test is on the row's own branch rather than on the fork depth,
+        # because that is the fact that decides it.
+        if last.branch_id != adventure.head_branch_id:
+            raise HTTPException(
+                400, "Nothing to undo on this branch — the turns before it "
+                     "belong to the branch it was forked from.",
+            )
         first_removed = last
-        if last.type == "ai" and before_that is not None and before_that.type in ("do", "say", "story"):
+        if (last.type == "ai" and before_that is not None
+                and before_that.type in ("do", "say", "story")
+                and before_that.branch_id == adventure.head_branch_id):
             first_removed = before_that
         # Where the story stands once the turn is gone: what the node in front
         # of the earliest removed one left behind. Read before the deletes, so
@@ -1108,6 +1315,12 @@ def export_adventure(
     # folding each group back into the `variants` array the format expects.
     # That array is the *only* remaining producer of the v1 shape: nothing in
     # the database holds one any more.
+    #
+    # A *forked* adventure has no honest v1 rendering — the format has one
+    # story and there are two — so this emits every branch's turns interleaved
+    # by index, which reads as a mangled story rather than as lost data. SP6's
+    # v2 bundle is what fixes it, and SP7 is where a player first gets a way to
+    # fork at all, so the order those two ship in is the order that matters.
     exported_actions = (
         db.query(models.Action)
         .filter(models.Action.adventure_id == adv.id)

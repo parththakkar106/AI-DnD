@@ -1,8 +1,11 @@
 """Phase 14 SP2 — a read sees one story, and knows which one.
 
-Nothing in the product forks yet, so these tests build the fork by hand: three
-branch rows and their nodes, written straight to the database, arranged as the
-design doc's own worked example.
+These tests build the fork by hand: three branch rows and their nodes, written
+straight to the database, arranged as the design doc's own worked example. That
+was the only way to build one when this file was written (nothing forked until
+SP5) and it stays that way now that `tree.fork` exists — a fixture that agreed
+with the code under test could not catch it being wrong. The two are checked
+against each other in `test_branch_forking.py`.
 
     branch C, tip at depth 7, lineage [(C, 7), (B, 5), (A, 3)]
     → A0 A1 A2 A3 B4 B5 C6 C7
