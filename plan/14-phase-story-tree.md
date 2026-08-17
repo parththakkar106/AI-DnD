@@ -293,6 +293,52 @@ doc's own example reads back as `A0 A1 A2 A3 B4 B5 C6 C7`, and that a sibling's 
 invisible. Egress: a 20-fork fixture costs within a small factor of a 1-fork one —
 clause count is bounded by the context window, not by fork count.
 
+**Done, 2026-08-17** (branch `sp2-branch-clause`). **317 tests green**, the 297 from SP1
+plus 20 in `test_branch_clause.py`. The baseline contract passes **unmodified**, which
+was the pass condition. Six things worth not rediscovering:
+
+- **The contract forced the write side, not the read side.** The SP0 baseline writes its
+  actions straight to the database and must pass unmodified — so "every writer calls
+  `place_action`" could not be the invariant, because the baseline is a writer and does
+  not. Neither did any of the eleven other test fixtures. The alternative was a read
+  tolerant of a NULL branch, which is the quiet-wrong-story failure this subphase exists
+  to make impossible. So the session enforces it instead: `tree.place_new_nodes` runs
+  from `Session.before_flush` and places anything unplaced, registered in `models.py` so
+  that importing the models arms it. The call sites keep their explicit calls — a node
+  placed at the call site is placed *before* the code around it reads the row back.
+- **A branch could no longer be created with a flush.** `root_branch` did
+  `db.add(); db.flush()` to get the id its lineage names, and a nested flush inside
+  `before_flush` raises. It inserts through Core and reads the row back — same
+  transaction, three statements, once per adventure ever.
+- **The identity map holds weak references, and it cost 25 % of the suite.** Resolving
+  the head branch per node re-read the `branches` row for every node in the flush, because
+  nothing held a strong reference between two calls: 201 SELECTs to write 200 actions,
+  and 36 s → 45 s on the same 297 tests. The head is now resolved once per adventure per
+  flush (2 SELECTs), which put the suite back at 38.8 s *with* 20 more tests. Pinned by a
+  test, because the symptom is only ever a stopwatch.
+- **The index screen is the one read scoped by head branch rather than by lineage.**
+  `_latest_narration` picks one row per adventure for a hundred adventures at once, and a
+  lineage clause each would put hundreds of OR-terms on that query. The two answers differ
+  only for a branch with no nodes of its own, which cannot exist — a branch is created by
+  playing a turn onto it.
+- **Two reads are deliberately left un-pathed**, both documented where they live.
+  `max_action_index` allocates the legacy `index`, which must stay adventure-wide or two
+  branches issue the same number; and export is a flat v1 bundle whose reader has no idea
+  branches exist, which is why SP6 replaces the format rather than widening the query.
+  A third is a known divergence, not a decision: the index screen's `action_count` counts
+  the tree, and will overstate a branched story until SP5.
+- **`Adventure.actions` was left ordered by `index` on purpose.** Ordering the collection
+  by depth would not make it a story — it is every branch's actions, and a path is a
+  selection out of it. What the relationship is still for is ownership and the
+  delete-orphan cascade.
+
+Measured: a story forked **20 times reads its newest 32-action window for 3,178 B against
+the 2,961 B an unforked story of the same length costs (1.07×)**, naming one branch of its
+22 lineage entries. The pre-tree 600-action `--keep` fixture was migrated and then driven
+over HTTP end to end: index **1,840 B**, page load **64,149 B** — the same shapes as
+before the phase — and scrolling to the start took 9 pages and saw all 600 actions exactly
+once.
+
 ### SP3 — Memories and summary attach to nodes
 
 Cursors stop being positions in a shifting list. `memory_cursor`/`summary_cursor` become

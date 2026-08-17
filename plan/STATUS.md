@@ -78,26 +78,29 @@ needed; nothing requires reading a row of anyone's story.
 
 ## Pick up here
 
-**`plan/14-phase-story-tree.md`, SP2 — the branch clause.** SP0 (the regression contract
-and the `--rich` fixture) and SP1 (schema, migration, and the writer that keeps new rows
-on the tree) are done and green; nothing is deployed yet. SP2 is where the reads move
-onto `(branch_id, depth)`, and where the highest-risk line in the whole phase lives:
-`history._from_memory()` slices `adventure.actions`, which under a tree is *every
-branch's* actions rather than the path. Make that shortcut branch-aware or delete it.
+**`plan/14-phase-story-tree.md`, SP3 — memories and the summary attach to nodes.** SP0
+(the regression contract and the `--rich` fixture), SP1 (schema, migration, and the writer
+that keeps new rows on the tree) and SP2 (the branch clause: every action read now selects
+on `(branch_id, depth)` through `app/context/lineage.py`) are done and green; nothing is
+deployed yet. SP3 turns `memory_cursor`/`summary_cursor` from positions in a shifting list
+into node anchors, and deletes the cursor-position machinery that goes with them —
+`position_of_index`, `note_action_removed`, `_rewind_cursors_to_index`,
+`prune_dangling_memories`. **`settled_story_actions` and the holdback stay until SP4**:
+they exist because retry mutates a row in place, and retry stops doing that in SP4, not
+in SP3. Deleting them early reopens the exact bug they were written for.
 
 **The schema is live in code but not on production.** When SP1 ships, the deploy needs
 one `VACUUM FULL actions;` on the direct (non-`-pooler`) endpoint afterwards — it rewrites
 every row. See the 144 MB lesson at the top of this file.
 
-Two things from the egress work are worth carrying into it:
+Two things to carry into it:
 
-- **Paging already anticipates the tree.** `action_window` in `routers/adventures.py`
-  anchors on an action id and orders by comparing `Action.index`, never by treating
-  index as a position. A branch changes which actions are on the path, not how two of
-  them order, so the anchor survives; anything counting offsets would not.
-- **Weigh new columns in bytes.** A tree adds parent/branch columns to `actions`, which
-  is already the table that fills the disk. `tests/test_egress.py` has byte ceilings
-  now — they will tell you.
+- **Every action read goes through `context/lineage.py`.** A memory read has to as well —
+  the same `Path` builds a clause over `Memory` — and it reads the *full* lineage, not a
+  window: retrieval is long-range recall and cannot be windowed. It stays affordable
+  because memories are sparse, so assert the byte cost on a deep fork.
+- **Weigh new columns in bytes.** `actions` is already the table that fills the disk.
+  `tests/test_egress.py` has byte ceilings now — they will tell you.
 
 **After any migration that rewrites `actions`:** one `VACUUM FULL actions;`. That is the
 lesson of the 144 MB above — a rewrite doubles the table and only a `VACUUM FULL` gives
@@ -108,6 +111,36 @@ frontend work lands on the same scroll path that has still never been driven by 
 drive it before rewriting it.
 
 ---
+
+## What happened on 2026-08-17, part five — the tree, SP2
+
+Every read of an action now goes through one module. `app/context/lineage.py` turns a
+branch's stored lineage into the OR-of-ranges that is "this story", and history, paging,
+the newest-action lookups, the index screen and the scripting history API all select
+through it. Ordering moved from `index` to `depth`. **317 tests green**, and the SP0
+baseline still passes unmodified, which was the pass condition. Branch `sp2-branch-clause`.
+
+Three things to carry forward:
+
+- **A read-side invariant needs a write-side floor.** From SP2 a row without a branch is a
+  row no read can see, and it fails by *disappearing*. Wiring every writer was not enough,
+  because the SP0 baseline and eleven other fixtures write actions straight to the database
+  and never call `place_action` — and the baseline may not be edited. `tree.place_new_nodes`
+  now runs from `Session.before_flush`, so nothing can be written unplaced. That is a
+  better invariant than the one SP1 shipped, and it was the contract that forced it.
+- **The SQLAlchemy identity map is weak, and that is a performance cliff.** Resolving the
+  head branch once per node re-read the row from the database for every node in a flush —
+  201 SELECTs to write 200 actions, and a 25 % slower suite (36 s → 45 s). Nothing about
+  the results changed; only a stopwatch could see it. Hoist the lookup out of the loop and
+  hold the reference for the length of the call. Now pinned by a test.
+- **Clause count is bounded by the window, and it is now measured.** A story forked 20
+  times reads its newest 32 actions naming *one* branch, for 1.07× what an unforked story
+  of the same length costs. Reading the tail widens the lineage only when a deleted action
+  leaves the estimate short.
+
+The 600-action `--keep` fixture — a genuine pre-tree database — was migrated and then
+driven over HTTP: index 1,840 B, page load 64,149 B (both unchanged), and scrolling to the
+start took 9 pages and saw every action exactly once.
 
 ## What happened on 2026-08-17, part four — the tree, SP0 and SP1
 

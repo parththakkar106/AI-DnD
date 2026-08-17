@@ -1144,6 +1144,12 @@ def export_adventure(
     # Export is the one read that genuinely wants every attempt, so it asks for
     # the deferred `variants` column up front — iterating adv.actions instead
     # would lazy-load it one row at a time.
+    #
+    # And the one read deliberately left un-pathed: a backup wants the whole
+    # adventure, not the branch its owner happens to be standing on. `index`
+    # orders it because the v1 bundle is a flat list keyed on index and its
+    # reader has no idea branches exist — which is exactly why SP6 replaces the
+    # format rather than quietly widening this query.
     exported_actions = (
         db.query(models.Action)
         .filter(models.Action.adventure_id == adv.id)
