@@ -130,13 +130,14 @@ else:
 
 import argparse
 import asyncio
+import json
 import random
 
 from fastapi import Depends
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
-from app import auth, limits, memorybank, models, security
+from app import auth, limits, memorybank, models, security, seed, worldstate
 from app.database import Base, SessionLocal, engine, get_db
 from app.main import app
 from app.providers import PromptParts
@@ -214,6 +215,213 @@ class FakeEmbeddings:
         ]
 
 
+# -------------------------------------------------------------- rich fixture
+
+# The correctness fixture, as against the scale one.
+#
+# The default fixture is sized from production and exists to weigh bytes, so it
+# leaves every column it does not weigh at its default. That makes it a poor
+# witness for anything *semantic* — and phase 14 replaces the storage model
+# underneath all of it. Measured on a freshly built default fixture, the
+# columns a story tree has to migrate correctly look like this:
+#
+#   state_before / world_state_before   NULL on all 600 rows. SP4 moves these
+#                                       from *before* to *after* snapshots, and
+#                                       a migration over NULLs proves nothing.
+#   scenario_id / world_state           absent. No RPG layer, so the cooldown
+#                                       clock SP5 must not advance never runs.
+#   adventure_scripts                   none. script_state rollback is exactly
+#                                       what a branch switch reuses.
+#   memory_cursor / summary_cursor      both 0. SP3 replaces the cursors.
+#   variants                            two attempts of byte-identical text,
+#                                       variant_index always 0 — so "which
+#                                       attempt is live?", the one question
+#                                       SP4's migration has to answer, has no
+#                                       observable answer.
+#
+# --rich fills in exactly those and changes nothing else, so the measuring
+# fixture's numbers stay comparable run to run. It is a *correctness* fixture:
+# prefer it small (--rich --actions 30), because what it is for is variety per
+# row, not rows.
+
+RICH_SUMMARY = (
+    "You tracked the bandits to a camp above the ford, freed Gwen from the "
+    "quartermaster's cage, and struck a bargain: the iron key for safe passage "
+    "through the tunnels. The alarm has not yet been raised."
+)
+
+RICH_CARDS = [
+    ("character", "Gwen", "Gwen, ranger, her",
+     "A loyal ranger who owes you her life and says so rarely."),
+    ("location", "The Ford", "ford, river, crossing",
+     "A shallow crossing overlooked by the bandit camp."),
+    ("item", "Iron Key", "iron key, key",
+     "Taken from the quartermaster. Opens something below the camp."),
+]
+
+# Ten gold a turn, so a state snapshot that failed to roll back reads as a
+# wrong total rather than as nothing. Same shape the retry tests use.
+RICH_SCRIPT = """
+const modifier = (text) => {
+  state.gold = (state.gold || 0) + 10;
+  return { text };
+};
+modifier(text);
+"""
+
+
+def rich_stat_schema() -> dict:
+    """The demo RPG schema, read from the seed data rather than invented here.
+
+    Using the real one means the fixture exercises bands, cooldowns,
+    max_delta_per_turn and NPC stat blocks as they are actually shaped — an
+    invented schema would drift from the thing it is standing in for.
+    """
+    path = seed.SEED_DIR / "04-rpg-world-state.json"
+    return json.loads(path.read_text(encoding="utf-8"))["stat_schema"]
+
+
+def rich_script_state(turn: int) -> dict:
+    """The scoreboard as of `turn`. Monotonic, so any snapshot identifies the
+    turn it was taken at — which is what makes a bad rollback visible."""
+    return {"gold": turn * 10, "turn": turn}
+
+
+def rich_world_state(schema: dict, turn: int) -> dict:
+    """A live world state that has actually been played to `turn`.
+
+    `instantiate` gives the initial picture; a fixture whose every row holds
+    that same picture cannot tell a restored snapshot from an unrestored one.
+    So hp declines, mana drains and a flag flips partway through.
+    """
+    ws = worldstate.instantiate(schema)
+    ws["player"]["hp"] = max(20, 100 - turn)
+    ws["player"]["mana"] = max(0, 30 - turn // 2)
+    ws["world"]["day"] = 1 + turn // 20
+    ws["flags"]["alarm_raised"] = turn > 12
+    ws["flags"]["player_hidden"] = turn <= 12
+    ws["_meta"]["last_changed"] = {"player.hp": turn}
+    return ws
+
+
+def rich_variants(rng: random.Random, index: int) -> tuple[list, int]:
+    """Distinguishable retry attempts, and which one is live.
+
+    Every attempt in the default fixture carries the same text with
+    variant_index pinned at 0. That is the one thing SP4 has to get right and
+    the one thing that fixture cannot witness, so here the texts differ, the
+    counts differ, and the live one is often not the last.
+    """
+    count = 3 if index % 12 == 1 else 2
+    entries = [
+        {
+            "text": f"[attempt {n + 1} of {count} at turn {index}] {prose(rng, 240)}",
+            "reasoning": None,
+            "script_state": rich_script_state(index),
+            "created_at": f"2026-01-01T00:{index % 60:02d}:{n:02d}",
+        }
+        for n in range(count)
+    ]
+    # Deliberately not always the newest: a player who retried twice and then
+    # went back to the first take is the case that breaks a migration which
+    # assumes the live attempt is the last one written.
+    live = 0 if index % 18 == 1 else count - 1
+    return entries, live
+
+
+def add_rich_extras(db, args, rng: random.Random, user, adventure) -> None:
+    """Everything --rich adds beside the actions themselves.
+
+    Called with the adventure already flushed, before the actions are written,
+    because the actions need the schema to snapshot a world state from.
+    """
+    schema = rich_stat_schema()
+    scenario = models.Scenario(
+        user_id=user.id,
+        title="Stress (RPG)",
+        prompt="You crouch at the ford, watching the bandit camp.",
+        stat_schema=schema,
+    )
+    db.add(scenario)
+    db.flush()
+
+    adventure.scenario_id = scenario.id
+    adventure.world_state = rich_world_state(schema, args.actions)
+    adventure.script_state = rich_script_state(args.actions)
+    # The post-turn passes SP3 rewrites only do anything when summarization is
+    # on and the cursors are somewhere other than the start.
+    adventure.auto_summarize = True
+    adventure.story_summary = RICH_SUMMARY
+    adventure.memory_cursor = max(0, args.actions - 8)
+    adventure.summary_cursor = max(0, args.actions - 20)
+
+    for kind, name, keys, entry in RICH_CARDS:
+        db.add(models.StoryCard(
+            adventure_id=adventure.id, type=kind, name=name, keys=keys, entry=entry,
+        ))
+
+    db.add(models.AdventureScript(
+        adventure_id=adventure.id, position=0, enabled=True,
+        name="Gold", description="Ten gold a turn.", output_js=RICH_SCRIPT,
+    ))
+    return schema
+
+
+def add_second_adventure(db, rng: random.Random, user) -> int:
+    """A short second adventure, so 'does this leak across adventures?' is a
+    question the fixture can answer. A tree scopes every read by branch, and a
+    branch clause that forgot its adventure would still look right on a
+    database holding exactly one."""
+    other = models.Adventure(
+        user_id=user.id, title="Stress (second)", script_state={},
+        memory_bank_enabled=True, auto_summarize=False,
+    )
+    db.add(other)
+    db.flush()
+    for i in range(6):
+        db.add(models.Action(
+            adventure_id=other.id, index=i,
+            type="ai" if i % 2 else "do",
+            text=f"[second adventure] turn {i}. {prose(rng, 200)}",
+            state_before=rich_script_state(i),
+        ))
+    memory = models.Memory(
+        adventure_id=other.id,
+        text="This memory belongs to the second adventure and must never be "
+             "retrieved for the first.",
+        source_start=0, source_end=5,
+    )
+    memorybank.set_vector(memory, [rng.uniform(-1.0, 1.0) for _ in range(EMBEDDING_DIMS)])
+    db.add(memory)
+    return other.id
+
+
+def _assert_live_variant_invariant(db, adventure_id: int) -> None:
+    """`text` mirrors the live attempt, on every retried row.
+
+    Checked here rather than trusted, because SP4's migration reads exactly
+    this to decide which sibling node becomes the head of the turn. A fixture
+    that quietly violated it would let a wrong migration look right.
+    """
+    rows = (
+        db.query(models.Action)
+        .filter(models.Action.adventure_id == adventure_id,
+                models.Action.variant_count > 0)
+        .all()
+    )
+    for action in rows:
+        entries = action.variants or []
+        live = entries[action.variant_index]["text"]
+        if live != action.text:
+            sys.exit(
+                f"fixture is inconsistent: action index {action.index} has text "
+                f"that is not its live attempt (variant_index="
+                f"{action.variant_index} of {len(entries)})."
+            )
+    if not rows:
+        sys.exit("--rich built no retried actions; raise --actions above 6.")
+
+
 # ------------------------------------------------------------------- fixture
 
 
@@ -254,24 +462,47 @@ def build_fixture(args, rng: random.Random) -> tuple[int, int]:
         db.add(adventure)
         db.flush()
 
+        schema = add_rich_extras(db, args, rng, user, adventure) if args.rich else None
+
         for i in range(args.actions):
             is_ai = bool(i % 2)
+            retried = is_ai and i % 6 == 1
+            if args.rich:
+                # Distinguishable attempts, and a live one that is often not
+                # the last written. `text` must mirror the live attempt — that
+                # invariant is what SP4's migration reads to decide which
+                # sibling becomes the head.
+                entries, live = rich_variants(rng, i) if retried else ([], 0)
+                body = entries[live]["text"] if retried else (
+                    f"[turn {i}] {NARRATION}" if is_ai else f"[turn {i}] {PLAYER_INPUT}"
+                )
+            else:
+                entries, live = (
+                    [{"text": NARRATION, "reasoning": None, "script_state": {},
+                      "created_at": "2026-01-01T00:00:00"} for _ in range(2)]
+                    if retried else []
+                ), 0
+                body = NARRATION if is_ai else PLAYER_INPUT
             db.add(models.Action(
                 adventure_id=adventure.id,
                 index=i,
                 type="ai" if is_ai else "do",
-                text=NARRATION if is_ai else PLAYER_INPUT,
+                text=body,
                 context_snapshot={"system": SNAPSHOT_SYSTEM, "story": SNAPSHOT_STORY},
                 world_delta={"delta": {"player.hp": -3},
                              "applied": [{"path": "player.hp", "old": 88, "new": 85}]},
                 # Every third AI turn was retried once, so the retry history is
                 # carrying weight a list response must not pay for.
-                variants=(
-                    [{"text": NARRATION, "reasoning": None, "script_state": {},
-                      "created_at": "2026-01-01T00:00:00"} for _ in range(2)]
-                    if is_ai and i % 6 == 1 else None
+                variants=entries or None,
+                variant_count=len(entries),
+                variant_index=live,
+                # NULL unless --rich. These are the columns a story tree turns
+                # from *before* pictures into *after* ones, so a fixture that
+                # leaves them unset cannot witness that change.
+                state_before=rich_script_state(i) if args.rich else None,
+                world_state_before=(
+                    rich_world_state(schema, i) if args.rich else None
                 ),
-                variant_count=2 if is_ai and i % 6 == 1 else 0,
             ))
 
         for i in range(args.memories):
@@ -280,6 +511,11 @@ def build_fixture(args, rng: random.Random) -> tuple[int, int]:
                 text=f"{MEMORY_TEXT} ({i})",
                 source_start=i * memorybank.MEMORY_INTERVAL,
                 source_end=i * memorybank.MEMORY_INTERVAL + memorybank.MEMORY_INTERVAL - 1,
+                # A bank in play is not uniformly active: some memories are
+                # pinned (always retrieved) and some evicted but kept for the
+                # UI. Both states have to survive being re-attached to nodes.
+                pinned=bool(args.rich and i % 9 == 0),
+                forgotten=bool(args.rich and i % 11 == 5),
             )
             # Through the same door the app uses, so the fixture cannot end up
             # storing vectors in a shape production never produces.
@@ -287,6 +523,10 @@ def build_fixture(args, rng: random.Random) -> tuple[int, int]:
                 memory, [rng.uniform(-1.0, 1.0) for _ in range(EMBEDDING_DIMS)]
             )
             db.add(memory)
+
+        if args.rich:
+            add_second_adventure(db, rng, user)
+            _assert_live_variant_invariant(db, adventure.id)
 
         db.commit()
         return adventure.id, user.id
@@ -453,6 +693,16 @@ def parse_args(argv=None):
     p.add_argument("--no-embeddings", action="store_true",
                    help="unset the embedding model — reproduces the round-two "
                         "blind spot, where the bank's cost is invisible")
+    p.add_argument("--rich", action="store_true",
+                   help="populate the columns the measuring fixture leaves at "
+                        "their defaults: state_before/world_state_before, an "
+                        "RPG scenario and live world state, adventure scripts, "
+                        "non-zero memory/summary cursors, pinned and forgotten "
+                        "memories, distinguishable retry attempts, and a second "
+                        "adventure. A correctness fixture rather than a scale "
+                        "one — prefer it small (--rich --actions 30). Changes "
+                        "what the shapes cost, so do not compare a --rich run "
+                        "against a plain one")
     # Read at import time by _early_keep as well — the database location has
     # to be settled before app.database loads. Declared here so it appears in
     # --help and an unknown spelling is still rejected.
@@ -487,6 +737,10 @@ def main(argv=None) -> int:
           f"(+{args.snapshot_bytes // 1024} kB snapshot, deferred) · "
           f"{args.memories} memories × {EMBEDDING_DIMS} dims · "
           f"capacity {args.capacity}")
+    if args.rich:
+        print("RICH: correctness fixture — RPG scenario, per-action state "
+              "snapshots, scripts, cursors, distinguishable attempts, a second "
+              "adventure. Byte figures below are NOT comparable to a plain run.")
     if args.no_embeddings:
         print("WARNING: embedding model unset — memory retrieval will return "
               "early and the bank's cost will not appear below.")
