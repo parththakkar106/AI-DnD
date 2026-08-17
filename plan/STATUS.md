@@ -7,14 +7,18 @@ session; the per-phase plan files hold the detail, this holds the thread.
 
 ---
 
-## Two things need a human first
+## The live URL is not the one in render.yaml
 
-**The Render service is suspended.** `GET /api/health` returns 503 with a static
-"This service has been suspended by its owner" page, in ~1.2s — that is the edge, not
-a cold start (a free-tier wake hangs 30–60s and then serves). Nothing in the app is
-wrong; check the dashboard. Free-tier suspensions come from usage/bandwidth caps or
-billing, and real users have started arriving, so rule that out before assuming it was
-manual.
+**Production is `https://ai-dnd-1gmp.onrender.com`.** Render appended a suffix to the
+`ai-dnd` service name in `render.yaml`, and plain `ai-dnd.onrender.com` belongs to a
+different, suspended service that answers 503 with "suspended by its owner" — which is
+easy to mistake for this deploy being down. The authoritative link is the one the
+project page points at (`docs/index.html`), not the service name in the blueprint.
+`GET /api/health` on the real host returns `{"ok":true}`.
+
+---
+
+## Needs a human
 
 **The free tier's storage ceiling is closer than the egress work suggested.** The Neon
 database is 99.6 MB of a 512 MB allowance and `actions.context_snapshot` is essentially
