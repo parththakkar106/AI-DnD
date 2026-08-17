@@ -2,9 +2,9 @@ from datetime import datetime, timezone
 
 from sqlalchemy import (
     JSON, Boolean, Column, DateTime, Float, ForeignKey, Index, Integer, LargeBinary,
-    String, Table, Text,
+    String, Table, Text, event,
 )
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, Session, mapped_column, relationship
 
 from .compression import CompressedJSON
 from .database import Base
@@ -481,3 +481,23 @@ class Settings(Base):
         from . import security  # local import: models is imported before security
 
         return security.decrypt_secret(self.api_key)
+
+
+# Phase 14 — the floor under `tree.place_action`.
+#
+# From SP2 a read selects on (branch_id, depth): a node written without them is
+# a node no page, no context build and no memory pass can see, and it fails by
+# disappearing rather than by raising. The writers all place their nodes
+# explicitly, but "all the writers remember" is a promise that has to hold for
+# every fixture, script and test written from here on, so the session enforces
+# it on the way to the database instead.
+#
+# Registered here rather than in tree.py so that importing the models is enough
+# to arm it — the invariant belongs to the rows, not to the module that usually
+# writes them. The import is deferred into the callback because tree.py imports
+# this module.
+@event.listens_for(Session, "before_flush")
+def _place_new_nodes_on_the_tree(session, flush_context, instances):
+    from . import tree
+
+    tree.place_new_nodes(session)

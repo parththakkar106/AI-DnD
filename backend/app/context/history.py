@@ -12,10 +12,10 @@ This module serves those shapes directly from SQL — a tail, a slice, a count �
 so the read is bounded by the context budget instead of by the length of the
 story.
 
-Two rules hold everything together:
+Three rules hold everything together:
 
 * **One definition of "story action".** The cursors in memorybank are
-  *positions* in this filtered, index-ordered list, so SQL and Python must
+  *positions* in this filtered, depth-ordered list, so SQL and Python must
   agree on membership exactly or a cursor silently points at a different
   action. `_STORY_TEXT` and `is_story_text()` are that one definition, written
   twice; keep them in step.
@@ -23,12 +23,22 @@ Two rules hold everything together:
   scripting pipeline hands the whole history to user scripts, as AI Dungeon
   does), every helper here slices that instead of issuing a query, so a
   scripted adventure pays what it always paid and nothing more.
+* **Every read goes through the branch clause** (Phase 14). `adventure.actions`
+  is every branch's actions, not the story being played — so the shortcut above
+  cuts the loaded collection down to the path before slicing it, exactly as the
+  SQL does. This is the line that would silently assemble a prompt out of two
+  different stories, which is why `lineage.Path` owns both halves of it.
+
+Ordering is by `depth` now, not `index`. The two hold the same numbers until
+retry stops mutating rows (SP4), but only one of them is a position along a
+path.
 """
 
 from sqlalchemy import func, inspect as sa_inspect
 from sqlalchemy.orm import Session, defer, object_session
 
 from .. import models
+from . import lineage
 
 # How many of the newest actions to read before checking whether the token
 # budget is covered. When it isn't, the next size is worked out from the
@@ -37,6 +47,12 @@ from .. import models
 WINDOW_START = 32
 WINDOW_MARGIN = 0.15  # aim this far past the budget, so one more round is rare
 WINDOW_STEP = 8  # ...and at least this many more actions each round
+
+# Depth is the ordering key; id breaks the tie that a pre-tree row (depth NULL,
+# and so invisible anyway) or a future sibling pair would otherwise leave to
+# the database's mood.
+_OLDEST_FIRST = (models.Action.depth, models.Action.id)
+_NEWEST_FIRST = (models.Action.depth.desc(), models.Action.id.desc())
 
 
 def _sql_stripped(column):
@@ -78,33 +94,75 @@ def _loaded_actions(adventure: models.Adventure) -> list[models.Action] | None:
 def _from_memory(
     adventure: models.Adventure, exclude_action_id: int | None
 ) -> list[models.Action] | None:
+    """The story, from the already-loaded collection, or None to go to SQL.
+
+    The collection is the *adventure's* actions — every branch of it. Cutting
+    it down to the path here is the same filter the SQL applies, and skipping
+    it would hand the context builder a prompt assembled from siblings of the
+    story being played. The path needs a session to read the branch row from;
+    without one there is no answer to give, so say so rather than guess.
+    """
     loaded = _loaded_actions(adventure)
     if loaded is None:
         return None
-    return [
+    db = _session(adventure)
+    if db is None:
+        return None
+    path = lineage.path_of(db, adventure)
+    rows = [
         a for a in loaded
-        if is_story_text(a.text) and (exclude_action_id is None or a.id != exclude_action_id)
+        if path.contains(a)
+        and is_story_text(a.text)
+        and (exclude_action_id is None or a.id != exclude_action_id)
     ]
+    # `Adventure.actions` is ordered by `index`; a path is ordered by depth.
+    rows.sort(key=path.sort_key)
+    return rows
 
 
-def _filters(adventure: models.Adventure, exclude_action_id: int | None) -> list:
-    conditions = [models.Action.adventure_id == adventure.id, _STORY_TEXT]
+def _filters(
+    adventure: models.Adventure,
+    path: lineage.Path,
+    exclude_action_id: int | None,
+    entries: int | None = None,
+) -> list:
+    # adventure_id is redundant beside the branch clause — branch ids are
+    # unique, so a branch already names one adventure. It stays because it is
+    # the cheap half of the check that catches a node written onto the wrong
+    # adventure's branch, and because a clause nobody can read is a clause
+    # nobody maintains.
+    conditions = [
+        models.Action.adventure_id == adventure.id,
+        path.clause(models.Action, count=entries),
+        _STORY_TEXT,
+    ]
     if exclude_action_id is not None:
         conditions.append(models.Action.id != exclude_action_id)
     return conditions
 
 
-def _query(db: Session, adventure: models.Adventure, exclude_action_id: int | None):
+def _query(
+    db: Session,
+    adventure: models.Adventure,
+    path: lineage.Path,
+    exclude_action_id: int | None,
+    entries: int | None = None,
+):
     # Reasoning traces are never read from replayed history and can be larger
     # than the narration itself on a reasoning model.
     return (
         db.query(models.Action)
-        .filter(*_filters(adventure, exclude_action_id))
+        .filter(*_filters(adventure, path, exclude_action_id, entries))
         .options(defer(models.Action.reasoning))
     )
 
 
-def _count_query(db: Session, adventure: models.Adventure, exclude_action_id: int | None):
+def _count_query(
+    db: Session,
+    adventure: models.Adventure,
+    path: lineage.Path,
+    exclude_action_id: int | None,
+):
     """A real `SELECT count(...)`.
 
     Deliberately not `_query(...).count()`: that wraps the entity select in a
@@ -114,12 +172,16 @@ def _count_query(db: Session, adventure: models.Adventure, exclude_action_id: in
     that greps the SQL cannot tell the two apart.
     """
     return db.query(func.count(models.Action.id)).filter(
-        *_filters(adventure, exclude_action_id)
+        *_filters(adventure, path, exclude_action_id)
     )
 
 
 def _session(adventure: models.Adventure) -> Session | None:
     return object_session(adventure)
+
+
+def _path(db: Session, adventure: models.Adventure) -> lineage.Path:
+    return lineage.path_of(db, adventure)
 
 
 # ------------------------------------------------------------------ the API
@@ -143,7 +205,11 @@ def story_actions(
     db = _session(adventure)
     if db is None:
         return []
-    return _query(db, adventure, exclude_action_id).order_by(models.Action.index).all()
+    return (
+        _query(db, adventure, _path(db, adventure), exclude_action_id)
+        .order_by(*_OLDEST_FIRST)
+        .all()
+    )
 
 
 def count(adventure: models.Adventure, exclude_action_id: int | None = None) -> int:
@@ -154,7 +220,10 @@ def count(adventure: models.Adventure, exclude_action_id: int | None = None) -> 
     db = _session(adventure)
     if db is None:
         return 0
-    return _count_query(db, adventure, exclude_action_id).scalar() or 0
+    return (
+        _count_query(db, adventure, _path(db, adventure), exclude_action_id).scalar()
+        or 0
+    )
 
 
 def tail_range(
@@ -168,6 +237,15 @@ def tail_range(
     `skip=0` is the newest slice; `skip=32, limit=16` is the 16 actions just
     older than the newest 32. Lets a growing window fetch only the part it
     doesn't already have.
+
+    This is the read the lineage window exists for. The path's ranges are
+    disjoint and descending, so the newest N nodes come from the newest few
+    lineage entries and the rest of the ancestry need not be named at all: a
+    story forked two hundred times reads its tail with as few clauses as one
+    forked never. `prefix_covering` estimates how many entries that takes from
+    depth arithmetic alone; the estimate is only ever short where a middle
+    action was deleted, and then the read widens to the whole lineage and pays
+    one more query.
     """
     if limit <= 0 or skip < 0:
         return []
@@ -178,13 +256,19 @@ def tail_range(
     db = _session(adventure)
     if db is None:
         return []
-    rows = (
-        _query(db, adventure, exclude_action_id)
-        .order_by(models.Action.index.desc())
-        .offset(skip)
-        .limit(limit)
-        .all()
-    )
+    path = _path(db, adventure)
+    entries = path.prefix_covering(skip + limit)
+    while True:
+        rows = (
+            _query(db, adventure, path, exclude_action_id, entries)
+            .order_by(*_NEWEST_FIRST)
+            .offset(skip)
+            .limit(limit)
+            .all()
+        )
+        if len(rows) >= limit or entries >= len(path):
+            break
+        entries = len(path)  # short: widen once, to everything, and re-ask
     rows.reverse()
     return rows
 
@@ -204,8 +288,11 @@ def slice_(
 ) -> list[models.Action]:
     """Story actions at positions [start, start + length), oldest first.
 
-    Positions are into the same filtered, index-ordered list the memory cursors
+    Positions are into the same filtered, depth-ordered list the memory cursors
     count in, which is why the filter has to match Python's exactly.
+
+    Counts from the oldest end, so it names the whole lineage: there is no
+    prefix of the ancestry that holds "the story's first ten actions".
     """
     if length <= 0 or start < 0:
         return []
@@ -216,8 +303,8 @@ def slice_(
     if db is None:
         return []
     return (
-        _query(db, adventure, exclude_action_id)
-        .order_by(models.Action.index)
+        _query(db, adventure, _path(db, adventure), exclude_action_id)
+        .order_by(*_OLDEST_FIRST)
         .offset(start)
         .limit(length)
         .all()
@@ -241,7 +328,7 @@ def position_of_index(adventure: models.Adventure, index: int) -> int:
     if db is None:
         return 0
     return (
-        _count_query(db, adventure, None)
+        _count_query(db, adventure, _path(db, adventure), None)
         .filter(models.Action.index < index)
         .scalar()
         or 0
@@ -249,7 +336,14 @@ def position_of_index(adventure: models.Adventure, index: int) -> int:
 
 
 def max_action_index(adventure: models.Adventure) -> int:
-    """Highest `Action.index` in the adventure, story text or not. -1 if empty."""
+    """Highest `Action.index` in the adventure, story text or not. -1 if empty.
+
+    The one read here that is deliberately *not* path-scoped. `index` is the
+    legacy column, kept unread until SP8 drops it, and its only remaining job
+    is to hand the next row a number nothing else holds — which is a fact about
+    the adventure, not about the story being played. Scoping it to a branch
+    would let two branches issue the same index.
+    """
     loaded = _loaded_actions(adventure)
     if loaded is not None:
         return max((a.index for a in loaded), default=-1)

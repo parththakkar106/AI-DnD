@@ -4,6 +4,7 @@ state and story-card mutations back to the database after each hook."""
 from sqlalchemy.orm import Session
 
 from .. import models
+from ..context import history as context_history
 from .engine import run_hook
 
 MAX_STORY_CARDS = 5000  # AI Dungeon's per-adventure sanity cap
@@ -23,9 +24,13 @@ class ScriptPipeline:
         return msg if isinstance(msg, str) and msg.strip() else None
 
     def _history(self) -> list[dict]:
+        # The path, not `adventure.actions` — that collection is every branch's
+        # actions, and this is the documented history API a user script reads.
+        # Handing a script the siblings of the turn it is running on would be
+        # the same bug as building a prompt from them, only user-visible.
         return [
             {"text": a.text, "rawText": a.text, "type": a.type}
-            for a in self.adventure.actions
+            for a in context_history.story_actions(self.adventure)
         ]
 
     def _cards(self) -> list[dict]:
@@ -36,7 +41,7 @@ class ScriptPipeline:
 
     def _info(self) -> dict:
         return {
-            "actionCount": len(self.adventure.actions),
+            "actionCount": context_history.count(self.adventure),
             "characterNames": [],
             "memoryLength": len(self.adventure.memory),
             "maxChars": 0,
