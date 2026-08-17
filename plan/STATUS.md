@@ -130,9 +130,11 @@ Three things to carry forward:
   better invariant than the one SP1 shipped, and it was the contract that forced it.
 - **The SQLAlchemy identity map is weak, and that is a performance cliff.** Resolving the
   head branch once per node re-read the row from the database for every node in a flush —
-  201 SELECTs to write 200 actions, and a 25 % slower suite (36 s → 45 s). Nothing about
-  the results changed; only a stopwatch could see it. Hoist the lookup out of the loop and
-  hold the reference for the length of the call. Now pinned by a test.
+  201 SELECTs to write 200 actions, and a 25 % slower suite (36 s → 45 s, back to back).
+  Nothing about the results changed; only a stopwatch could see it. Hoist the lookup out
+  of the loop and hold the reference for the length of the call: 2 SELECTs, and the suite
+  back within noise of SP1. Pinned by a test that counts the reads rather than the
+  seconds — this machine's timings drift ~20 % between runs.
 - **Clause count is bounded by the window, and it is now measured.** A story forked 20
   times reads its newest 32 actions naming *one* branch, for 1.07× what an unforked story
   of the same length costs. Reading the tail widens the lineage only when a deleted action
