@@ -27,17 +27,48 @@ migrations 42–45 ran — `bootstrap()` executes at import, so a failed migrati
 service. The deployed JS bundle hashes to `index-4vjcKxkv.js`, which is what this tree
 builds, so the frontend live is exactly this code.
 
-`VACUUM FULL actions;` has been run. **The post-vacuum sizes were never measured** —
-worth one query next session, and the only reason to touch production again:
+**Measured 2026-08-17, and then vacuumed again.** The earlier `VACUUM FULL actions;`
+predated migrations 42–45, which rewrote every row — so by the time anyone looked, the
+database was **144.2 MB**, well above the 99.6 MB it started from and nowhere near the
+~53 MB projection. Nothing was wrong with the compression. Nothing had reclaimed the
+space it freed.
 
-```sql
-SELECT pg_size_pretty(pg_database_size(current_database())),
-       pg_size_pretty(pg_total_relation_size('actions'));
+```
+before: database 144.2 MB, actions 131.4 MB
+VACUUM (FULL, ANALYZE) actions -- 5.5s
+after:  database  65.0 MB, actions  52.1 MB
 ```
 
-Projection was ~53 MB total against a 512 MB tier, from 99.6 MB. If it did not land
-near that, the vacuum did not reclaim what it should have and that is worth knowing
-before the tree adds columns to `actions`.
+**79.2 MB reclaimed in 5.5 seconds**, against a 512 MB tier. `actions` now occupies
+52.1 MB holding 50.4 MB of live column bytes, so there is essentially no bloat left.
+`/api/health` answered `{"ok":true}` immediately after. The projection was right all
+along.
+
+**Read the sizes from the column sums, not from `n_live_tup`.** The chunk count on the
+TOAST relation said ~88 MB live and implied ~40 MB was reclaimable; the actual figure was
+double that. `n_live_tup` is an estimate left over from the last ANALYZE, and after a
+migration rewrites the table it is stale in the direction that makes bloat look smaller.
+`sum(octet_length(col))` per column is the honest number.
+
+**Where the bytes are in `actions`** — one column, and it is not close:
+
+| column | rows | live bytes | per row |
+|---|---|---|---|
+| `context_snapshot` | 467 | **47.5 MB** | 104.1 kB |
+| `variants` | 91 | 1.1 MB | 12.9 kB |
+| `text` | 945 | 0.8 MB | 0.9 kB |
+| `world_state_before` | 787 | 0.7 MB | 1.0 kB |
+| `world_delta` + `reasoning` + `state_before` | — | 0.2 MB | — |
+| total | | **50.4 MB** | |
+
+`context_snapshot` is 94% of the table. The per-action state columns a tree would touch
+are rounding errors, which is the useful thing to know before phase 14 adds more of them:
+**adding columns beside `state_before` is cheap; adding anything shaped like a context
+snapshot is not.**
+
+`VACUUM FULL` takes an ACCESS EXCLUSIVE lock — the app blocks on `actions` for the
+duration. 5.5 s at this size, but it grows with the table. Run it on the **direct**
+endpoint, not `-pooler`: through transaction pooling it is unreliable.
 
 **Aggregates only, and ask first.** Real users are on this database. Counts,
 `octet_length` sums and catalog sizes answer every sizing question this project has
@@ -60,7 +91,9 @@ Two things from the egress work are worth carrying into it:
   is already the table that fills the disk. `tests/test_egress.py` has byte ceilings
   now — they will tell you.
 
-**Before the next deploy:** one `VACUUM FULL actions;` — see below.
+**After any migration that rewrites `actions`:** one `VACUUM FULL actions;`. That is the
+lesson of the 144 MB above — a rewrite doubles the table and only a `VACUUM FULL` gives
+it back. Phase 14's migration rewrites every row.
 
 ---
 
@@ -136,8 +169,8 @@ Everything left open in `plan/13` closed, plus two bugs that fell out of doing i
 |---|---|---|
 | page load, 600 actions | 606.0 kB | **62.6 kB** — and no longer grows with the story |
 | adventures index, 6 fat adventures | 469.7 kB | **0.3 kB** |
-| `context_snapshot` on disk | ~89 MB | ~43 MB (3.5x, after a VACUUM) |
-| database total | 99.6 MB | ~53 MB projected |
+| `context_snapshot` on disk | ~89 MB | 47.5 MB measured (3.2x) |
+| database total | 99.6 MB | **65.0 MB measured**, after the second vacuum |
 
 **One follow-up after the merge** (PR #2). Prepending older actions changes `actions`,
 and the bottom-pinning effect watches `actions` — so unless a scroll had already
@@ -236,7 +269,8 @@ that plan:
 - **`ACTION_PAGE = 60` is a guess.** It should be a page or two of reading. If loading
   older turns feels like it interrupts, that is the number to move
   (`routers/adventures.py`).
-- **Post-vacuum sizes unmeasured**, above.
+- ~~Post-vacuum sizes unmeasured~~ — measured 2026-08-17, and the vacuum that mattered
+  was run then too. 65.0 MB. See the top of this file.
 - **Anyone who switched embedding models has a stale bank.** The bug is fixed, but
   those memories only re-embed as the post-turn pass reaches them, which costs an
   embedding call each. Nothing forces it; playing does.
