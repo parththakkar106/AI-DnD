@@ -350,6 +350,28 @@ def test_a_memory_written_without_a_branch_is_placed_anyway(forked):
     assert memory.depth == 3
 
 
+def test_placing_a_flush_of_nodes_reads_the_branch_once(forked, emitted_sql):
+    """The guard resolves the head once per flush, not once per node.
+
+    The identity map holds weak references, so a branch row nobody keeps a
+    strong reference to is collected between two nodes and read back for the
+    next one. Writing two hundred actions in one flush was two hundred SELECTs
+    on `branches` before the head was hoisted out of the loop, and nothing
+    about the result would have told you.
+    """
+    db, adventure, _ = forked
+    emitted_sql.clear()
+    for i in range(50):
+        db.add(models.Action(
+            adventure_id=adventure.id, index=500 + i, type="do", text=f"bulk {i}"
+        ))
+    db.commit()
+    branch_reads = [s for s in emitted_sql if s.startswith("SELECT") and "FROM branches" in s]
+    assert len(branch_reads) <= 2, (
+        f"{len(branch_reads)} reads of `branches` to place 50 nodes"
+    )
+
+
 def test_an_adventure_with_no_branch_at_all_reads_as_empty(forked):
     """The loud version of a missing branch: nothing, rather than everything.
 

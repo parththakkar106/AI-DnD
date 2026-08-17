@@ -88,15 +88,21 @@ def head_branch(db: Session, adventure: models.Adventure) -> models.Branch:
 
 
 def place_action(
-    db: Session, adventure: models.Adventure, action: models.Action
+    db: Session,
+    adventure: models.Adventure,
+    action: models.Action,
+    branch: models.Branch | None = None,
 ) -> models.Branch:
     """Put `action` on the head branch and move the head to it.
 
     `depth` follows `index` while the two coexist. They have to agree: a read
     ordering by depth and a cursor counting in index space are describing the
     same story, and SP2 swaps one for the other under everything at once.
+
+    `branch` is the head, already resolved, for a caller placing several nodes
+    at once — see `place_new_nodes` for why that is worth a parameter.
     """
-    branch = head_branch(db, adventure)
+    branch = branch or head_branch(db, adventure)
     action.branch_id = branch.id
     if action.depth is None:
         action.depth = action.index
@@ -107,7 +113,10 @@ def place_action(
 
 
 def place_memory(
-    db: Session, adventure: models.Adventure, memory: models.Memory
+    db: Session,
+    adventure: models.Adventure,
+    memory: models.Memory,
+    branch: models.Branch | None = None,
 ) -> models.Branch:
     """Attach a memory to the node that produced it.
 
@@ -115,7 +124,7 @@ def place_memory(
     that node's depth. A hand-written memory summarises nothing, so its depth
     stays NULL and it belongs to the adventure rather than to a path.
     """
-    branch = head_branch(db, adventure)
+    branch = branch or head_branch(db, adventure)
     memory.branch_id = branch.id
     if memory.depth is None and memory.source_end is not None:
         memory.depth = memory.source_end
@@ -135,7 +144,15 @@ def place_new_nodes(session: Session) -> None:
     Nodes whose adventure has not been inserted yet are left alone: there is no
     id to hang a branch off, and an Action needs `adventure_id` to be written
     at all, so the case does not arise from any writer we have.
+
+    The head is resolved once per adventure per flush, and held in `heads` for
+    the length of the call. That is not just saving a dictionary lookup: the
+    identity map holds *weak* references, so a branch row nobody keeps a strong
+    reference to is collected between two nodes and read back from the database
+    for the next one. Resolving per node turned a fixture writing two hundred
+    actions in one flush into two hundred SELECTs on `branches`.
     """
+    heads: dict[int, models.Branch] = {}
     for obj in list(session.new):
         if isinstance(obj, models.Action):
             place = place_action
@@ -146,8 +163,12 @@ def place_new_nodes(session: Session) -> None:
         if obj.branch_id is not None or obj.adventure_id is None:
             continue
         adventure = session.get(models.Adventure, obj.adventure_id)
-        if adventure is not None:
-            place(session, adventure, obj)
+        if adventure is None:
+            continue
+        head = heads.get(adventure.id)
+        if head is None:
+            head = heads[adventure.id] = head_branch(session, adventure)
+        place(session, adventure, obj, head)
 
 
 def refresh_head(db: Session, adventure: models.Adventure) -> None:

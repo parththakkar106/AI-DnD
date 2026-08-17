@@ -134,6 +134,12 @@ class Adventure(Base):
     story_cards: Mapped[list["StoryCard"]] = relationship(
         back_populates="adventure", cascade="all, delete-orphan"
     )
+    # Every action of the adventure — that is, every *branch's*. Not the story
+    # being played, and re-ordering it by depth would not make it one: the
+    # collection is the tree, and a path is a selection out of it. Anything
+    # showing a reader a story goes through `context.history`, which goes
+    # through the branch clause. What is left here is ownership and the
+    # delete-orphan cascade, which are facts about the adventure.
     actions: Mapped[list["Action"]] = relationship(
         back_populates="adventure",
         cascade="all, delete-orphan",
