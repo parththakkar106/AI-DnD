@@ -33,6 +33,7 @@ from sqlalchemy import text
 
 from app import compression, migrations, models
 from app.database import Base, SessionLocal, engine
+from tests import schema_rewind
 from tools.fakeprose import prose
 
 
@@ -196,8 +197,10 @@ def seed_pre_43(db, adventure, count: int = 4) -> dict[int, dict]:
 
     expected = {action_id: snapshot(action_id) for action_id in ids}
     as_json_column(db, expected)
-    db.execute(text(f"PRAGMA user_version = {migrations.SNAPSHOT_COMPRESS_VERSION - 1}"))
     db.commit()
+    # Take the later migrations' columns back off too, not just the stamp:
+    # replaying 43-45 also replays everything appended after them.
+    schema_rewind.rewind_to(engine, migrations.SNAPSHOT_COMPRESS_VERSION - 1)
     return expected
 
 

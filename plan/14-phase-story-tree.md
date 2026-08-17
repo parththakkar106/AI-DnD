@@ -231,6 +231,50 @@ mapped. Bootstrap run twice is a no-op. `tests/test_egress.py` ceilings unmoved 
 integers a row). **Post-deploy `VACUUM FULL actions;` is mandatory** — this rewrites
 every row, which is the 144 MB lesson at the top of `STATUS.md`.
 
+**Done, 2026-08-17** (branch `sp1-tree-schema`). **297 tests green**, the 283 from SP0
+plus 14 in `test_tree_migration.py`. The baseline contract passes **unmodified**, which
+was the pass condition. Five things the plan did not anticipate, all of them found by
+building it:
+
+- **The writes could not wait for SP2.** The file table above lists only `models.py` and
+  `migrations.py`, but a migration never visits a row written *after* it runs — so
+  shipping the columns without a writer would leave every turn played between the two
+  deploys with no branch, and from SP2 on a row with no branch is a row no read can see.
+  `app/tree.py` is that writer: `root_branch` / `head_branch` (get-or-create),
+  `place_action`, `place_memory`, `refresh_head`. One module for the same reason SP2 gets
+  one — a node written without a branch fails by *disappearing*, not by raising. Wired
+  into create/turn/import/undo/delete/memory, plus `seed_demo.py` and
+  `tools.stress_session` (a fixture built by `create_all` is stamped LATEST, so no
+  migration ever runs against it).
+- **`adventures.head_branch_id` cannot be a foreign key.** `branches.adventure_id`
+  already points the other way, and the pair is then a cycle `create_all` refuses to
+  order; the fix for that is `use_alter`, which SQLite has no ALTER for. It is a plain
+  integer, documented as a cache, and `head_branch` recovers onto the root if it ever
+  names a branch that is gone.
+- **`lineage` is NOT NULL, because `branches` comes from `create_all`.** The backfill
+  cannot insert a row and fill the lineage afterwards via a NULL marker, so it inserts
+  `'[]'` and guards step two on `json_array_length(lineage) = 0` — not `= '[]'`, because
+  Postgres `json` has no equality operator.
+- **SQLite cannot drop a column a foreign key names.** So a current-schema database
+  cannot be rewound past `branch_id` at all, which broke the two existing tests that
+  simulate an old database by rewinding only the *stamp*. Fixed properly:
+  `migrations._column_already_there` makes every `ADD COLUMN` idempotent (the
+  `IF NOT EXISTS` the module docstring asks for and SQLite has no syntax for), and
+  `tests/schema_rewind.py` holds the inverse of the migrations that *can* be undone.
+  The SP1 fixture therefore builds a **genuine schema 45** by dropping the three tables
+  and recreating them from frozen pre-tree DDL, so the real ALTERs run — including the
+  one that adds a foreign key.
+- **Deleting a branch takes its nodes with it**, and deleting an adventure takes its
+  branch — both verified, both at the database level via `ON DELETE CASCADE` on the two
+  `branch_id` columns. SP7's delete-a-branch needs no code of its own for the nodes.
+
+Measured: `branches` costs **0.1 kB of a 733.5 kB turn (0 %)**, and the page load
+(62.6 kB) and index (1.8 kB) shapes are byte-identical to the figures in `STATUS.md`.
+One cost that is *not* free: the new table and its index add ~47 ms to every
+`create_all`/`drop_all` cycle on SQLite, and the suite does one per test — 20 s → 38 s.
+Test-only (DDL fsync), so no model change; if it ever matters, the fix is the test
+harness, not the schema.
+
 ### SP2 — The branch clause *(reads move to lineage; still one branch)*
 
 One module owns the clause; every action read goes through it. A forgotten clause shows

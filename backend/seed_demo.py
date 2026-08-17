@@ -9,7 +9,7 @@ adventure and script-library copies belong to the local user (only relevant
 on single-user installs).
 """
 
-from app import auth, models, migrations
+from app import auth, models, migrations, tree
 from app.database import SessionLocal, engine
 
 # create_all + user_version stamp; plain create_all would leave a fresh DB at
@@ -250,7 +250,13 @@ try:
         db.add(models.StoryCard(adventure_id=adventure.id, **card))
     for position, s in enumerate(SCRIPTS):
         db.add(models.AdventureScript(adventure_id=adventure.id, position=position, **s))
-    db.add(models.Action(adventure_id=adventure.id, index=0, type="start", text=scenario.prompt))
+    opening = models.Action(
+        adventure_id=adventure.id, index=0, type="start", text=scenario.prompt
+    )
+    # Through the same door create_adventure uses, so the seeded adventure has a
+    # story tree like every other one.
+    tree.place_action(db, adventure, opening)
+    db.add(opening)
     db.commit()
 
     print(f"Scenario  id={scenario.id}: {scenario.title}")

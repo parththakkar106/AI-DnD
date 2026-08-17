@@ -26,7 +26,7 @@ from collections import OrderedDict
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, object_session
 
-from . import models, vectors
+from . import models, tree, vectors
 from .context import history, story_actions, truncate_to_last_tokens
 from .database import SessionLocal
 from .providers import OpenAICompatibleProvider, ProviderError
@@ -427,14 +427,16 @@ async def _create_due_memories(
             return  # logged in the debug page; cursor unchanged → retried next turn
         if not text:
             return
-        db.add(
-            models.Memory(
-                adventure_id=adventure.id,
-                text=text,
-                source_start=block[0].index,
-                source_end=block[-1].index,
-            )
+        memory = models.Memory(
+            adventure_id=adventure.id,
+            text=text,
+            source_start=block[0].index,
+            source_end=block[-1].index,
         )
+        # Phase 14: hang it off the node it summarised, so a fork inherits the
+        # memories of the path it forked from and nothing else.
+        tree.place_memory(db, adventure, memory)
+        db.add(memory)
         adventure.memory_cursor = cursor + MEMORY_INTERVAL
         db.commit()
 

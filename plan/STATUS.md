@@ -78,8 +78,16 @@ needed; nothing requires reading a row of anyone's story.
 
 ## Pick up here
 
-**`plan/14-phase-story-tree.md` — the tree itself.** `plan/13` is finished. Its design
-is settled in `plan/14` and nothing about it has been built.
+**`plan/14-phase-story-tree.md`, SP2 — the branch clause.** SP0 (the regression contract
+and the `--rich` fixture) and SP1 (schema, migration, and the writer that keeps new rows
+on the tree) are done and green; nothing is deployed yet. SP2 is where the reads move
+onto `(branch_id, depth)`, and where the highest-risk line in the whole phase lives:
+`history._from_memory()` slices `adventure.actions`, which under a tree is *every
+branch's* actions rather than the path. Make that shortcut branch-aware or delete it.
+
+**The schema is live in code but not on production.** When SP1 ships, the deploy needs
+one `VACUUM FULL actions;` on the direct (non-`-pooler`) endpoint afterwards — it rewrites
+every row. See the 144 MB lesson at the top of this file.
 
 Two things from the egress work are worth carrying into it:
 
@@ -100,6 +108,40 @@ frontend work lands on the same scroll path that has still never been driven by 
 drive it before rewriting it.
 
 ---
+
+## What happened on 2026-08-17, part four — the tree, SP0 and SP1
+
+No behaviour change, and none intended: a linear story is a tree with one branch, so
+every adventure reads exactly as it did. **297 tests green** (259 before the phase
+started, 283 with SP0's contract, 297 with SP1's migration tests).
+
+**SP0** built `tests/test_story_tree_baseline.py` — 24 tests driving the product over
+HTTP, asserting only on API responses — and `tools.stress_session --rich`, a correctness
+fixture beside the scale one. Both on branch `phase-14-story-tree`.
+
+**SP1** put the tree in the schema, on branch `sp1-tree-schema`: a `branches` table,
+`branch_id`/`depth` on actions and memories, `head_branch_id`/`head_depth` on adventures,
+migrations 46–52 with a server-side backfill, and `app/tree.py` for the write side.
+Nothing reads any of it yet. Four things worth not rediscovering:
+
+- **A schema needs its writer in the same subphase.** No migration will ever visit a row
+  written after it ran, so columns backfilled today and populated-on-write next week leave
+  a hole exactly the width of one deploy. `app/tree.py` stamps every new node, including
+  the ones `seed_demo.py` and the stress fixture write — a fixture built by `create_all`
+  is stamped LATEST and no migration ever touches it.
+- **SQLite will not drop a column a foreign key names.** Two tests simulated an old
+  database by rewinding the *stamp* while `create_all` left the new columns in place; that
+  works until the next `ADD COLUMN` lands, and then it fails on a duplicate column. Every
+  `ADD COLUMN` migration is now idempotent (`migrations._column_already_there`), which is
+  the `IF NOT EXISTS` SQLite has no syntax for. A true pre-migration fixture has to drop
+  and rebuild the tables from frozen DDL, which is what `test_tree_migration.py` does.
+- **Two mutually-referencing tables cannot both carry the foreign key.** `create_all`
+  refuses to order the cycle, and its escape hatch (`use_alter`) needs an ALTER SQLite
+  does not have. `adventures.head_branch_id` is a plain integer and a documented cache.
+- **The suite went 20 s → 38 s, and it is not the app.** One new table plus one index adds
+  ~47 ms to a `create_all`/`drop_all` pair on SQLite (DDL fsync), and nearly every test
+  does one. Measured, not guessed. Egress is unmoved: `branches` is 0.1 kB of a 733.5 kB
+  turn, and the page-load and index shapes are byte-identical to the numbers above.
 
 ## What happened on 2026-08-17, part three
 
@@ -330,7 +372,7 @@ the SQLite dev parity this codebase protects on purpose).
 
 ```
 cd backend
-.venv/Scripts/python.exe -m pytest tests/          # 259 tests
+.venv/Scripts/python.exe -m pytest tests/          # 297 tests (~38s)
 .venv/Scripts/python.exe -m tools.stress_session   # egress report (SQLite)
 
 # Same harness against a real Postgres. The target must be a THROWAWAY database
