@@ -27,7 +27,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, object_session
 
 from . import models, tree, vectors
-from .context import history, story_actions, truncate_to_last_tokens
+from .context import cursors, history, lineage, story_actions, truncate_to_last_tokens
 from .database import SessionLocal
 from .providers import OpenAICompatibleProvider, ProviderError
 from .vectors import cosine  # re-exported: the ranking lives here, the maths there
@@ -165,20 +165,23 @@ def settled_count(adventure: models.Adventure) -> int:
     return max(history.count(adventure) - 1, 0)
 
 
-def settled_slice(adventure: models.Adventure, start: int, length: int) -> list[models.Action]:
-    """Settled story actions at positions [start, start + length).
+def settled_after(adventure: models.Adventure, depth: int) -> int:
+    """How many settled story actions lie past `depth`.
 
-    Callers must already have checked against `settled_count()`; this only
-    fetches, it does not re-clamp.
+    "How much story this pass has not read yet". The newest action is never
+    settled, so it is the one subtracted — and a cursor sitting at or past the
+    tip (undo moved the story back behind it) comes out at zero or below and
+    simply does no work, which is what the position cursors needed a clamp
+    every post-turn pass to achieve.
     """
-    return history.slice_(adventure, start, length)
+    return history.count_after(adventure, depth) - 1
 
 
 def settled_story_actions(adventure: models.Adventure) -> list[models.Action]:
     """Story actions old enough to summarize: everything but the newest one.
 
     The plain-list form of the rule. The passes below use `settled_count` and
-    `settled_slice` instead, which express the same thing without reading the
+    `settled_after` instead, which express the same thing without reading the
     whole story; this stays as the statement of what they must agree with.
 
     Only the *last* action can be retried, so once an action has another action
@@ -189,68 +192,50 @@ def settled_story_actions(adventure: models.Adventure) -> list[models.Action]:
     longer in the story. Holding one action back costs a turn of latency and
     makes that unreachable.
 
-    The result is always a prefix of story_actions(), so memory_cursor and
-    summary_cursor stay valid positions and no action is ever skipped.
+    The result is always a prefix of the story, so an anchor set from it can
+    never sit past the settled end and no action is ever skipped.
     """
     return story_actions(adventure)[:-1]
 
 
-def _rewind_cursors_to_index(adventure: models.Adventure, index: int) -> None:
-    """Move both cursors back to the position of Action.index `index`.
+def forget_node(db: Session, adventure: models.Adventure, action: models.Action) -> int:
+    """Withdraw what a node produced, because the node is being removed.
 
-    The cursors are *positions* into story_actions() while Memory.source_* are
-    Action.index values, so the two spaces have to be translated between (they
-    diverge as soon as any action is deleted).
+    Call it before deleting `action` (undo, delete-an-action). A memory hangs
+    off the node whose block it ends on, so "which memories described this?" is
+    a lookup on `(branch_id, depth)` rather than a scan for rows whose covered
+    range has fallen off the end of the story — which is what
+    `prune_dangling_memories` did, and it could only ever notice the damage
+    after the fact.
+
+    Discarding the memory is half of it. The stretch of story it covered is
+    still behind the cursors, so without a rewind those actions read as
+    summarized with nothing describing them, silently, for the rest of the
+    adventure. `source_start` is where that stretch began; the anchor goes to
+    the node before it, which is a depth whether or not anything still sits
+    there.
+
+    Returns how many memories were withdrawn.
     """
-    position = history.position_of_index(adventure, index)
-    adventure.memory_cursor = min(adventure.memory_cursor, position)
-    adventure.summary_cursor = min(adventure.summary_cursor, position)
-
-
-def note_action_removed(adventure: models.Adventure, action: models.Action) -> None:
-    """Keep the cursors pointing at the same actions when one is deleted from
-    *before* them. Call BEFORE the delete, while the action is still in the list.
-
-    memory_cursor counts actions from the start of the story, so removing an
-    earlier action slides every later one down a slot — without this, an action
-    that was never summarized shifts into the "already covered" range and is
-    skipped forever.
-    """
-    if not history.is_story_text(action.text):
-        return  # not in the list the cursors count, so nothing shifts
-    # Actions are ordered by index, so "how many come before it" is exactly
-    # "how many have a lower index" — no need to walk the list to find it.
-    position = history.position_of_index(adventure, action.index)
-    if position < adventure.memory_cursor:
-        adventure.memory_cursor -= 1
-    if position < adventure.summary_cursor:
-        adventure.summary_cursor -= 1
-
-
-def prune_dangling_memories(adventure: models.Adventure, db: Session) -> int:
-    """Delete memories that summarized actions which no longer exist (e.g. after
-    undo). source_start/source_end are Action.index values; a memory is dangling
-    if any covered action is past the current end of the story. Returns the count
-    removed.
-
-    Throwing a memory away is not enough on its own: the actions it covered are
-    still behind memory_cursor, so they would read as summarized with nothing
-    describing them. Rewind to where the earliest discarded memory began, so
-    those actions are summarized again.
-    """
-    max_index = history.max_action_index(adventure)
-    dangling = [
-        m for m in adventure.memories
-        if m.source_end is not None and m.source_end > max_index
-    ]
-    if not dangling:
+    if action.branch_id is None or action.depth is None:
+        return 0  # a pre-tree row: no path contains it, so nothing hangs off it
+    doomed = (
+        db.query(models.Memory)
+        .filter(
+            models.Memory.adventure_id == adventure.id,
+            models.Memory.branch_id == action.branch_id,
+            models.Memory.depth == action.depth,
+        )
+        .all()
+    )
+    if not doomed:
         return 0
-    starts = [m.source_start for m in dangling if m.source_start is not None]
-    for m in dangling:
-        db.delete(m)
+    starts = [m.source_start for m in doomed if m.source_start is not None]
+    for memory in doomed:
+        db.delete(memory)
     if starts:
-        _rewind_cursors_to_index(adventure, min(starts))
-    return len(dangling)
+        cursors.rewind_all(adventure, action.branch_id, min(starts) - 1)
+    return len(doomed)
 
 
 # ---------- Retrieval (runs inside the turn, before build_context) ----------
@@ -279,9 +264,16 @@ async def retrieve_memories(
     # walk adventure.memories, which loaded every row of the bank *including
     # its vector* — ~31 KB a memory, three megabytes a turn, 96% of everything
     # a turn read. Two ids and a flag per row is about eight bytes.
+    #
+    # The branch clause is the *whole* lineage here, not the window the story
+    # is read through: retrieval is long-range recall, and a memory of what
+    # happened forty turns ago is exactly what it exists to find. It stays
+    # affordable because memories are sparse — one per six actions — so the
+    # ancestry of even a heavily forked story returns tens of tiny rows.
     catalogue = db.execute(
         select(models.Memory.id, models.Memory.pinned).where(
             models.Memory.adventure_id == adventure.id,
+            lineage.path_of(db, adventure).clause(models.Memory, unanchored=True),
             models.Memory.forgotten.is_(False),
             models.Memory.embedded.is_(True),
         )
@@ -381,17 +373,14 @@ async def run_post_turn(adventure_id: int) -> None:
         )
         if settings is None:
             return
-        # Undo/retry can shrink the action list below a stored cursor, which
-        # would stall summarization until the story grew past it again.
-        # Deliberately the FULL count, not the settled one: an adventure that
-        # was caught up under the old rule can have a cursor equal to the action
-        # count, and clamping to settled would rewind it one step, re-covering
-        # an already-summarized action in the next block. Both consumers below
-        # read settled actions and bail on a negative remainder, so a cursor
-        # briefly sitting one past the settled end is harmless.
-        total = history.count(adventure)
-        adventure.memory_cursor = min(adventure.memory_cursor, total)
-        adventure.summary_cursor = min(adventure.summary_cursor, total)
+        # No cursor clamp here any more. Undo can leave the story shorter than
+        # the mark, and a *position* past the end of the list was a stalled
+        # pass until the story grew back past it — hence a clamp on every
+        # post-turn run, which had its own trap (clamping to the settled count
+        # rewound a caught-up adventure a step and re-covered an action). An
+        # anchor past the tip is not a broken value: `settled_after` just
+        # reports nothing to do, and the story growing back past it resumes
+        # exactly where it left off.
         if adventure.auto_summarize:
             await _create_due_memories(adventure, settings, db)
             await _update_story_summary(adventure, settings, db)
@@ -408,14 +397,17 @@ async def _create_due_memories(
 ) -> None:
     provider = summary_provider(settings)
     for _ in range(MAX_MEMORIES_PER_RUN):
-        # Re-counted each pass: a memory just committed doesn't change the
-        # count, but this loop is the only thing that moves the cursor, so the
-        # comparison has to be against a total that is still current.
-        settled = settled_count(adventure)
-        cursor = adventure.memory_cursor
-        if settled < MEMORY_START or settled - cursor < MEMORY_INTERVAL:
-            return
-        block = settled_slice(adventure, cursor, MEMORY_INTERVAL)
+        # Re-read each pass: a memory just committed doesn't change the story,
+        # but this loop is the only thing that moves the anchor, so both
+        # numbers have to be current.
+        anchor = cursors.MEMORY.depth(db, adventure)
+        if settled_after(adventure, anchor) < MEMORY_INTERVAL:
+            return  # no full block of settled story past the mark
+        if settled_count(adventure) < MEMORY_START:
+            return  # ...and the adventure is too short to have started at all
+        # (that order on purpose: the common answer is "nothing due", and the
+        # first question answers it without asking how long the story is)
+        block = history.after(adventure, anchor, MEMORY_INTERVAL)
         if len(block) < MEMORY_INTERVAL:
             return
         excerpt = truncate_to_last_tokens("\n\n".join(a.text for a in block), 2000)
@@ -430,46 +422,52 @@ async def _create_due_memories(
         memory = models.Memory(
             adventure_id=adventure.id,
             text=text,
-            source_start=block[0].index,
-            source_end=block[-1].index,
+            source_start=block[0].depth,
+            source_end=block[-1].depth,
         )
-        # Phase 14: hang it off the node it summarised, so a fork inherits the
-        # memories of the path it forked from and nothing else.
-        tree.place_memory(db, adventure, memory)
+        # Hang it off the node it summarised, so a fork inherits the memories of
+        # the path it forked from and nothing else — and move the mark to that
+        # same node. The two are one statement about where this pass has got to,
+        # and writing them from the same row is what keeps them in step however
+        # gappy the depths underneath are.
+        tree.attach_memory(memory, block[-1])
         db.add(memory)
-        adventure.memory_cursor = cursor + MEMORY_INTERVAL
+        cursors.MEMORY.anchor_at(adventure, block[-1])
         db.commit()
 
 
 async def _update_story_summary(
     adventure: models.Adventure, settings: models.Settings, db: Session
 ) -> None:
-    settled = settled_count(adventure)
-    if settled - adventure.summary_cursor < SUMMARY_INTERVAL:
+    anchor = cursors.SUMMARY.depth(db, adventure)
+    uncovered = settled_after(adventure, anchor)
+    if uncovered < SUMMARY_INTERVAL:
+        return
+    # Where the summary will stand once this run succeeds. Read before the AI
+    # call, not after: the mark is the settled end of the story as this pass
+    # saw it, and a turn landing meanwhile must not be quietly claimed as read.
+    caught_up = history.newest_settled(adventure)
+    if caught_up is None:
         return
 
-    # Fold in memories covering the uncovered stretch; fall back to raw story
-    # text if memory creation is lagging (e.g. it just failed).
-    # summary_cursor is a position into story_actions(); Memory.source_end is
-    # an Action.index. Translate the cursor to an index boundary before
-    # comparing — the two spaces diverge once actions are deleted or empty.
-    if adventure.summary_cursor < settled:
-        [first_uncovered] = settled_slice(adventure, adventure.summary_cursor, 1)
-        boundary = first_uncovered.index
-    else:
-        last = settled_slice(adventure, settled - 1, 1) if settled else []
-        boundary = last[0].index + 1 if last else 0
-    new_events = [
-        m.text
-        for m in adventure.memories
-        if m.source_end is not None and m.source_end >= boundary
-    ]
+    # Fold in the memories of the stretch the summary has not read — every
+    # memory hanging off a node past the anchor. Both marks and every memory
+    # are now depths on one path, so there is no translation between coordinate
+    # systems left to get wrong. Falls back to raw story text if memory
+    # creation is lagging (e.g. it just failed).
+    new_events = db.execute(
+        select(models.Memory.text)
+        .where(
+            models.Memory.adventure_id == adventure.id,
+            lineage.path_of(db, adventure).clause(models.Memory),
+            models.Memory.depth > anchor,
+        )
+        .order_by(models.Memory.depth)
+    ).scalars().all()
     if new_events:
         events_text = "\n".join(f"- {t}" for t in new_events)
     else:
-        block = settled_slice(
-            adventure, adventure.summary_cursor, settled - adventure.summary_cursor
-        )
+        block = history.after(adventure, anchor, uncovered)
         events_text = truncate_to_last_tokens("\n\n".join(a.text for a in block), 2000)
 
     current = adventure.story_summary.strip()
@@ -487,7 +485,7 @@ async def _update_story_summary(
     if not text:
         return
     adventure.story_summary = text
-    adventure.summary_cursor = settled
+    cursors.SUMMARY.anchor_at(adventure, caught_up)
     db.commit()
 
 
@@ -496,6 +494,13 @@ async def _embed_pending(
 ) -> None:
     # A query, not a walk of adventure.memories: this ran every turn and pulled
     # the whole bank's vectors to find the handful that had none.
+    #
+    # No branch clause, deliberately, here and in the eviction below. Being
+    # embedded is a fact about the row, not about the path being played:
+    # skipping a sibling's memories would only mean embedding them later, at
+    # the moment somebody switched branches and wanted them ranked. Capacity is
+    # the same — the bank belongs to the adventure, and evicting the memories
+    # of a story nobody is reading is exactly the right thing to evict first.
     pending = (
         db.query(models.Memory)
         .filter(

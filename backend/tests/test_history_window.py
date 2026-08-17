@@ -190,7 +190,7 @@ def test_window_is_ordered_and_free_of_duplicates(story):
     assert ids == sorted(ids), "window must be oldest-first"
 
 
-# --------------------------------------------- the cursor arithmetic agrees
+# ------------------------------------------- the node-anchored reads agree
 
 def test_helpers_agree_with_the_full_list(story):
     db, adventure, settings = story
@@ -204,30 +204,46 @@ def test_helpers_agree_with_the_full_list(story):
     assert [a.id for a in history.tail_range(adventure, 5, 3)] == \
         [a.id for a in actions[-8:-5]]
     assert memorybank.settled_count(adventure) == len(actions) - 1
+    assert history.newest_settled(adventure).id == actions[-2].id
 
     for probe in (0, 1, ACTION_COUNT // 2, ACTION_COUNT - 1):
-        target = actions[probe]
-        expected = next(i for i, a in enumerate(actions) if a.index >= target.index)
-        assert history.position_of_index(adventure, target.index) == expected
+        boundary = actions[probe].depth
+        assert history.count_after(adventure, boundary) == ACTION_COUNT - probe - 1
+        assert [a.id for a in history.after(adventure, boundary, 3)] == \
+            [a.id for a in actions[probe + 1:probe + 4]]
 
 
-def test_positions_still_line_up_after_a_middle_action_is_deleted(story):
-    """The gap in Action.index is exactly what makes positions and indexes
-    diverge — the case that has broken the cursors twice before."""
+def test_a_depth_boundary_survives_a_middle_action_being_deleted(story):
+    """The case that has broken the cursors twice before, and the reason they
+    are depths now.
+
+    A *position* answers "how much story is past this point?" by counting from
+    the start, so deleting anything in front of the mark changes which action
+    the mark names. A depth names the same node either way — the only thing
+    that changes is the count of what comes after, which is what did change.
+    """
     db, adventure, settings = story
     actions = history.story_actions(adventure)
-    victim = actions[50]
+    mark = actions[30].depth
+    before = history.count_after(adventure, mark)
+    next_three = [a.id for a in history.after(adventure, mark, 3)]
+
+    victim = actions[10]  # in front of the mark
     db.delete(victim)
     db.commit()
     db.expire(adventure)
 
-    remaining = history.story_actions(adventure)
-    assert len(remaining) == ACTION_COUNT - 1
     assert history.count(adventure) == ACTION_COUNT - 1
-    for probe in (0, 49, 50, 51, ACTION_COUNT - 2):
-        target = remaining[probe]
-        expected = next(i for i, a in enumerate(remaining) if a.index >= target.index)
-        assert history.position_of_index(adventure, target.index) == expected, probe
+    assert history.count_after(adventure, mark) == before, "the mark moved"
+    assert [a.id for a in history.after(adventure, mark, 3)] == next_three
+
+    # ...and deleting something *after* it is the one thing that does change
+    # the count, because that is a fact about the story rather than about the
+    # coordinate system.
+    db.delete(history.after(adventure, mark, 1)[0])
+    db.commit()
+    db.expire(adventure)
+    assert history.count_after(adventure, mark) == before - 1
 
 
 def test_blank_actions_are_excluded_the_same_way_in_sql_and_python(story):

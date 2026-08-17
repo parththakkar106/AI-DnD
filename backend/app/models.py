@@ -113,9 +113,24 @@ class Adventure(Base):
     # Phase 6: opt-in per adventure (extra AI calls)
     auto_summarize: Mapped[bool] = mapped_column(Boolean, default=False)
     memory_bank_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
-    # How many actions have already been folded into memories / the story summary.
+    # LEGACY (Phase 6): how many actions had been folded into memories / the
+    # story summary, as a *position* in the story. Unread since SP3, and
+    # unwritten except by a v1 import which is handed one; kept for one release
+    # so a rollback resumes from a real number, and dropped in SP8 beside
+    # `actions.index`. The live mark is the anchor pair below.
     memory_cursor: Mapped[int] = mapped_column(Integer, default=0)
     summary_cursor: Mapped[int] = mapped_column(Integer, default=0)
+    # Phase 14, SP3: the same two marks as nodes — (branch, depth) of the last
+    # action each pass covered. A position slides when an action in front of it
+    # is deleted and silently starts covering one it has never read; a depth
+    # does not move, because it is a coordinate along a path rather than an
+    # offset into a list. NO_DEPTH (-1) is "nothing covered yet", so the first
+    # block needs no special case. Plain integers, not foreign keys, for the
+    # same reason `head_branch_id` below is one. See `context/cursors.py`.
+    memory_cursor_branch_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    memory_cursor_depth: Mapped[int] = mapped_column(Integer, default=-1)
+    summary_cursor_branch_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    summary_cursor_depth: Mapped[int] = mapped_column(Integer, default=-1)
     # Phase 14: where the story is being played — which branch, and the depth of
     # its newest node. Deliberately NOT a ForeignKey: branches.adventure_id
     # already points this way, and a second constraint back would make the two
@@ -225,7 +240,12 @@ class Memory(Base):
     embedding_blob: Mapped[bytes | None] = mapped_column(
         LargeBinary, nullable=True, deferred=True
     )
-    # Action index range this memory summarizes (null for manual memories).
+    # The stretch of story this memory summarizes, as depths on `branch_id`
+    # (null for a hand-written memory, which summarizes nothing). Written as
+    # `Action.index` values before SP3, which held the same numbers.
+    # `source_end` is the depth of the node the memory hangs off, mirrored into
+    # `depth` below; `source_start` is where it began, which is where the
+    # summarizer has to resume from if the memory is ever withdrawn.
     source_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
     source_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Phase 14: the node that produced this memory — the last action it

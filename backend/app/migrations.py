@@ -214,6 +214,18 @@ MIGRATIONS: list[tuple[int, str | dict[str, str]]] = [
     # columns above (_backfill_tree, hung off this version because it needs all
     # of them to exist).
     (52, "CREATE INDEX IF NOT EXISTS ix_actions_branch_depth ON actions (branch_id, depth)"),
+    # Phase 14, SP3 — the memory and summary cursors stop being positions in the
+    # story and become nodes in it: (branch, depth) of the last action each pass
+    # covered. Legacy `memory_cursor` / `summary_cursor` stay, unread, until SP8
+    # drops them beside `actions.index`.
+    #
+    # Unlike 46-52 this rewrites `adventures`, not `actions` — a few hundred
+    # rows against a few hundred thousand — so it needs no VACUUM FULL of its
+    # own. (The one SP1's deploy asks for is still owed.)
+    (53, "ALTER TABLE adventures ADD COLUMN memory_cursor_branch_id INTEGER"),
+    (54, "ALTER TABLE adventures ADD COLUMN memory_cursor_depth INTEGER NOT NULL DEFAULT -1"),
+    (55, "ALTER TABLE adventures ADD COLUMN summary_cursor_branch_id INTEGER"),
+    (56, "ALTER TABLE adventures ADD COLUMN summary_cursor_depth INTEGER NOT NULL DEFAULT -1"),
 ]
 
 LATEST_VERSION = max((v for v, _ in MIGRATIONS), default=1)
@@ -224,6 +236,7 @@ VARIANT_COUNT_VERSION = 37
 EMBEDDING_BLOB_VERSION = 38
 SNAPSHOT_COMPRESS_VERSION = 43
 TREE_BACKFILL_VERSION = 52
+CURSOR_ANCHOR_VERSION = 56
 
 # An adventure with no actions has no tip. -1 keeps "the next node goes at
 # head_depth + 1" true without a special case (mirrors tree.NO_DEPTH).
@@ -496,6 +509,66 @@ def _backfill_tree(conn) -> None:
     """))
 
 
+# A frozen copy of `context.history._STORY_TEXT` as it stood at version 56:
+# "text that is not blank once whitespace is stripped". It is written out here
+# rather than imported because a migration has to keep meaning what it meant on
+# the day it ran, while the module is free to move. `char()` is `chr()` on
+# Postgres and there is no third spelling, so it takes a dialect map.
+def _story_text_sql(column: str, sqlite: bool) -> str:
+    char = "char" if sqlite else "chr"
+    folded = column
+    for code in (10, 13, 9):  # newline, carriage return, tab
+        folded = f"replace({folded}, {char}({code}), ' ')"
+    return f"trim({folded}) <> ''"
+
+
+def _backfill_cursor_anchors(conn) -> None:
+    """Read each adventure's two cursors as nodes instead of as positions.
+
+    `memory_cursor` = 12 meant "the first twelve story actions are covered".
+    The twelfth story action, in depth order, is the node that says the same
+    thing and goes on saying it after something in front of it is deleted — so
+    the translation is a `ROW_NUMBER()` over the story and a lookup at the
+    cursor's own value.
+
+    Two cases the arithmetic has to survive:
+
+    * **A cursor past the end of the story.** Legitimate — an adventure caught
+      up under the older rule can have a cursor equal to its action count, and
+      `run_post_turn` used to clamp it every pass. There is no `rn` to match,
+      so it falls back to the deepest node there is: still "caught up", which
+      is what the number meant.
+    * **A cursor of 0**, which is most adventures. Nothing covered, the column
+      default already says so, and no row is touched.
+
+    Guarded on `_depth = -1` so a run that dies halfway resumes: every
+    adventure this has already converted is skipped, and one it has not is
+    indistinguishable from an untouched row.
+    """
+    sqlite = conn.dialect.name == "sqlite"
+    story = _story_text_sql("text", sqlite)
+    for name in ("memory", "summary"):
+        conn.execute(text(f"""
+            UPDATE adventures
+            SET {name}_cursor_branch_id = {_root_branch_of('adventures.id')},
+                {name}_cursor_depth = COALESCE(
+                    (SELECT ranked.depth FROM (
+                        SELECT adventure_id, depth, ROW_NUMBER() OVER (
+                            PARTITION BY adventure_id ORDER BY depth, id
+                        ) AS rn
+                        FROM actions WHERE {story}
+                     ) AS ranked
+                     WHERE ranked.adventure_id = adventures.id
+                       AND ranked.rn = adventures.{name}_cursor),
+                    (SELECT MAX(a.depth) FROM actions a
+                      WHERE a.adventure_id = adventures.id
+                        AND {_story_text_sql('a.text', sqlite)}),
+                    {NO_DEPTH})
+            WHERE adventures.{name}_cursor > 0
+              AND adventures.{name}_cursor_depth = {NO_DEPTH}
+        """))
+
+
 def _get_version(conn) -> int:
     if conn.dialect.name == "sqlite":
         return conn.execute(text("PRAGMA user_version")).scalar() or 1
@@ -551,6 +624,8 @@ def bootstrap(engine: Engine) -> None:
                     _backfill_context_snapshot(conn)
                 if version == TREE_BACKFILL_VERSION:
                     _backfill_tree(conn)
+                if version == CURSOR_ANCHOR_VERSION:
+                    _backfill_cursor_anchors(conn)
                 current = version
         _set_version(conn, current)
         _encrypt_plaintext_api_keys(conn)

@@ -83,12 +83,24 @@ class Path:
 
     # ---------------------------------------------------------------- SQL
 
-    def clause(self, model=models.Action, count: int | None = None):
+    def clause(
+        self,
+        model=models.Action,
+        count: int | None = None,
+        unanchored: bool = False,
+    ):
         """The branch clause, over `model` (`Action` or `Memory`).
 
         `count` limits it to the newest `count` lineage entries — the windowed
         read. `None` is the whole lineage, which is what anything counting from
         the *oldest* end (a slice, a total) has to use.
+
+        `unanchored` keeps rows with no depth. Only memories ever have one: a
+        hand-written memory summarises no node, so it has a branch but no
+        depth, and a capped `depth <= n` would drop it the moment its branch
+        stopped being the newest entry — a memory vanishing at the first fork
+        after it was typed. An action with no depth is a pre-tree row that no
+        read should see, so actions never pass this.
 
         An empty path yields `false`, not "no filter": an adventure whose nodes
         carry no branch has no story, and the loud version of that is an empty
@@ -97,13 +109,16 @@ class Path:
         entries = self.entries if count is None else self.entries[:count]
         if not entries:
             return false()
-        return or_(*[self._entry_clause(model, b, d) for b, d in entries])
+        return or_(*[self._entry_clause(model, b, d, unanchored) for b, d in entries])
 
     @staticmethod
-    def _entry_clause(model, branch_id: int, max_depth: int | None):
+    def _entry_clause(model, branch_id: int, max_depth: int | None, unanchored=False):
         if max_depth is None:
             return model.branch_id == branch_id
-        return and_(model.branch_id == branch_id, model.depth <= max_depth)
+        within = model.depth <= max_depth
+        if unanchored:
+            within = or_(within, model.depth.is_(None))
+        return and_(model.branch_id == branch_id, within)
 
     # ------------------------------------------------------------- Python
 
@@ -157,6 +172,50 @@ class Path:
             if covered >= rows:
                 return i + 1
         return total
+
+    def covering_after(self, depth: int) -> int:
+        """How many lineage entries can hold a node deeper than `depth`.
+
+        The counterpart to `prefix_covering`, and unlike it this is exact
+        rather than an estimate: entry *i* holds nothing deeper than its own
+        cap, and the caps descend, so the first entry capped at or below
+        `depth` ends the search — it and everything older is behind the
+        boundary. Reading "the story after the cursor" therefore names one
+        branch on any story whose cursor is on its newest branch, however
+        often it has forked.
+        """
+        for i, (_, max_depth) in enumerate(self.entries):
+            if max_depth is not None and max_depth <= depth:
+                return i
+        return len(self.entries)
+
+    def depth_on(self, branch_id: int | None, depth: int) -> int:
+        """A stored `(branch_id, depth)` anchor, read as a depth on *this* path.
+
+        An anchor is how far along a story some derived work has got — which
+        memories cover, what the summary has folded in. It names a node, so
+        moving to another path has to be answered rather than assumed:
+
+        * the anchor's branch is on this path — the depth stands, capped at the
+          fork the path takes off that branch, because nothing past the fork is
+          on this story;
+        * the branch is not on this path at all — the work was done on ground
+          this story never travelled, so nothing here is covered.
+
+        The second case cannot arise while an adventure has one branch: the
+        anchor is always set from a node on it. It exists because the fallback
+        for "I don't know" must be to redo the work, not to skip it.
+        """
+        if depth <= NO_DEPTH:
+            return NO_DEPTH
+        if branch_id is None:
+            # A pre-tree anchor, or one set by hand. There is one story, so the
+            # depth is a position in it and means what it says.
+            return depth
+        for entry_branch, max_depth in self.entries:
+            if entry_branch == branch_id:
+                return depth if max_depth is None else min(depth, max_depth)
+        return NO_DEPTH
 
 
 def branch_of(db: Session, adventure: models.Adventure) -> models.Branch | None:

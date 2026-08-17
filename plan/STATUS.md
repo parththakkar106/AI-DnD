@@ -3,7 +3,7 @@
 Read this first when picking the project back up. Updated at the end of a working
 session; the per-phase plan files hold the detail, this holds the thread.
 
-**Last updated: 2026-08-17.**
+**Last updated: 2026-08-18.**
 
 ---
 
@@ -78,27 +78,32 @@ needed; nothing requires reading a row of anyone's story.
 
 ## Pick up here
 
-**`plan/14-phase-story-tree.md`, SP3 — memories and the summary attach to nodes.** SP0
-(the regression contract and the `--rich` fixture), SP1 (schema, migration, and the writer
-that keeps new rows on the tree) and SP2 (the branch clause: every action read now selects
-on `(branch_id, depth)` through `app/context/lineage.py`) are done and green; nothing is
-deployed yet. SP3 turns `memory_cursor`/`summary_cursor` from positions in a shifting list
-into node anchors, and deletes the cursor-position machinery that goes with them —
-`position_of_index`, `note_action_removed`, `_rewind_cursors_to_index`,
-`prune_dangling_memories`. **`settled_story_actions` and the holdback stay until SP4**:
-they exist because retry mutates a row in place, and retry stops doing that in SP4, not
-in SP3. Deleting them early reopens the exact bug they were written for.
+**`plan/14-phase-story-tree.md`, SP4 — variants become sibling nodes.** SP0 (the
+regression contract and the `--rich` fixture), SP1 (schema, migration, and the writer that
+keeps new rows on the tree), SP2 (the branch clause: every action read selects on
+`(branch_id, depth)` through `app/context/lineage.py`) and SP3 (memories hang off nodes,
+and both marks are `(branch_id, depth)` through `app/context/cursors.py`) are done and
+green; **nothing is deployed yet**. SP4 is where retry stops rewriting a row and writes a
+sibling leaf at the same depth instead, where `state_before`/`world_state_before` become
+*after* snapshots, and where the legacy `variants` JSON is migrated into rows. It is also
+the first subphase allowed to move the baseline test, and only for
+`variant_count`/`variant_index` semantics.
 
-**The schema is live in code but not on production.** When SP1 ships, the deploy needs
-one `VACUUM FULL actions;` on the direct (non-`-pooler`) endpoint afterwards — it rewrites
-every row. See the 144 MB lesson at the top of this file.
+**The schema is live in code but not on production.** When this ships, the deploy needs
+one `VACUUM FULL actions;` on the direct (non-`-pooler`) endpoint afterwards — SP1's
+migration rewrites every row, and SP4's does it again. SP3's own migrations touch
+`adventures` only and need no vacuum. See the 144 MB lesson at the top of this file.
 
-Two things to carry into it:
+Three things to carry into it:
 
-- **Every action read goes through `context/lineage.py`.** A memory read has to as well —
-  the same `Path` builds a clause over `Memory` — and it reads the *full* lineage, not a
-  window: retrieval is long-range recall and cannot be windowed. It stays affordable
-  because memories are sparse, so assert the byte cost on a deep fork.
+- **The holdback dies in SP4 and nowhere earlier.** `settled_story_actions` exists
+  because retry mutates a row in place; it survived SP3 as the `- 1` inside
+  `memorybank.settled_after`. Retry stops mutating in SP4, which is the only point at
+  which removing it does not reopen the bug it was written for.
+- **Anything derived attaches to the node that produced it.** A memory now does
+  (`tree.attach_memory`), and so do both marks. A sibling leaf is a node, so whatever SP4
+  derives per attempt hangs off the attempt — and `memorybank.forget_node` is what
+  withdraws it when the node goes.
 - **Weigh new columns in bytes.** `actions` is already the table that fills the disk.
   `tests/test_egress.py` has byte ceilings now — they will tell you.
 
@@ -111,6 +116,39 @@ frontend work lands on the same scroll path that has still never been driven by 
 drive it before rewriting it.
 
 ---
+
+## What happened on 2026-08-18 — the tree, SP3
+
+The memory bank stopped counting. `memory_cursor` and `summary_cursor` were positions in
+the story — "the first twelve actions are covered" — and a position moves when an action
+in front of it is deleted, so it silently starts covering one it has never read. Both are
+now node anchors, `(branch_id, depth)`, through the new `app/context/cursors.py`; a memory
+hangs off the node whose block it ends on; and retrieval selects through the branch
+clause, so a memory made on one branch never reaches a prompt on another. **330 tests
+green**, and the SP0 baseline still passes unmodified. Branch `sp3-node-cursors`.
+
+Three things to carry forward:
+
+- **Most of the work was deleting, and that was the test of the design.** The plan listed
+  four pieces of cursor machinery to remove and the expectation was that each would come
+  back in depth-shaped form. None did. `count_after(41)` is well defined with node 41
+  deleted and unchanged by anything deleted in front of it, so `note_action_removed`,
+  `_rewind_cursors_to_index`, `position_of_index` and the every-pass clamp in
+  `run_post_turn` all became nothing at all. **If a mark still needs correcting when the
+  story changes, it is still a position.** The one thing a delete still does is withdraw
+  what the node *produced* — `memorybank.forget_node`, a lookup on `(branch_id, depth)`
+  where `prune_dangling_memories` was a scan that could only notice damage afterwards.
+- **A NULL is not a small depth, and it nearly cost a feature.** A hand-written memory
+  summarises no node, so it has a branch and no depth; every ancestor entry in a lineage
+  clause is capped `depth <= fork`, and NULL fails that test. A memory somebody typed
+  would have disappeared at the first fork after they typed it, with no error anywhere —
+  just a prompt that stopped mentioning it. `Path.clause(unanchored=True)` names that case
+  explicitly, and actions are deliberately not given it.
+- **Reading the whole ancestry for recall is free.** Retrieval cannot be windowed — that
+  is the point of it — so the clause names every branch in the lineage. Two 84-action
+  stories with 14 memories each, one flat and one forked twenty times: **1,807 B against
+  1,823 B**. Twenty-two branch terms cost nothing, because the clause is not what crosses
+  the wire. Index (1.8 kB), page load (62.7 kB) and turn (733.8 kB) are unmoved.
 
 ## What happened on 2026-08-17, part five — the tree, SP2
 
@@ -407,7 +445,7 @@ the SQLite dev parity this codebase protects on purpose).
 
 ```
 cd backend
-.venv/Scripts/python.exe -m pytest tests/          # 297 tests (~38s)
+.venv/Scripts/python.exe -m pytest tests/          # 330 tests (~55s)
 .venv/Scripts/python.exe -m tools.stress_session   # egress report (SQLite)
 
 # Same harness against a real Postgres. The target must be a THROWAWAY database

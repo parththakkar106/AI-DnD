@@ -140,24 +140,29 @@ def test_undo_prunes_memory_covering_removed_actions(db):
     assert texts == {"k"}
 
 
-# ---------------------------------------------------------------- prune helper
+# -------------------------------------------------------- withdrawing a node
 
-def test_prune_dangling_memories_counts_and_removes(db):
+def test_forget_node_withdraws_only_what_that_node_produced(db):
+    """Phase 14 SP3: a memory hangs off the node its block ends on, so removing
+    a node is a lookup rather than a scan for memories that have fallen off the
+    end of the story."""
     user, adv = _make_adventure(db, {})
     _add(db, adv, 0, "do")
-    _add(db, adv, 1, "ai")
+    second = _add(db, adv, 1, "ai")
     db.add_all([
-        models.Memory(adventure_id=adv.id, text="live", source_start=0, source_end=1),
-        models.Memory(adventure_id=adv.id, text="dead", source_start=2, source_end=5),
+        models.Memory(adventure_id=adv.id, text="hangs off node 1",
+                      source_start=0, source_end=1),
+        models.Memory(adventure_id=adv.id, text="hangs off node 0",
+                      source_start=0, source_end=0),
     ])
     db.commit()
 
-    removed = memorybank.prune_dangling_memories(adv, db)
+    removed = memorybank.forget_node(db, adv, second)
     db.commit()
     db.refresh(adv)  # expire_on_commit=False: reload the memories collection
 
     assert removed == 1
-    assert {m.text for m in adv.memories} == {"live"}
+    assert {m.text for m in adv.memories} == {"hangs off node 0"}
 
 
 # ---------------------------------------------------------------- snapshot

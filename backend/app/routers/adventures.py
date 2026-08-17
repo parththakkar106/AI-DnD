@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session, load_only, undefer
 from sqlalchemy.orm.attributes import set_committed_value
 
 from .. import auth, images, limits, memorybank, models, schemas, tree, worldstate
-from ..context import build_context
+from ..context import build_context, cursors
 from ..context import history as context_history
 from ..context import lineage
 from ..database import get_db
@@ -1102,19 +1102,18 @@ def undo_turn(
         preceding = newest[1] if len(newest) > 1 else None
         # The earliest action removed in this turn holds the pre-turn scoreboard.
         first_removed = last
-        memorybank.note_action_removed(adventure, last)
+        memorybank.forget_node(db, adventure, last)
         db.delete(last)
         if last.type == "ai" and preceding is not None and preceding.type in ("do", "say", "story"):
             first_removed = preceding
-            memorybank.note_action_removed(adventure, first_removed)
+            memorybank.forget_node(db, adventure, first_removed)
             db.delete(first_removed)
         if first_removed.state_before is not None:
             adventure.script_state = copy.deepcopy(first_removed.state_before)
         if first_removed.world_state_before is not None:
             adventure.world_state = copy.deepcopy(first_removed.world_state_before)
-        db.flush()  # apply deletes so pruning sees the shrunken action list
+        db.flush()  # apply the deletes before anything reads the story back
         db.expire(adventure, ["actions"])
-        memorybank.prune_dangling_memories(adventure, db)
         # The tip moved back with them.
         tree.refresh_head(db, adventure)
         db.commit()
@@ -1168,8 +1167,12 @@ def export_adventure(
         "worldState": adv.world_state,
         "autoSummarize": adv.auto_summarize,
         "memoryBankEnabled": adv.memory_bank_enabled,
-        "memoryCursor": adv.memory_cursor,
-        "summaryCursor": adv.summary_cursor,
+        # The bundle's coordinate system is a position in the story, and the
+        # cursors are nodes now, so they are counted back into one. A v1 bundle
+        # has to stay readable by builds that never heard of a depth — SP6's v2
+        # format carries the anchors themselves.
+        "memoryCursor": cursors.position_of(adv, cursors.MEMORY.depth(db, adv)),
+        "summaryCursor": cursors.position_of(adv, cursors.SUMMARY.depth(db, adv)),
         "memories": [
             {
                 "text": m.text, "pinned": m.pinned, "forgotten": m.forgotten,
@@ -1311,6 +1314,16 @@ def import_adventure(
             )
             tree.place_action(db, adventure, action)
             db.add(action)
+
+    # The bundle's cursors are positions in a flat story and the marks are
+    # nodes, so the translation waits until the actions exist — this is the
+    # only moment the two coordinate systems can be lined up against each
+    # other. The legacy columns keep the numbers the bundle gave: they are what
+    # a rolled-back build would read.
+    db.flush()
+    db.expire(adventure, ["actions"])
+    cursors.anchor_at_position(adventure, cursors.MEMORY, adventure.memory_cursor)
+    cursors.anchor_at_position(adventure, cursors.SUMMARY, adventure.summary_cursor)
 
     db.commit()
     db.refresh(adventure)
@@ -1658,6 +1671,11 @@ def list_memories(
     # a relationship load takes whole entities, so it picks up whatever the
     # model happens to carry. `embedding_blob` is deferred and so would stay
     # out today — this is about the next wide column, not that one.
+    #
+    # Adventure-wide, not path-scoped, and that is the split: retrieval reads
+    # the story being played, the drawer manages the bank. Hiding a branch's
+    # memories from the drawer would mean memories nobody can find to delete,
+    # in a phase whose rule is that nothing is ever removed automatically.
     return (
         db.query(models.Memory)
         .options(load_only(*MEMORY_LIST_COLUMNS))
@@ -1788,13 +1806,13 @@ def delete_action(
     action = db.get(models.Action, action_id)
     if action is None or action.adventure_id != adventure_id:
         raise HTTPException(404, "Action not found")
-    # Cursor bookkeeping, same as undo: slide the cursors down if this action
-    # sits before them, then drop any memory left describing a deleted action.
-    memorybank.note_action_removed(adventure, action)
+    # Same as undo: withdraw whatever this node produced. Nothing else needs
+    # doing — the marks are depths, and a depth does not move because an action
+    # in front of it went away.
+    memorybank.forget_node(db, adventure, action)
     db.delete(action)
-    db.flush()  # apply the delete so pruning sees the shrunken action list
+    db.flush()
     db.expire(adventure, ["actions"])
-    memorybank.prune_dangling_memories(adventure, db)
     # Deleting the newest action moves the tip; deleting a middle one leaves a
     # gap in the depths, deliberately — see _backfill_tree.
     tree.refresh_head(db, adventure)
