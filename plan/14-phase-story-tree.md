@@ -312,10 +312,12 @@ was the pass condition. Six things worth not rediscovering:
   transaction, three statements, once per adventure ever.
 - **The identity map holds weak references, and it cost 25 % of the suite.** Resolving
   the head branch per node re-read the `branches` row for every node in the flush, because
-  nothing held a strong reference between two calls: 201 SELECTs to write 200 actions,
-  and 36 s → 45 s on the same 297 tests. The head is now resolved once per adventure per
-  flush (2 SELECTs), which put the suite back at 38.8 s *with* 20 more tests. Pinned by a
-  test, because the symptom is only ever a stopwatch.
+  nothing held a strong reference between two calls: **201 SELECTs to write 200 actions**,
+  and 36 s → 45 s on the same 297 tests measured back to back. The head is now resolved
+  once per adventure per flush — **2 SELECTs**, and the same 297 tests then time within
+  noise of SP1 (44.2 s each; this machine's load drifts by ~20 % between runs, so trust
+  the statement count, not the stopwatch). Pinned by a test that counts reads of
+  `branches`, because the stopwatch is all the symptom there ever was.
 - **The index screen is the one read scoped by head branch rather than by lineage.**
   `_latest_narration` picks one row per adventure for a hundred adventures at once, and a
   lineage clause each would put hundreds of OR-terms on that query. The two answers differ
