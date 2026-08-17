@@ -182,6 +182,9 @@ Deliberately **not** taken: moving `context_snapshot` out of the database. It co
 nothing on reads now that it is deferred, and storage is ~$0.02/mo. Revisit only if
 backups or storage start to hurt.
 
+> **Revisit it.** That call weighed egress and got egress right, but it never weighed
+> the free tier's *storage* ceiling — see "Storage, which this plan did not cost" below.
+
 ## Verification
 
 - Harness: `python -m tools.stress_session`, memory bank **on**, before and after,
@@ -193,3 +196,79 @@ backups or storage start to hurt.
   playthrough number is finally honest.
 - The existing `test_egress.py` guard must still pass — nothing here should touch the
   deferred action columns.
+
+## Verified on production, 2026-08-17
+
+Two things were still taken on trust when this shipped: every measurement had run on
+SQLite, and every number came from a synthetic fixture. Both are now checked.
+
+### The migration landed on real Postgres
+
+`schema_version` reads **41**, matching the repo's `LATEST_VERSION`. The live schema has
+`embedding_blob bytea` and `embedded boolean`, so the `{dialect: sql}` map in migration
+38 spells BYTEA correctly against a real server — the one thing tests could not prove,
+since `test_migration_38_is_spelled_for_both_dialects` only inspects the SQL string.
+The backfill is complete: 134 memories, `embedded = 134`, `embedding_blob = 134`, no
+stragglers and no rows skipped as malformed.
+
+### The 5x is real, on real vectors
+
+| | bytes | per memory |
+|---|---|---|
+| `embedding` (JSON) | 4,150,121 | 30,971 |
+| `embedding_blob` (float32) | 823,296 | 6,144 |
+
+**5.04x**, against the plan's predicted ~31 KB → 6,144 B. The largest real bank is 100
+memories = 614,400 B of vectors, so the old code fetched **~3.10 MB per retrieval** on
+that adventure — which is where the 3,153 kB measured on production came from. That
+figure is now fully accounted for.
+
+### SQLite and Postgres agree
+
+`tools.stress_session` gained an `AIDND_STRESS_DATABASE_URL` escape hatch and was run
+against a throwaway Neon database at the default fixture (200 actions, 100 memories):
+
+| shape | SQLite | Postgres |
+|---|---|---|
+| index | 4.1 kB | 4.1 kB |
+| page load | 426.7 kB | 425.0 kB |
+| one turn, cold | 723.4 kB | 722.3 kB |
+| one turn, warm | 122.3 kB | **121.1 kB** |
+| Insights | 117.9 kB | 116.7 kB |
+| Memories drawer | 23.7 kB | 21.7 kB |
+| `run_post_turn` | 0.7 kB | 0.6 kB |
+
+Within 0.5% everywhere. The dialect caveat in the harness docstring is real but small:
+what dominates is which columns get asked for, and the ORM decides that identically.
+The warm turn spends **1.7 kB on `memories`, 1% of the read** — the cache behaves on
+psycopg exactly as it does on SQLite.
+
+### The page load is worse than modelled, for a different reason
+
+The synthetic fixture is **~2x heavier per action than production**: 994 B/action real
+against ~2,133 B/action synthetic, so a real 200-action adventure is ~194 kB, not 427.
+But the largest real adventure is **607 actions**, not 200, and costs **589.5 kB** in
+one response. Step 6 is more urgent than this plan assumed, and for the opposite
+reason to the one modelled — stories get *longer* than the fixture, not heavier.
+
+Worth fixing the fixture's narration size when step 6 lands, so the harness stops
+flattering the per-action figure while understating the length.
+
+### Storage, which this plan did not cost
+
+`context_snapshot` is **150.8 MB of uncompressed JSON across 944 actions** — ~163 kB a
+row on average, and ~232 kB a row in the largest adventure, against the ~74 KB/row the
+comment in `models.py` claims. TOAST compresses it to ~89 MB on disk, but
+`octet_length` is what would cross the wire, because Postgres decompresses before
+sending. Deferral is the only thing standing between a bulk read and a 137 MB query.
+
+The database is **99.6 MB total**, of which `actions` is **88.9 MB**. Neon's free tier
+is 512 MB. At ~94 kB of disk per action that ceiling arrives at roughly **5,400
+actions**, and 944 are already stored. So the "~$0.02/mo, leave it in the database"
+call above is wrong for the tier this actually runs on — not because reads cost
+anything, but because the free tier meters *storage*, and that is the constraint with
+a cliff. Dropping the dead `memories.embedding` column reclaims 4.05 MB (4%), which
+helps and does not solve it.
+
+None of the numbers above required reading a single row of anyone's content: counts,
+`octet_length` sums and catalog sizes only.

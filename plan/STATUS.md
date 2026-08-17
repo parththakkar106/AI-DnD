@@ -3,7 +3,23 @@
 Read this first when picking the project back up. Updated at the end of a working
 session; the per-phase plan files hold the detail, this holds the thread.
 
-**Last updated: 2026-08-16.**
+**Last updated: 2026-08-17.**
+
+---
+
+## Two things need a human first
+
+**The Render service is suspended.** `GET /api/health` returns 503 with a static
+"This service has been suspended by its owner" page, in ~1.2s — that is the edge, not
+a cold start (a free-tier wake hangs 30–60s and then serves). Nothing in the app is
+wrong; check the dashboard. Free-tier suspensions come from usage/bandwidth caps or
+billing, and real users have started arriving, so rule that out before assuming it was
+manual.
+
+**The free tier's storage ceiling is closer than the egress work suggested.** The Neon
+database is 99.6 MB of a 512 MB allowance and `actions.context_snapshot` is essentially
+all of it. See "Storage, which this plan did not cost" in `plan/13`. This is now the
+most likely thing to break the deploy, ahead of anything on the read path.
 
 ---
 
@@ -11,9 +27,13 @@ session; the per-phase plan files hold the detail, this holds the thread.
 
 **`plan/13-memory-embedding-cost.md`, step 6 — infinite scroll upward in `Play.jsx`.**
 
-Opening a finished 200-action adventure fetches **426.7 kB** in one response, and after
-this session's work that is comfortably the largest single read in the app — a turn is
-now 122 kB, Insights 118 kB, the Memories drawer 24 kB. The backend already has the
+Opening a finished adventure is comfortably the largest single read in the app — a turn
+is now 122 kB, Insights 118 kB, the Memories drawer 24 kB. Measured on production
+(2026-08-17), the largest real adventure is **607 actions and 589.5 kB in one
+response**; the 426.7 kB the harness reports is a 200-action fixture whose actions are
+about **twice as heavy as real ones** (994 B/action in production). So the fixture
+overstates width and understates length — real stories get *longer* than it models,
+which is the direction that hurts. The backend already has the
 windowing primitives (`context/history.py`: `tail_range`, `slice_`, `count`), and
 `GET /adventures/{id}/actions` exists. What is missing is a paged shape for it and a
 `Play.jsx` that loads the newest turns and fetches older ones as the reader scrolls up.
@@ -91,6 +111,26 @@ Migrations 39/40 add `memories.embedded`, migration 41 drops the capacity defaul
 
 ---
 
+## What happened on 2026-08-17
+
+No new behaviour — a verification pass on what shipped the day before, because every
+number in the section above had been measured on SQLite against a synthetic fixture.
+Full write-up in `plan/13` under "Verified on production".
+
+**It holds.** `schema_version` is 41 on the live Postgres with `embedding_blob bytea`
+and `embedded boolean` present, so migration 38's dialect map is correct against a real
+server. The backfill is complete (134/134). The packed vectors are **5.04x** smaller
+than the JSON on real data — 30,971 → 6,144 bytes a memory, as predicted.
+
+**SQLite was not lying.** `tools.stress_session` can now target Postgres via
+`AIDND_STRESS_DATABASE_URL`, and every shape agrees within 0.5% — the warm turn is
+121.1 kB on Postgres against 122.3 kB on SQLite, with `memories` down to 1.7 kB of it.
+Run it against a **throwaway** database only; the harness writes, so it refuses any
+target whose name does not contain `stress` or `scratch`.
+
+**Two corrections came out of it**, both above: the page-load model has the wrong
+shape (too heavy per action, far too short), and the storage ceiling was never costed.
+
 ## Things worth remembering
 
 **The vector cache needs no invalidation callbacks, and that is why it is safe.** A
@@ -112,6 +152,17 @@ beside `actions.variants`. Expect to need this for any future heavy column.
 **Any egress measurement must run with an embedding model set.** This is the second
 time that omission has hidden the biggest number in the room.
 
+**Production has real users on it now. Measure it without reading it.** Counts,
+`sum(octet_length(...))` and `pg_total_relation_size` answer every sizing question
+asked so far, and none of them return anyone's story, memory text or email. When a
+real Postgres is needed for a *write* path, create a throwaway database beside the real
+one and drop it after — never point a harness at the production database.
+
+**`octet_length` is the egress number, not the on-disk number.** Postgres TOAST
+compresses big JSON — `context_snapshot` is 150.8 MB uncompressed but ~89 MB stored —
+and decompresses before sending. Size reads with `octet_length`, size the storage bill
+with `pg_total_relation_size`, and do not mix them up.
+
 ---
 
 ## Still open from `plan/13`
@@ -124,7 +175,11 @@ time that omission has hidden the biggest number in the room.
   Done for the memory paths, not as a general rule.
 - **Drop `memories.embedding`** (the JSON column) in a follow-up migration. It is still
   written by `set_vector` and read by nothing, kept so a rollback finds the vectors.
-  `tests/test_memory_retrieval.py` has a guard asserting nothing selects it.
+  `tests/test_memory_retrieval.py` has a guard asserting nothing selects it. Measured
+  on production: dropping it reclaims 4.05 MB, 4% of the database.
+- **`context_snapshot` and the 512 MB ceiling** — new, and now the biggest open item.
+  See the two sections named above. The egress case for leaving it in the database
+  still stands; the storage case does not.
 
 Deliberately not taken: moving `context_snapshot` out of the database (~$0.02/mo, costs
 nothing on reads now that it is deferred), and pgvector (breaks the SQLite dev parity
@@ -137,8 +192,17 @@ this codebase protects on purpose).
 ```
 cd backend
 .venv/Scripts/python.exe -m pytest tests/          # 225 tests
-.venv/Scripts/python.exe -m tools.stress_session   # egress report
+.venv/Scripts/python.exe -m tools.stress_session   # egress report (SQLite)
+
+# Same harness against a real Postgres. The target must be a THROWAWAY database
+# — this writes a synthetic adventure, and it refuses any name without
+# 'stress'/'scratch' in it.
+AIDND_STRESS_DATABASE_URL=postgresql://…/stress_scratch \
+    .venv/Scripts/python.exe -m tools.stress_session
 ```
+
+On Windows the report's box-drawing characters crash the default cp1252 console;
+prefix with `PYTHONIOENCODING=utf-8`.
 
 Port 8000 is shared with the job-pipeline app, which will squat it and silently shadow
 the AI-DnD API — free it before running the backend, or move the vite proxy.

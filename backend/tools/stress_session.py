@@ -23,11 +23,22 @@ sessions, the ORM, the scripting engine and the context builder are the real
 ones, because the bugs this exists to catch live in exactly the layer a mock
 would replace.
 
-It runs on a throwaway SQLite file rather than Postgres. What is being measured
-is which columns of which rows a code path asks for, and that is decided by the
-ORM, identically on both. The dialects disagree on how a value is encoded on
-the wire — JSON especially — so treat the absolute figures as production-shaped
-rather than production-exact, and compare before against after.
+It runs on a throwaway SQLite file by default. What is being measured is which
+columns of which rows a code path asks for, and that is decided by the ORM,
+identically on both dialects. The dialects disagree on how a value is encoded
+on the wire — JSON especially — so treat the absolute figures as
+production-shaped rather than production-exact, and compare before against
+after.
+
+To measure the encodings SQLite cannot reach — bytea for the packed vectors,
+and json columns psycopg parses before the meter sees them — set
+AIDND_STRESS_DATABASE_URL to a **throwaway** Postgres database:
+
+    AIDND_STRESS_DATABASE_URL=postgresql://…/stress_scratch \
+        .venv/Scripts/python.exe -m tools.stress_session
+
+The harness writes, so it refuses any target whose database name does not say
+'stress' or 'scratch'. Never point it at a database holding real users.
 
 Calibration, against the two figures measured directly on production
 (2026-08-16): a 200-action page load reported 426.7 kB here against 423 KB
@@ -35,19 +46,41 @@ there, and one turn on a 100-memory bank reported 3,258.7 kB against 3,153 kB.
 """
 
 import os
+import sys
 import tempfile
 
 # Must precede the app import: database.py reads these at module scope.
-_tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-_tmp.close()
-os.environ["AIDND_DB_PATH"] = _tmp.name
-os.environ.pop("AIDND_DATABASE_URL", None)
-os.environ.pop("DATABASE_URL", None)
+#
+# Default is a throwaway SQLite file. AIDND_STRESS_DATABASE_URL points the
+# harness at a real Postgres instead, which is the only way to reach the
+# encodings SQLite cannot exercise: bytea for the packed vectors, and json
+# columns that psycopg parses into Python before the meter ever sees them.
+#
+# The name guard is not paranoia. This harness *writes* — it builds a whole
+# synthetic adventure — so a URL that happened to point at the production
+# database would quietly seed it with fake users and fake play. The target
+# must say it is disposable.
+_stress_url = os.environ.get("AIDND_STRESS_DATABASE_URL", "").strip()
+if _stress_url:
+    _dbname = _stress_url.rsplit("/", 1)[-1].split("?")[0]
+    if not any(mark in _dbname.lower() for mark in ("stress", "scratch")):
+        sys.exit(
+            f"refusing to run against database {_dbname!r}.\n"
+            "This harness writes a synthetic adventure, so its target must be a\n"
+            "throwaway database with 'stress' or 'scratch' in the name."
+        )
+    os.environ["AIDND_DATABASE_URL"] = _stress_url
+    os.environ.pop("DATABASE_URL", None)
+else:
+    _tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    _tmp.close()
+    os.environ["AIDND_DB_PATH"] = _tmp.name
+    os.environ.pop("AIDND_DATABASE_URL", None)
+    os.environ.pop("DATABASE_URL", None)
 
 import argparse
 import asyncio
 import random
-import sys
 
 from fastapi import Depends
 from fastapi.testclient import TestClient
@@ -125,6 +158,13 @@ class FakeEmbeddings:
 def build_fixture(args, rng: random.Random) -> tuple[int, int]:
     """A user, settings and one adventure at production scale. Returns
     (adventure_id, user_id)."""
+    # A SQLite run gets a brand-new temp file every time, so the fixture can
+    # assume an empty database. A Postgres scratch target persists between
+    # runs, and the second one would collide on the fixture user's unique
+    # email — so empty it first. Only ever reached for a target whose name
+    # passed the 'stress'/'scratch' guard at the top of this module.
+    if _stress_url:
+        Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     try:
