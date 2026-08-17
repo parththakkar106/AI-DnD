@@ -225,7 +225,21 @@ class AdventureOut(ORMModel):
     created_at: datetime
     updated_at: datetime
     story_cards: list[StoryCardOut] = []
+    # The NEWEST window of the story, not all of it — older pages arrive from
+    # GET /{id}/actions as the reader scrolls up. `action_count` is the whole
+    # story's length, which is how the client knows there is more above.
     actions: list[ActionOut] = []
+    action_count: int = 0
+
+
+class ActionPage(BaseModel):
+    """A slice of the story, counted back from the newest action."""
+
+    actions: list[ActionOut] = []
+    total: int = 0
+    # Whether anything older than this slice exists. Computed server-side so
+    # the client never has to do arithmetic on positions to find the end.
+    has_more: bool = False
 
 
 # ---------- Memory bank (Phase 6) ----------

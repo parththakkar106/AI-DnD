@@ -294,7 +294,8 @@ def test_undo_removes_the_action_and_its_history(client):
     _retry(client)
     r = client.post(f"/api/adventures/{client.adv_id}/undo")
     assert r.status_code == 200, r.text
-    assert [a["type"] for a in r.json()] == ["start"]
+    # Undo returns the newest window now, not the whole story.
+    assert [a["type"] for a in r.json()["actions"]] == ["start"]
     assert _adv(client.adv_id)[0] == {}
 
 
