@@ -18,23 +18,30 @@ project page points at (`docs/index.html`), not the service name in the blueprin
 
 ---
 
-## Needs a human: one VACUUM after the next deploy
+## Shipped and live, 2026-08-17
 
-Migration 43 compresses `context_snapshot`, and **Postgres does not hand the disk back
-on its own.** `DROP COLUMN` only marks a column dropped, and the backfill leaves a dead
-tuple per row, so `actions` gets *bigger* before it gets smaller — peaking near twice
-its size while both columns are live. Once the deploy is up and healthy, run once:
+PRs #1 and #2 are merged and deployed. Verified against the running service:
+`/api/health` 200, the adventure payload carries `action_count`, `/actions` returns
+`{actions, total, has_more}` and accepts `before_id`. The app booting at all is proof
+migrations 42–45 ran — `bootstrap()` executes at import, so a failed migration means no
+service. The deployed JS bundle hashes to `index-4vjcKxkv.js`, which is what this tree
+builds, so the frontend live is exactly this code.
+
+`VACUUM FULL actions;` has been run. **The post-vacuum sizes were never measured** —
+worth one query next session, and the only reason to touch production again:
 
 ```sql
-VACUUM FULL actions;
+SELECT pg_size_pretty(pg_database_size(current_database())),
+       pg_size_pretty(pg_total_relation_size('actions'));
 ```
 
-It needs exclusive access to the table and free space equal to the finished copy. On
-the 2026-08-17 figures: 99.6 MB now, peaking near 200 during the migration, settling
-around 53 afterwards, against a 512 MB tier. Skipping it is safe and simply leaves the
-win unrealised — the database keeps working, it just stays large.
+Projection was ~53 MB total against a 512 MB tier, from 99.6 MB. If it did not land
+near that, the vacuum did not reclaim what it should have and that is worth knowing
+before the tree adds columns to `actions`.
 
-Same caveat applies to migration 42 dropping `memories.embedding` (4 MB).
+**Aggregates only, and ask first.** Real users are on this database. Counts,
+`octet_length` sums and catalog sizes answer every sizing question this project has
+needed; nothing requires reading a row of anyone's story.
 
 ---
 
@@ -132,6 +139,11 @@ Everything left open in `plan/13` closed, plus two bugs that fell out of doing i
 | `context_snapshot` on disk | ~89 MB | ~43 MB (3.5x, after a VACUUM) |
 | database total | 99.6 MB | ~53 MB projected |
 
+**One follow-up after the merge** (PR #2). Prepending older actions changes `actions`,
+and the bottom-pinning effect watches `actions` — so unless a scroll had already
+un-pinned the view, loading earlier turns jumped to the newest one instead. A prepend
+now clears the pin explicitly. Found by re-reading the path, not by running it.
+
 **The story is a window now.** `GET /adventures/{id}` returns the newest 60 actions and
 `action_count`; older pages come from `GET /{id}/actions?before_id=`. Anchored on an
 action, never an offset — an offset counted back from the newest shifts every older
@@ -211,15 +223,23 @@ with `pg_total_relation_size`, and do not mix them up.
 
 ## `plan/13` is closed
 
-All six of its open items landed on 2026-08-17. What is left is not from that plan:
+All six of its open items landed on 2026-08-17, and are live. What is left is not from
+that plan:
 
-- **The VACUUM**, above. Until it runs, the storage win is on paper.
-- **Nothing verifies the scroll behaviour in a browser.** The paging is covered by
-  `tests/test_action_paging.py` and was exercised against a running backend, but the
-  frontend has no test runner and the prepend-and-restore is the part most likely to
-  feel wrong. Worth thirty seconds of scrolling a long adventure before trusting it.
+- **Nothing has ever exercised the scroll in a browser.** This is the one real gap, and
+  it has already cost something: re-reading that path after shipping turned up a bug
+  where loading earlier turns scrolled *past* them to the end of the story, worst on
+  the short-window case the button exists for (fixed, PR #2). One bug found by reading
+  means reading is not a substitute. Either scroll a long adventure by hand, or add a
+  vitest + jsdom harness — that would have caught this one. jsdom has no layout, so the
+  scroll-position arithmetic still needs eyes.
 - **`ACTION_PAGE = 60` is a guess.** It should be a page or two of reading. If loading
-  older turns feels like it interrupts, that is the number to move.
+  older turns feels like it interrupts, that is the number to move
+  (`routers/adventures.py`).
+- **Post-vacuum sizes unmeasured**, above.
+- **Anyone who switched embedding models has a stale bank.** The bug is fixed, but
+  those memories only re-embed as the post-turn pass reaches them, which costs an
+  embedding call each. Nothing forces it; playing does.
 
 Deliberately not taken: moving `context_snapshot` out of the database entirely
 (compressing it bought the same runway for a much smaller change), and pgvector (breaks
