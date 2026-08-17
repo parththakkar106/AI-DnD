@@ -9,7 +9,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session, load_only, undefer
 from sqlalchemy.orm.attributes import set_committed_value
 
-from .. import auth, images, limits, memorybank, models, schemas, worldstate
+from .. import auth, images, limits, memorybank, models, schemas, tree, worldstate
 from ..context import build_context
 from ..context import history as context_history
 from ..database import get_db
@@ -337,6 +337,10 @@ def create_adventure(
     )
     db.add(adventure)
     db.flush()
+    # Every adventure has a story tree from the moment it exists, even before
+    # anything is played onto it — an adventure with a NULL head is a state the
+    # tree would otherwise have to tolerate everywhere for no gain.
+    tree.head_branch(db, adventure)
 
     if scenario:
         for ref, spec in scenario_card_specs(scenario, values).items():
@@ -356,14 +360,14 @@ def create_adventure(
                 )
             )
         if scenario.prompt.strip():
-            db.add(
-                models.Action(
-                    adventure_id=adventure.id,
-                    index=0,
-                    type="start",
-                    text=fill_placeholders(scenario.prompt, values),
-                )
+            opening = models.Action(
+                adventure_id=adventure.id,
+                index=0,
+                type="start",
+                text=fill_placeholders(scenario.prompt, values),
             )
+            tree.place_action(db, adventure, opening)
+            db.add(opening)
 
     db.commit()
     db.refresh(adventure)
@@ -823,6 +827,7 @@ async def _generate_turn(
             state_before=state_before,
             world_state_before=world_state_before,
         )
+        tree.place_action(db, adventure, ai_action)
         db.add(ai_action)
     adventure.updated_at = models.utcnow()
     if cfg.using_demo:
@@ -877,6 +882,7 @@ async def run_player_turn(
             state_before=state_before,
             world_state_before=world_state_before,
         )
+        tree.place_action(db, adventure, player_action)
         db.add(player_action)
         db.commit()
         db.refresh(player_action)
@@ -1079,6 +1085,8 @@ def undo_turn(
         db.flush()  # apply deletes so pruning sees the shrunken action list
         db.expire(adventure, ["actions"])
         memorybank.prune_dangling_memories(adventure, db)
+        # The tip moved back with them.
+        tree.refresh_head(db, adventure)
         db.commit()
         db.refresh(adventure)
         # The newest window, not the whole story: the client replaces its
@@ -1202,10 +1210,13 @@ def import_adventure(
     )
     db.add(adventure)
     db.flush()
+    # A v1 bundle is a linear story, which is a tree with one branch. SP6's v2
+    # format carries the branches themselves.
+    tree.head_branch(db, adventure)
 
     for m in bundle.get("memories") or []:
         if isinstance(m, dict) and str(m.get("text") or "").strip():
-            db.add(models.Memory(
+            memory = models.Memory(
                 adventure_id=adventure.id,
                 text=str(m["text"]),
                 pinned=bool(m.get("pinned", False)),
@@ -1213,7 +1224,9 @@ def import_adventure(
                 source_start=m.get("sourceStart"),
                 source_end=m.get("sourceEnd"),
                 use_count=int(m.get("useCount", 0)),
-            ))
+            )
+            tree.place_memory(db, adventure, memory)
+            db.add(memory)
 
     for card in bundle.get("storyCards") or []:
         if isinstance(card, dict):
@@ -1248,7 +1261,7 @@ def import_adventure(
                 for v in (a.get("variants") or [])
                 if isinstance(v, dict)
             ]
-            db.add(models.Action(
+            action = models.Action(
                 adventure_id=adventure.id,
                 index=int(a.get("index", i)),
                 type=str(a.get("type") or "story")[:20],  # VARCHAR(20)
@@ -1259,7 +1272,9 @@ def import_adventure(
                 # Clamped: a bundle could name an index its variant list
                 # doesn't have, which would make the pager point at nothing.
                 variant_index=min(max(int(a.get("variantIndex", 0)), 0), max(len(variants) - 1, 0)),
-            ))
+            )
+            tree.place_action(db, adventure, action)
+            db.add(action)
 
     db.commit()
     db.refresh(adventure)
@@ -1629,6 +1644,8 @@ def create_memory(
     if not payload.text.strip():
         raise HTTPException(400, "Memory text cannot be empty")
     memory = models.Memory(adventure_id=adventure.id, text=payload.text.strip())
+    # No node produced this one, so it gets a branch but no depth.
+    tree.place_memory(db, adventure, memory)
     db.add(memory)
     db.commit()
     db.refresh(memory)
@@ -1742,4 +1759,7 @@ def delete_action(
     db.flush()  # apply the delete so pruning sees the shrunken action list
     db.expire(adventure, ["actions"])
     memorybank.prune_dangling_memories(adventure, db)
+    # Deleting the newest action moves the tip; deleting a middle one leaves a
+    # gap in the depths, deliberately — see _backfill_tree.
+    tree.refresh_head(db, adventure)
     db.commit()

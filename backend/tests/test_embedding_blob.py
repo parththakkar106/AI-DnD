@@ -25,6 +25,7 @@ from sqlalchemy import text
 
 from app import memorybank, migrations, models, vectors
 from app.database import Base, SessionLocal, engine
+from tests import schema_rewind
 
 
 def float32(value: float) -> float:
@@ -270,10 +271,7 @@ def test_bootstrap_adds_the_columns_and_backfills_them(db, adventure):
     unembedded_id = unembedded.id
     db.close()
 
-    with engine.begin() as conn:
-        conn.execute(text("ALTER TABLE memories DROP COLUMN embedding_blob"))
-        conn.execute(text("ALTER TABLE memories DROP COLUMN embedded"))
-        conn.execute(text(f"PRAGMA user_version = {migrations.EMBEDDING_BLOB_VERSION - 1}"))
+    schema_rewind.rewind_to(engine, migrations.EMBEDDING_BLOB_VERSION - 1)
 
     migrations.bootstrap(engine)
 

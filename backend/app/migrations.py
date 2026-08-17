@@ -18,6 +18,7 @@ migrations added from Phase 9 on must run on both dialects.
 """
 
 import json
+import re
 
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
@@ -178,6 +179,41 @@ MIGRATIONS: list[tuple[int, str | dict[str, str]]] = [
           "default": "ALTER TABLE actions ADD COLUMN context_snapshot_z BYTEA"}),
     (44, "ALTER TABLE actions DROP COLUMN context_snapshot"),
     (45, "ALTER TABLE actions RENAME COLUMN context_snapshot_z TO context_snapshot"),
+    # Phase 14, SP1: the story becomes a tree. Every action gains the branch it
+    # was played on and its depth along that branch; adventures gain a head
+    # pointer; memories attach to the node that produced them. The `branches`
+    # table itself comes from create_all, like `memories` did.
+    #
+    # Nothing reads these yet — SP2 moves the reads onto them. This subphase
+    # exists so that by the time anything does, every row already has them,
+    # including the rows written between the two deploys (`app/tree.py` stamps
+    # those). Legacy `index`, `variants`, `variant_index` and `variant_count`
+    # stay in place, unread, until the tree is proven live.
+    #
+    # **This rewrites every row of `actions`, twice** — once per ADD COLUMN
+    # backfill pass on Postgres — so the deploy that ships it must be followed
+    # by, once:
+    #
+    #     VACUUM FULL actions;
+    #
+    # on the direct endpoint, not -pooler. That is the 144 MB lesson from
+    # 2026-08-17: a rewrite roughly doubles the table and only a VACUUM FULL
+    # hands the space back. Skipping it is safe and simply leaves the table fat.
+    (46, "ALTER TABLE actions ADD COLUMN branch_id INTEGER "
+         "REFERENCES branches(id) ON DELETE CASCADE"),
+    (47, "ALTER TABLE actions ADD COLUMN depth INTEGER"),
+    # head_branch_id carries no REFERENCES: branches.adventure_id already points
+    # the other way, and two constraints would make the pair a cycle create_all
+    # cannot order. See the column comment in models.py.
+    (48, "ALTER TABLE adventures ADD COLUMN head_branch_id INTEGER"),
+    (49, "ALTER TABLE adventures ADD COLUMN head_depth INTEGER NOT NULL DEFAULT -1"),
+    (50, "ALTER TABLE memories ADD COLUMN branch_id INTEGER "
+         "REFERENCES branches(id) ON DELETE CASCADE"),
+    (51, "ALTER TABLE memories ADD COLUMN depth INTEGER"),
+    # The index every branch clause wants, and the data pass that fills the six
+    # columns above (_backfill_tree, hung off this version because it needs all
+    # of them to exist).
+    (52, "CREATE INDEX IF NOT EXISTS ix_actions_branch_depth ON actions (branch_id, depth)"),
 ]
 
 LATEST_VERSION = max((v for v, _ in MIGRATIONS), default=1)
@@ -187,6 +223,11 @@ WORLD_DELTA_VERSION = 36
 VARIANT_COUNT_VERSION = 37
 EMBEDDING_BLOB_VERSION = 38
 SNAPSHOT_COMPRESS_VERSION = 43
+TREE_BACKFILL_VERSION = 52
+
+# An adventure with no actions has no tip. -1 keeps "the next node goes at
+# head_depth + 1" true without a special case (mirrors tree.NO_DEPTH).
+NO_DEPTH = -1
 
 # Snapshots converted per round trip. Deliberately far smaller than
 # BACKFILL_BATCH: a vector is 6 KB and a snapshot is 232 KB, so 200 of these
@@ -253,6 +294,32 @@ def _backfill_variant_count(conn) -> None:
 
 def _for_dialect(sql: str | dict[str, str], dialect: str) -> str:
     return sql if isinstance(sql, str) else sql.get(dialect, sql["default"])
+
+
+# Matches the ADD COLUMN migrations in this file — all hand-written above, so
+# this parses SQL we control and nothing else.
+_ADD_COLUMN = re.compile(r"^\s*ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+\"?(\w+)\"?", re.I)
+
+
+def _column_already_there(conn, sql: str) -> bool:
+    """True when `sql` adds a column the table already has.
+
+    This is the `IF NOT EXISTS` the docstring asks for, spelled in Python
+    because SQLite has no syntax for it on ADD COLUMN. Without it, any database
+    carrying a *newer* column than its stamp claims dies on a duplicate column
+    with the backfill never running — and that database is not hypothetical:
+    `create_all` always builds the current schema, so it is what every test
+    replaying a migration starts from, and SQLite cannot drop the columns back
+    off again once a foreign key names them.
+    """
+    match = _ADD_COLUMN.match(sql)
+    if match is None:
+        return False
+    table, column = match.group(1), match.group(2)
+    inspector = inspect(conn)
+    if table not in inspector.get_table_names():
+        return False
+    return column in {col["name"] for col in inspector.get_columns(table)}
 
 
 def _backfill_embedding_blob(conn) -> None:
@@ -345,6 +412,90 @@ def _backfill_context_snapshot(conn) -> None:
         last_id = rows[-1][0]
 
 
+# "The root branch of the adventure this row belongs to." MIN(id) rather than a
+# LIMIT so it is a plain scalar subquery on both dialects, and deterministic if a
+# database ever ends up with two roots for one adventure.
+def _root_branch_of(column: str) -> str:
+    return (
+        "(SELECT MIN(b.id) FROM branches b "
+        f"WHERE b.adventure_id = {column} AND b.parent_branch_id IS NULL)"
+    )
+
+
+def _backfill_tree(conn) -> None:
+    """Re-read every existing adventure's linear story as a tree with one branch.
+
+    One root branch per adventure, `depth` = the old `index`, the head pointing
+    at the tip, and every memory hung off the node it summarised. Nothing is
+    copied, nothing is deleted, and no ordering changes — `index` and `depth`
+    hold the same numbers when this finishes, which is what makes "current
+    adventures are unaffected" a testable claim rather than a hope.
+
+    Server-side: `actions` is the table that fills the disk, and pulling it into
+    Python to write two integers a row would be the same mistake this project
+    has now made twice. Each statement is guarded on its own target being unset,
+    so a run that dies halfway resumes rather than double-applying.
+    """
+    sqlite = conn.dialect.name == "sqlite"
+
+    # 1. A root branch per adventure. Its lineage names the row's own id, which
+    #    does not exist until the row does, so it starts as the empty list —
+    #    `branches` comes from create_all, where lineage is NOT NULL, so an
+    #    empty array is what "not filled in yet" has to look like.
+    conn.execute(text("""
+        INSERT INTO branches (adventure_id, parent_branch_id, fork_depth, lineage, created_at)
+        SELECT a.id, NULL, NULL, '[]', CURRENT_TIMESTAMP
+        FROM adventures a
+        WHERE NOT EXISTS (SELECT 1 FROM branches b WHERE b.adventure_id = a.id)
+    """))
+
+    # 2. lineage = [[own_id, null]] — one entry, uncapped: the root branch is
+    #    the whole story. Built by the database's own JSON functions because
+    #    binding a JSON string as a parameter has no spelling that means the
+    #    same thing to SQLite (TEXT) and to Postgres (json). The guard is a
+    #    length, not `= '[]'`: Postgres `json` has no equality operator.
+    conn.execute(text(
+        "UPDATE branches SET lineage = json_array(json_array(id, null)) "
+        "WHERE json_array_length(lineage) = 0"
+        if sqlite else
+        "UPDATE branches SET lineage = "
+        "jsonb_build_array(jsonb_build_array(id, null))::json "
+        "WHERE json_array_length(lineage) = 0"
+    ))
+
+    # 3. Every action onto that branch, at the depth its index already implies.
+    #    Deleting a middle action left gaps in `index`, and those gaps carry
+    #    over deliberately: depth has to keep the order the story is read in,
+    #    and renumbering here would move every cursor that points past the gap.
+    conn.execute(text(f"""
+        UPDATE actions
+        SET branch_id = {_root_branch_of('actions.adventure_id')},
+            depth = "index"
+        WHERE branch_id IS NULL
+    """))
+
+    # 4. The head: the root branch, and the depth of its newest node.
+    conn.execute(text(f"""
+        UPDATE adventures
+        SET head_branch_id = {_root_branch_of('adventures.id')},
+            head_depth = COALESCE(
+                (SELECT MAX(a."index") FROM actions a WHERE a.adventure_id = adventures.id),
+                {NO_DEPTH}
+            )
+        WHERE head_branch_id IS NULL
+    """))
+
+    # 5. Memories onto the node that produced them: `source_end` is the index of
+    #    the last action a memory summarised, so it is that node's depth. A
+    #    hand-written memory has no node and keeps depth NULL.
+    conn.execute(text(f"""
+        UPDATE memories
+        SET branch_id = {_root_branch_of('memories.adventure_id')},
+            depth = source_end
+        WHERE branch_id IS NULL
+    """))
+
+
 def _get_version(conn) -> int:
     if conn.dialect.name == "sqlite":
         return conn.execute(text("PRAGMA user_version")).scalar() or 1
@@ -382,7 +533,11 @@ def bootstrap(engine: Engine) -> None:
         current = _get_version(conn)
         for version, sql in MIGRATIONS:
             if version > current:
-                conn.execute(text(_for_dialect(sql, conn.dialect.name)))
+                statement = _for_dialect(sql, conn.dialect.name)
+                # The DDL is skippable when it has already happened; the data
+                # pass below it is not, and still runs.
+                if not _column_already_there(conn, statement):
+                    conn.execute(text(statement))
                 if version == WORLD_DELTA_VERSION:
                     _backfill_world_delta(conn)
                 if version == VARIANT_COUNT_VERSION:
@@ -394,6 +549,8 @@ def bootstrap(engine: Engine) -> None:
                 # DROP rolls back with it and the prompts are still there.
                 if version == SNAPSHOT_COMPRESS_VERSION:
                     _backfill_context_snapshot(conn)
+                if version == TREE_BACKFILL_VERSION:
+                    _backfill_tree(conn)
                 current = version
         _set_version(conn, current)
         _encrypt_plaintext_api_keys(conn)

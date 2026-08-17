@@ -1,0 +1,457 @@
+"""Phase 14 SP1 — every existing adventure becomes a tree with one branch.
+
+The migration this file watches is the one that cannot be re-run: it reads
+`index` and writes `depth`, and from SP2 on the reads follow `depth`. If it
+mis-maps a row, that row does not error — it *disappears from the story*, which
+is why the assertions here are about every row rather than about a sample.
+
+The fixture is a genuine **schema 45** database, not a current one with an old
+stamp. `create_all` always builds the current schema, so the three tables the
+tree touches are dropped and rebuilt from frozen pre-tree DDL below; the
+migration then runs its real ALTERs against them, including the one that adds a
+foreign key. A pre-migration database built any other way (stamp rewound,
+columns left in place) would quietly skip the DDL and test half the change.
+
+    python -m pytest tests/test_tree_migration.py -v
+"""
+import json
+import os
+import tempfile
+
+_tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+_tmp.close()
+os.environ["AIDND_DB_PATH"] = _tmp.name
+os.environ.pop("AIDND_DATABASE_URL", None)
+os.environ.pop("DATABASE_URL", None)
+
+import pytest
+from fastapi import Depends
+from fastapi.testclient import TestClient
+from sqlalchemy import text
+
+from app import auth, limits, migrations, models, tree
+from app.database import Base, SessionLocal, engine, get_db
+from app.main import app
+
+# The three tables as they stood at schema 45, frozen. This is a snapshot of a
+# past schema and must NOT be updated to track models.py — the whole point is
+# that it lacks what SP1 adds. SQLite spelling only; the migration's Postgres
+# half is exercised against a real server at deploy time (see plan/14).
+PRE_TREE_DDL = (
+    """
+    CREATE TABLE adventures (
+        id INTEGER NOT NULL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        scenario_id INTEGER,
+        title VARCHAR(200) NOT NULL DEFAULT 'Untitled Adventure',
+        memory TEXT NOT NULL DEFAULT '',
+        authors_note TEXT NOT NULL DEFAULT '',
+        ai_instructions TEXT NOT NULL DEFAULT '',
+        story_summary TEXT NOT NULL DEFAULT '',
+        script_state JSON NOT NULL DEFAULT '{}',
+        world_state JSON NOT NULL DEFAULT '{}',
+        placeholders JSON,
+        auto_summarize BOOLEAN NOT NULL DEFAULT 0,
+        memory_bank_enabled BOOLEAN NOT NULL DEFAULT 0,
+        memory_cursor INTEGER NOT NULL DEFAULT 0,
+        summary_cursor INTEGER NOT NULL DEFAULT 0,
+        created_at DATETIME,
+        updated_at DATETIME
+    )
+    """,
+    """
+    CREATE TABLE actions (
+        id INTEGER NOT NULL PRIMARY KEY,
+        adventure_id INTEGER NOT NULL REFERENCES adventures(id) ON DELETE CASCADE,
+        "index" INTEGER NOT NULL,
+        type VARCHAR(20) NOT NULL,
+        text TEXT NOT NULL DEFAULT '',
+        reasoning TEXT,
+        context_snapshot BLOB,
+        world_delta JSON,
+        state_before JSON,
+        world_state_before JSON,
+        variants JSON,
+        variant_count INTEGER NOT NULL DEFAULT 0,
+        variant_index INTEGER NOT NULL DEFAULT 0,
+        created_at DATETIME
+    )
+    """,
+    """
+    CREATE TABLE memories (
+        id INTEGER NOT NULL PRIMARY KEY,
+        adventure_id INTEGER NOT NULL REFERENCES adventures(id) ON DELETE CASCADE,
+        text TEXT NOT NULL DEFAULT '',
+        embedding_blob BLOB,
+        source_start INTEGER,
+        source_end INTEGER,
+        embedded BOOLEAN NOT NULL DEFAULT 0,
+        pinned BOOLEAN NOT NULL DEFAULT 0,
+        forgotten BOOLEAN NOT NULL DEFAULT 0,
+        use_count INTEGER NOT NULL DEFAULT 0,
+        last_used_at DATETIME,
+        created_at DATETIME
+    )
+    """,
+)
+
+# The story of adventure "Gapped": index 3 is missing, because deleting a middle
+# action never renumbered the ones after it. The gap has to survive as a gap.
+GAPPED_INDEXES = (0, 1, 2, 4)
+STRAIGHT_INDEXES = (0, 1)
+
+
+@pytest.fixture()
+def pre_tree():
+    """A schema-45 database with three adventures in it, returned as the ids
+    (gapped, straight, empty) their stories were written under."""
+    # Every test in this module shares one temp file, and a setup that fails
+    # before its yield never reaches a teardown — so start from empty rather
+    # than from whatever the last one left.
+    Base.metadata.drop_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
+    with engine.begin() as conn:
+        # `branches` and the six new columns never existed at 45. Dropping the
+        # tables is the only way to lose the columns: SQLite refuses to drop a
+        # column a foreign key names, which is exactly the case for branch_id.
+        for table in ("actions", "memories", "branches", "adventures"):
+            conn.execute(text(f"DROP TABLE IF EXISTS {table}"))
+        for ddl in PRE_TREE_DDL:
+            conn.execute(text(ddl))
+        conn.execute(text(
+            "INSERT INTO users (id, email, is_guest, created_at, demo_turns_used, "
+            "demo_turns_date) VALUES (1, 'v45@example.com', 0, CURRENT_TIMESTAMP, 0, '')"
+        ))
+
+        ids = {}
+        for name in ("Gapped", "Straight", "Empty"):
+            conn.execute(text(
+                "INSERT INTO adventures (user_id, title) VALUES (1, :title)"
+            ), {"title": name})
+            ids[name] = conn.execute(text(
+                "SELECT id FROM adventures WHERE title = :title"
+            ), {"title": name}).scalar()
+
+        for adventure_id, indexes in (
+            (ids["Gapped"], GAPPED_INDEXES),
+            (ids["Straight"], STRAIGHT_INDEXES),
+        ):
+            for index in indexes:
+                conn.execute(text(
+                    'INSERT INTO actions (adventure_id, "index", type, text) '
+                    "VALUES (:a, :i, :t, :x)"
+                ), {"a": adventure_id, "i": index,
+                    "t": "start" if index == 0 else "do",
+                    "x": f"Turn {index}."})
+
+        # One memory that summarised a block of story, and one written by hand,
+        # which summarised nothing and so belongs to no node.
+        conn.execute(text(
+            "INSERT INTO memories (adventure_id, text, source_start, source_end) "
+            "VALUES (:a, 'The gate opened.', 0, 1)"
+        ), {"a": ids["Gapped"]})
+        conn.execute(text(
+            "INSERT INTO memories (adventure_id, text) VALUES (:a, 'Hand-written.')"
+        ), {"a": ids["Gapped"]})
+
+        conn.execute(text("PRAGMA user_version = 45"))
+
+    try:
+        yield ids
+    finally:
+        Base.metadata.drop_all(bind=engine)
+
+
+def rows(sql: str, **params) -> list[tuple]:
+    with engine.begin() as conn:
+        return conn.execute(text(sql), params).all()
+
+
+def scalar(sql: str, **params):
+    with engine.begin() as conn:
+        return conn.execute(text(sql), params).scalar()
+
+
+# ------------------------------------------------------- the migration itself
+
+def test_the_stamp_reaches_the_current_version(pre_tree):
+    migrations.bootstrap(engine)
+    assert scalar("PRAGMA user_version") == migrations.LATEST_VERSION
+
+
+def test_every_action_lands_on_its_adventure_root_branch(pre_tree):
+    before = scalar("SELECT count(*) FROM actions")
+
+    migrations.bootstrap(engine)
+
+    assert scalar("SELECT count(*) FROM actions") == before, "the migration lost a row"
+    assert scalar("SELECT count(*) FROM actions WHERE branch_id IS NULL") == 0
+    assert scalar("SELECT count(*) FROM actions WHERE depth IS NULL") == 0
+    # Each action's branch belongs to that action's own adventure. A branch
+    # clause that forgot its adventure would still look right on a database
+    # holding one, which is why the fixture holds three.
+    mismatched = scalar("""
+        SELECT count(*) FROM actions a JOIN branches b ON b.id = a.branch_id
+        WHERE b.adventure_id != a.adventure_id
+    """)
+    assert mismatched == 0
+
+
+def test_depth_is_the_old_index_gaps_included(pre_tree):
+    migrations.bootstrap(engine)
+
+    assert rows('SELECT "index", depth FROM actions WHERE depth != "index"') == []
+    depths = [
+        row[0] for row in rows(
+            "SELECT depth FROM actions WHERE adventure_id = :a ORDER BY depth",
+            a=pre_tree["Gapped"],
+        )
+    ]
+    # 3 is still missing. Renumbering here would silently move every cursor
+    # pointing past the gap, and the reads only need the order, not density.
+    assert depths == list(GAPPED_INDEXES)
+
+
+def test_one_root_branch_per_adventure_with_its_own_lineage(pre_tree):
+    migrations.bootstrap(engine)
+
+    branches = rows(
+        "SELECT id, adventure_id, parent_branch_id, fork_depth, lineage FROM branches"
+    )
+    assert len(branches) == 3, "one branch per adventure, including the empty one"
+    for branch_id, _adventure_id, parent, fork_depth, lineage in branches:
+        assert parent is None, "a migrated branch is a root; nothing forked yet"
+        assert fork_depth is None
+        # The whole story, uncapped: one entry, itself, no ceiling.
+        assert json.loads(lineage) == [[branch_id, None]]
+
+
+def test_the_head_points_at_the_tip_of_the_root_branch(pre_tree):
+    migrations.bootstrap(engine)
+
+    heads = dict(rows("SELECT title, head_depth FROM adventures"))
+    assert heads["Gapped"] == max(GAPPED_INDEXES)
+    assert heads["Straight"] == max(STRAIGHT_INDEXES)
+    # No actions, no tip. -1 keeps "the next node goes at head_depth + 1" true
+    # without a special case anywhere else.
+    assert heads["Empty"] == tree.NO_DEPTH
+    assert scalar("SELECT count(*) FROM adventures WHERE head_branch_id IS NULL") == 0
+    dangling = scalar("""
+        SELECT count(*) FROM adventures a
+        WHERE NOT EXISTS (
+            SELECT 1 FROM branches b
+            WHERE b.id = a.head_branch_id AND b.adventure_id = a.id
+        )
+    """)
+    assert dangling == 0, "a head pointing outside its own adventure"
+
+
+def test_memories_attach_to_the_node_they_summarised(pre_tree):
+    migrations.bootstrap(engine)
+
+    summarised = rows(
+        "SELECT source_end, depth, branch_id FROM memories WHERE source_end IS NOT NULL"
+    )
+    assert summarised, "the fixture is supposed to have one"
+    for source_end, depth, branch_id in summarised:
+        assert depth == source_end, "the memory hangs off the last action it covered"
+        assert branch_id is not None
+
+    # A hand-written memory has no node: it gets a branch, but no depth, which
+    # SP3 reads as belonging to the adventure rather than to a path.
+    manual = rows("SELECT depth, branch_id FROM memories WHERE source_end IS NULL")
+    assert manual and all(depth is None and branch is not None for depth, branch in manual)
+
+
+def test_the_branch_clause_index_exists(pre_tree):
+    """SP2's reads are only cheap if this exists — and `create_all` does not add
+    an index to a table it did not create, which is what migration 52 is for."""
+    migrations.bootstrap(engine)
+
+    assert scalar(
+        "SELECT count(*) FROM sqlite_master "
+        "WHERE type = 'index' AND name = 'ix_actions_branch_depth'"
+    ) == 1
+
+
+def test_running_it_again_changes_nothing(pre_tree):
+    migrations.bootstrap(engine)
+    snapshot = (
+        rows("SELECT id, branch_id, depth FROM actions ORDER BY id"),
+        rows("SELECT id, adventure_id, lineage FROM branches ORDER BY id"),
+        rows("SELECT id, head_branch_id, head_depth FROM adventures ORDER BY id"),
+        rows("SELECT id, branch_id, depth FROM memories ORDER BY id"),
+    )
+
+    # Twice through the deploy path, then the data pass on its own — the stamp
+    # stops the first, the NULL guards stop the second, and a migration that
+    # only survives because of the stamp is one bad rescue away from doubling
+    # every branch.
+    migrations.bootstrap(engine)
+    with engine.begin() as conn:
+        migrations._backfill_tree(conn)
+
+    assert (
+        rows("SELECT id, branch_id, depth FROM actions ORDER BY id"),
+        rows("SELECT id, adventure_id, lineage FROM branches ORDER BY id"),
+        rows("SELECT id, head_branch_id, head_depth FROM adventures ORDER BY id"),
+        rows("SELECT id, branch_id, depth FROM memories ORDER BY id"),
+    ) == snapshot
+
+
+# -------------------------------------------------- rows written *after* it
+
+@pytest.fixture()
+def client(monkeypatch):
+    """The app on a migrated database, so new rows go through the real writers.
+
+    Everything the migration fixes is only half the job: no migration will ever
+    visit a row written after it ran, and a row without a branch is a row no
+    read can see.
+    """
+    Base.metadata.drop_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
+    setup = SessionLocal()
+    user = models.User(is_guest=False, email="writer@example.com")
+    setup.add(user)
+    setup.flush()
+    scenario = models.Scenario(user_id=user.id, title="S", prompt="You enter a cave.")
+    setup.add(scenario)
+    setup.commit()
+    user_id, scenario_id = user.id, scenario.id
+    setup.close()
+
+    monkeypatch.setattr(limits, "rate_limit", lambda *a, **k: None)
+    monkeypatch.setattr(limits, "check_row_cap", lambda *a, **k: None)
+
+    def _current_user(db=Depends(get_db)):
+        return db.get(models.User, user_id)
+
+    app.dependency_overrides[auth.get_current_user] = _current_user
+    c = TestClient(app)
+    c.scenario_id = scenario_id
+    try:
+        yield c
+    finally:
+        app.dependency_overrides.clear()
+        Base.metadata.drop_all(bind=engine)
+
+
+def test_a_new_adventure_gets_a_branch_and_its_opening_sits_on_it(client):
+    response = client.post("/api/adventures", json={"scenario_id": client.scenario_id})
+    assert response.status_code == 201
+    adventure_id = response.json()["id"]
+
+    db = SessionLocal()
+    try:
+        adventure = db.get(models.Adventure, adventure_id)
+        branch = db.query(models.Branch).filter_by(adventure_id=adventure_id).one()
+        assert adventure.head_branch_id == branch.id
+        assert branch.lineage == [[branch.id, None]]
+        opening = db.query(models.Action).filter_by(adventure_id=adventure_id).one()
+        assert (opening.branch_id, opening.depth) == (branch.id, 0)
+        assert adventure.head_depth == 0
+    finally:
+        db.close()
+
+
+def test_a_blank_adventure_has_a_branch_before_anything_is_played(client):
+    adventure_id = client.post("/api/adventures", json={}).json()["id"]
+
+    db = SessionLocal()
+    try:
+        adventure = db.get(models.Adventure, adventure_id)
+        assert adventure.head_branch_id is not None
+        assert adventure.head_depth == tree.NO_DEPTH
+    finally:
+        db.close()
+
+
+def test_a_hand_written_memory_gets_a_branch_but_no_depth(client):
+    adventure_id = client.post("/api/adventures", json={}).json()["id"]
+
+    created = client.post(
+        f"/api/adventures/{adventure_id}/memories", json={"text": "Remember the gate."}
+    )
+    assert created.status_code == 201
+
+    db = SessionLocal()
+    try:
+        memory = db.query(models.Memory).filter_by(adventure_id=adventure_id).one()
+        assert memory.branch_id is not None
+        assert memory.depth is None
+    finally:
+        db.close()
+
+
+def test_deleting_a_branch_takes_its_nodes_with_it(client):
+    """`ON DELETE CASCADE` on both `branch_id` columns, so the database removes a
+    branch's nodes rather than any code remembering to. SP7 ships delete-a-branch
+    on top of exactly this, and nothing else has to load a branch to do it."""
+    adventure_id = client.post(
+        "/api/adventures", json={"scenario_id": client.scenario_id}
+    ).json()["id"]
+
+    db = SessionLocal()
+    try:
+        adventure = db.get(models.Adventure, adventure_id)
+        memory = models.Memory(
+            adventure_id=adventure_id, text="m", source_start=0, source_end=0
+        )
+        tree.place_memory(db, adventure, memory)
+        db.add(memory)
+        db.commit()
+        branch_id = adventure.head_branch_id
+
+        db.execute(
+            models.Branch.__table__.delete().where(models.Branch.id == branch_id)
+        )
+        db.commit()
+        assert db.query(models.Action).filter_by(adventure_id=adventure_id).count() == 0
+        assert db.query(models.Memory).filter_by(adventure_id=adventure_id).count() == 0
+    finally:
+        db.close()
+
+
+def test_deleting_an_adventure_takes_its_branch_with_it(client):
+    adventure_id = client.post(
+        "/api/adventures", json={"scenario_id": client.scenario_id}
+    ).json()["id"]
+
+    assert client.delete(f"/api/adventures/{adventure_id}").status_code == 204
+
+    db = SessionLocal()
+    try:
+        assert db.query(models.Branch).filter_by(adventure_id=adventure_id).count() == 0
+    finally:
+        db.close()
+
+
+def test_deleting_the_newest_action_moves_the_head_back(client):
+    """The head is a cache, and a cache that only ever moves forward is wrong
+    the first time someone undoes a turn."""
+    adventure_id = client.post(
+        "/api/adventures", json={"scenario_id": client.scenario_id}
+    ).json()["id"]
+
+    db = SessionLocal()
+    try:
+        adventure = db.get(models.Adventure, adventure_id)
+        extra = models.Action(adventure_id=adventure_id, index=1, type="do", text="Look.")
+        tree.place_action(db, adventure, extra)
+        db.add(extra)
+        db.commit()
+        assert adventure.head_depth == 1
+        action_id = extra.id
+    finally:
+        db.close()
+
+    assert client.delete(
+        f"/api/adventures/{adventure_id}/actions/{action_id}"
+    ).status_code == 204
+
+    db = SessionLocal()
+    try:
+        assert db.get(models.Adventure, adventure_id).head_depth == 0
+    finally:
+        db.close()

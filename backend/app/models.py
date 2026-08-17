@@ -1,8 +1,8 @@
 from datetime import datetime, timezone
 
 from sqlalchemy import (
-    JSON, Boolean, Column, DateTime, Float, ForeignKey, Integer, LargeBinary, String,
-    Table, Text,
+    JSON, Boolean, Column, DateTime, Float, ForeignKey, Index, Integer, LargeBinary,
+    String, Table, Text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -116,6 +116,17 @@ class Adventure(Base):
     # How many actions have already been folded into memories / the story summary.
     memory_cursor: Mapped[int] = mapped_column(Integer, default=0)
     summary_cursor: Mapped[int] = mapped_column(Integer, default=0)
+    # Phase 14: where the story is being played — which branch, and the depth of
+    # its newest node. Deliberately NOT a ForeignKey: branches.adventure_id
+    # already points this way, and a second constraint back would make the two
+    # tables a cycle that create_all cannot order (the fix for that is
+    # use_alter, which SQLite has no ALTER for). It is a cache of a pointer, and
+    # `tree.head_branch` treats a head naming a branch that no longer exists as
+    # a bug to recover from rather than a state to honour.
+    head_branch_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # The depth of the tip, so the next node is always head_depth + 1.
+    # NO_DEPTH (-1) for an adventure with no actions yet.
+    head_depth: Mapped[int] = mapped_column(Integer, default=-1)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
@@ -138,6 +149,48 @@ class Adventure(Base):
         cascade="all, delete-orphan",
         order_by="Memory.id",
     )
+
+
+class Branch(Base):
+    """Phase 14 — one path through an adventure's story tree.
+
+    A branch does not own a copy of the story: it holds the nodes played on it
+    and *borrows* everything before its fork point from its ancestors. Reading
+    branch C means reading C's nodes, plus B's up to where C left it, plus A's
+    up to where B left it — which is what `lineage` spells out, so a read is an
+    OR-clause per entry instead of a walk up parent pointers.
+
+    Until forking ships there is exactly one root branch per adventure and
+    every node hangs off it. That is not a half-migrated state: a linear story
+    *is* a tree with one branch, which is why writing these columns changes
+    nothing anyone can observe.
+
+    No ORM relationships on purpose. `actions.branch_id` and `memories
+    .branch_id` carry ON DELETE CASCADE, so the database removes a deleted
+    branch's nodes; a relationship would have SQLAlchemy load them all to do
+    the same thing, and loading every action of a branch is the exact cost the
+    windowed reads exist to avoid.
+    """
+
+    __tablename__ = "branches"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    adventure_id: Mapped[int] = mapped_column(ForeignKey("adventures.id", ondelete="CASCADE"))
+    # NULL on a root branch.
+    parent_branch_id: Mapped[int | None] = mapped_column(
+        ForeignKey("branches.id", ondelete="CASCADE"), nullable=True
+    )
+    # The depth this branch left its parent at, stored when the fork happens and
+    # never inferred afterwards. Inferring it from where two branches' nodes
+    # first differ would be a guess about how the story was played — and a wrong
+    # one as soon as an attempt happens to repeat its parent's text.
+    fork_depth: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # The ancestry, newest first: [[branch_id, max_depth], ...] where max_depth
+    # is NULL for "to the tip" and otherwise the fork_depth of the branch
+    # beneath it, inclusive. Computed once at fork from the parent's lineage
+    # plus one entry, so no read ever reconstructs it.
+    lineage: Mapped[list] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class Memory(Base):
@@ -169,6 +222,18 @@ class Memory(Base):
     # Action index range this memory summarizes (null for manual memories).
     source_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
     source_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Phase 14: the node that produced this memory — the last action it
+    # summarises. Anything derived attaches to the node it came from, which is
+    # what makes a fork free: a shared ancestor's memories are shared
+    # automatically, and a memory covering a stretch of branch B is invisible
+    # from any path that does not go through B.
+    #
+    # `depth` is NULL for a hand-written memory, which no node produced; that
+    # reads as "belongs to the adventure, not to a path".
+    branch_id: Mapped[int | None] = mapped_column(
+        ForeignKey("branches.id", ondelete="CASCADE"), nullable=True
+    )
+    depth: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Whether embedding_blob is set. Maintained on write by memorybank
     # .set_vector, for the same reason actions.variant_count exists beside
     # actions.variants: every reader wants the one-bit answer and none of them
@@ -212,10 +277,27 @@ class StoryCard(Base):
 
 class Action(Base):
     __tablename__ = "actions"
+    # Phase 14: every read of a story is "this branch up to this depth, or that
+    # branch up to that depth, ...", so (branch_id, depth) is the shape every
+    # one of those clauses wants an index on.
+    __table_args__ = (Index("ix_actions_branch_depth", "branch_id", "depth"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     adventure_id: Mapped[int] = mapped_column(ForeignKey("adventures.id", ondelete="CASCADE"))
     index: Mapped[int] = mapped_column(Integer)
+    # Phase 14: the node's place in the tree. `depth` is a position along *a*
+    # path, not a global turn number — A4 and B4 are alternatives, not
+    # duplicates — and it replaces `index` as the ordering key.
+    #
+    # Nullable because ALTER TABLE cannot add a NOT NULL column with no
+    # default and there is no sensible default for "which branch": the
+    # migration fills them, `tree.place_action` fills them for new nodes, and
+    # from SP2 on a NULL branch_id is a row no read can see. Legacy `index`
+    # stays beside them, unread, until the tree is proven live (SP8 drops it).
+    branch_id: Mapped[int | None] = mapped_column(
+        ForeignKey("branches.id", ondelete="CASCADE"), nullable=True
+    )
+    depth: Mapped[int | None] = mapped_column(Integer, nullable=True)
     type: Mapped[str] = mapped_column(String(20))  # start|do|say|story|continue|ai
     text: Mapped[str] = mapped_column(Text, default="")
     # Reasoning-model "thinking" that preceded the text (AI actions only).

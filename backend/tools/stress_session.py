@@ -137,7 +137,7 @@ from fastapi import Depends
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
-from app import auth, limits, memorybank, models, security, seed, worldstate
+from app import auth, limits, memorybank, models, security, seed, tree, worldstate
 from app.database import Base, SessionLocal, engine, get_db
 from app.main import app
 from app.providers import PromptParts
@@ -379,12 +379,14 @@ def add_second_adventure(db, rng: random.Random, user) -> int:
     db.add(other)
     db.flush()
     for i in range(6):
-        db.add(models.Action(
+        action = models.Action(
             adventure_id=other.id, index=i,
             type="ai" if i % 2 else "do",
             text=f"[second adventure] turn {i}. {prose(rng, 200)}",
             state_before=rich_script_state(i),
-        ))
+        )
+        tree.place_action(db, other, action)
+        db.add(action)
     memory = models.Memory(
         adventure_id=other.id,
         text="This memory belongs to the second adventure and must never be "
@@ -392,6 +394,7 @@ def add_second_adventure(db, rng: random.Random, user) -> int:
         source_start=0, source_end=5,
     )
     memorybank.set_vector(memory, [rng.uniform(-1.0, 1.0) for _ in range(EMBEDDING_DIMS)])
+    tree.place_memory(db, other, memory)
     db.add(memory)
     return other.id
 
@@ -483,7 +486,7 @@ def build_fixture(args, rng: random.Random) -> tuple[int, int]:
                     if retried else []
                 ), 0
                 body = NARRATION if is_ai else PLAYER_INPUT
-            db.add(models.Action(
+            action = models.Action(
                 adventure_id=adventure.id,
                 index=i,
                 type="ai" if is_ai else "do",
@@ -503,7 +506,13 @@ def build_fixture(args, rng: random.Random) -> tuple[int, int]:
                 world_state_before=(
                     rich_world_state(schema, i) if args.rich else None
                 ),
-            ))
+            )
+            # A fresh database is built by create_all and stamped LATEST, so no
+            # migration ever runs against it and the tree backfill never sees
+            # it. The fixture has to stamp its own nodes, or it would be the one
+            # database in the project whose actions have no branch.
+            tree.place_action(db, adventure, action)
+            db.add(action)
 
         for i in range(args.memories):
             memory = models.Memory(
@@ -522,6 +531,7 @@ def build_fixture(args, rng: random.Random) -> tuple[int, int]:
             memorybank.set_vector(
                 memory, [rng.uniform(-1.0, 1.0) for _ in range(EMBEDDING_DIMS)]
             )
+            tree.place_memory(db, adventure, memory)
             db.add(memory)
 
         if args.rich:
