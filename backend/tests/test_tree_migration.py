@@ -29,7 +29,8 @@ from fastapi import Depends
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
-from app import auth, limits, migrations, models, tree
+from app import auth, compression, limits, migrations, models, tree
+from app.context import history
 from app.database import Base, SessionLocal, engine, get_db
 from app.main import app
 
@@ -524,5 +525,220 @@ def test_deleting_the_newest_action_moves_the_head_back(client):
     db = SessionLocal()
     try:
         assert db.get(models.Adventure, adventure_id).head_depth == 0
+    finally:
+        db.close()
+
+
+# ---------------------------------------- SP4: variants become sibling rows
+
+# One turn's retry history as schema 45 stored it: a JSON array on the AI row,
+# with `variant_index` naming the entry `text` mirrors. The live one is
+# deliberately not the last written — a migration that assumed it was would
+# look right on every fixture where the player never went back.
+RETRY_VARIANTS = [
+    {"text": "Attempt one.", "reasoning": None,
+     "script_state": {"gold": 10}, "created_at": "2026-01-01T00:00:00",
+     "raw_output": "Attempt one.",
+     "world_state": {"delta": {"player.hp": -5},
+                     "report": {"applied": [{"path": "player.hp", "old": 100, "new": 95}]},
+                     "state": {"player": {"hp": 95}}}},
+    {"text": "Attempt two.", "reasoning": "thinking",
+     "script_state": {"gold": 20}, "created_at": "2026-01-01T00:01:00",
+     "raw_output": "Attempt two.",
+     "world_state": {"delta": {"player.hp": -40},
+                     "report": {"applied": [{"path": "player.hp", "old": 100, "new": 60}]},
+                     "state": {"player": {"hp": 60}}}},
+    {"text": "Attempt three.", "reasoning": None,
+     "script_state": {"gold": 30}, "created_at": "2026-01-01T00:02:00",
+     "raw_output": "Attempt three."},
+]
+LIVE_VARIANT = 1
+
+# The whole turn's assembled prompt, stored once. The attempts differ only in
+# the three slices above, which is the arrangement SP4 has to preserve — giving
+# each sibling a copy of this would multiply the biggest column in the database
+# by the retry count.
+RETRY_SNAPSHOT = {
+    "sections": [{"label": "history", "text": "A long prompt.", "tokens": 4}],
+    "prompt": {"system": "S", "story": "A long prompt."},
+    "raw_output": "Attempt two.",
+    "script": {"logs": []},
+    "world_state": RETRY_VARIANTS[LIVE_VARIANT]["world_state"],
+}
+
+
+@pytest.fixture()
+def pre_split():
+    """A schema-45 adventure with one retried turn, plus a plain turn each side.
+
+    Separate from `pre_tree` so SP1's assertions keep counting what they were
+    written to count. The story is: 0 start, 1 do, 2 ai (three attempts), 3 do,
+    and the adventure's live state is the one attempt 1 produced.
+    """
+    Base.metadata.drop_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
+    with engine.begin() as conn:
+        for table in ("actions", "memories", "branches", "adventures"):
+            conn.execute(text(f"DROP TABLE IF EXISTS {table}"))
+        for ddl in PRE_TREE_DDL:
+            conn.execute(text(ddl))
+        conn.execute(text(
+            "INSERT INTO users (id, email, is_guest, created_at, demo_turns_used, "
+            "demo_turns_date) VALUES (1, 'v45@example.com', 0, CURRENT_TIMESTAMP, 0, '')"
+        ))
+        conn.execute(text(
+            "INSERT INTO adventures (user_id, title, script_state, world_state) "
+            "VALUES (1, 'Retried', :script, :world)"
+        ), {"script": json.dumps({"gold": 20}),
+            "world": json.dumps({"player": {"hp": 60}})})
+        adventure_id = conn.execute(
+            text("SELECT id FROM adventures WHERE title = 'Retried'")
+        ).scalar()
+        # `state_before` on each row: the scoreboard as that action found it.
+        # SP4 reads them one row along to build the `state_after` pair.
+        for index, kind, before in (
+            (0, "start", None), (1, "do", {"gold": 0}),
+            (2, "ai", {"gold": 0}), (3, "do", {"gold": 20}),
+        ):
+            conn.execute(text(
+                'INSERT INTO actions (adventure_id, "index", type, text, reasoning, '
+                "state_before, context_snapshot, variants, variant_count, variant_index) "
+                "VALUES (:a, :i, :t, :x, :r, :sb, :cs, :v, :vc, :vi)"
+            ), {
+                "a": adventure_id, "i": index, "t": kind,
+                "x": RETRY_VARIANTS[LIVE_VARIANT]["text"] if kind == "ai" else f"Turn {index}.",
+                "r": RETRY_VARIANTS[LIVE_VARIANT]["reasoning"] if kind == "ai" else None,
+                "sb": None if before is None else json.dumps(before),
+                "cs": compression.pack(RETRY_SNAPSHOT) if kind == "ai" else None,
+                "v": json.dumps(RETRY_VARIANTS) if kind == "ai" else None,
+                "vc": len(RETRY_VARIANTS) if kind == "ai" else 0,
+                "vi": LIVE_VARIANT if kind == "ai" else 0,
+            })
+        conn.execute(text("PRAGMA user_version = 45"))
+    try:
+        yield adventure_id
+    finally:
+        Base.metadata.drop_all(bind=engine)
+
+
+def _attempts(adventure_id) -> list[tuple]:
+    return rows(
+        "SELECT variant_index, text, live, variant_count FROM actions "
+        'WHERE adventure_id = :a AND "index" = 2 ORDER BY variant_index',
+        a=adventure_id,
+    )
+
+
+def test_each_attempt_becomes_a_row_at_the_turns_coordinate(pre_split):
+    migrations.bootstrap(engine)
+
+    assert _attempts(pre_split) == [
+        (0, "Attempt one.", 0, 3),
+        (1, "Attempt two.", 1, 3),
+        (2, "Attempt three.", 0, 3),
+    ]
+    # One turn, one coordinate: the siblings share a branch and a depth, and
+    # keep the legacy index that says which turn they are all takes on.
+    coordinates = rows(
+        'SELECT DISTINCT branch_id, depth FROM actions WHERE adventure_id = :a '
+        'AND "index" = 2', a=pre_split,
+    )
+    assert len(coordinates) == 1
+    # ...and the rest of the story is untouched, still one row per turn.
+    assert scalar("SELECT count(*) FROM actions WHERE adventure_id = :a", a=pre_split) == 6
+
+
+def test_the_live_attempt_is_the_one_the_row_was_mirroring(pre_split):
+    """`variant_index` is the only record of which take the player was reading,
+    and it survives as the `live` flag. Guessing "the newest" instead would
+    silently rewrite the story of anyone who had paged back."""
+    migrations.bootstrap(engine)
+
+    live = rows(
+        "SELECT text FROM actions WHERE adventure_id = :a AND live = 1 "
+        'AND "index" = 2', a=pre_split,
+    )
+    assert live == [("Attempt two.",)]
+
+
+def test_the_prompt_stays_on_the_live_attempt_and_nowhere_else(pre_split):
+    migrations.bootstrap(engine)
+
+    holders = []
+    for variant_index, snapshot in rows(
+        'SELECT variant_index, context_snapshot FROM actions WHERE adventure_id = :a '
+        'AND "index" = 2 ORDER BY variant_index', a=pre_split,
+    ):
+        stored = compression.unpack(snapshot) if snapshot else {}
+        if "sections" in stored:
+            holders.append(variant_index)
+        else:
+            # A superseded attempt keeps only what was its own.
+            assert set(stored) <= set(migrations._ATTEMPT_KEYS)
+    assert holders == [LIVE_VARIANT]
+
+
+def test_each_attempt_keeps_the_outcome_it_produced(pre_split):
+    migrations.bootstrap(engine)
+
+    parsed = [
+        (i, json.loads(state), json.loads(world) if world else None)
+        for i, state, world in rows(
+            "SELECT variant_index, state_after, world_state_after FROM actions "
+            'WHERE adventure_id = :a AND "index" = 2 ORDER BY variant_index',
+            a=pre_split,
+        )
+    ]
+    assert [(i, s) for i, s, _ in parsed] == [
+        (0, {"gold": 10}), (1, {"gold": 20}), (2, {"gold": 30})
+    ]
+    assert parsed[0][2] == {"player": {"hp": 95}}
+    assert parsed[1][2] == {"player": {"hp": 60}}
+    # Attempt three recorded no world state — an adventure with no RPG layer,
+    # or a take made before the column existed. It stays NULL rather than
+    # borrowing a neighbour's, and switching to it leaves the RPG layer alone:
+    # exactly what `apply_variant` did with an entry that had no world state.
+    assert parsed[2][2] is None
+
+
+def test_state_after_is_the_state_before_of_the_turn_in_front(pre_split):
+    migrations.bootstrap(engine)
+
+    after = dict(rows(
+        'SELECT "index", state_after FROM actions WHERE adventure_id = :a '
+        "AND live = 1 ORDER BY depth", a=pre_split,
+    ))
+    # Action 1's outcome is action 2's starting position, exactly.
+    assert json.loads(after[1]) == {"gold": 0}
+    # The tip has nothing in front of it, so what it left behind is what the
+    # adventure is carrying now.
+    assert json.loads(after[3]) == {"gold": 20}
+
+
+def test_the_split_survives_being_run_again(pre_split):
+    migrations.bootstrap(engine)
+    snapshot = _attempts(pre_split)
+    before = scalar("SELECT count(*) FROM actions")
+
+    migrations.bootstrap(engine)
+    with engine.begin() as conn:
+        migrations._backfill_state_after(conn)
+        migrations._split_variants_into_siblings(conn)
+
+    assert scalar("SELECT count(*) FROM actions") == before, "attempts were duplicated"
+    assert _attempts(pre_split) == snapshot
+
+
+def test_the_migrated_story_reads_back_as_one_turn(pre_split):
+    """The point of all of it: the reads see a four-action story, not six."""
+    migrations.bootstrap(engine)
+
+    db = SessionLocal()
+    try:
+        adventure = db.get(models.Adventure, pre_split)
+        assert [a.text for a in history.story_actions(adventure)] == [
+            "Turn 0.", "Turn 1.", "Attempt two.", "Turn 3.",
+        ]
+        assert history.count(adventure) == 4
     finally:
         db.close()

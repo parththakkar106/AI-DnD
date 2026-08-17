@@ -1,4 +1,3 @@
-import copy
 import json
 import re
 import threading
@@ -6,10 +5,12 @@ import threading
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func
-from sqlalchemy.orm import Session, load_only, undefer
+from sqlalchemy.orm import Session, load_only
 from sqlalchemy.orm.attributes import set_committed_value
 
-from .. import auth, images, limits, memorybank, models, schemas, tree, worldstate
+from .. import (
+    attempts, auth, images, limits, memorybank, models, schemas, tree, worldstate,
+)
 from ..context import build_context, cursors
 from ..context import history as context_history
 from ..context import lineage
@@ -387,6 +388,10 @@ def create_adventure(
                 type="start",
                 text=fill_placeholders(scenario.prompt, values),
             )
+            # The opening node leaves behind the state the adventure starts
+            # with, so undoing or retrying the first turn has somewhere to
+            # roll back to.
+            attempts.snapshot_outcome(adventure, opening)
             tree.place_action(db, adventure, opening)
             db.add(opening)
 
@@ -468,32 +473,12 @@ def override_world_state(
     return {"state": new_state, "report": report}
 
 
-def snapshot_state(adventure: models.Adventure) -> dict:
-    """Deep copy of the shared script_state, to staple onto an action so undo/
-    retry can restore it. Independent of later hook mutations."""
-    state = adventure.script_state if isinstance(adventure.script_state, dict) else {}
-    return copy.deepcopy(state)
-
-
-def snapshot_world_state(adventure: models.Adventure) -> dict:
-    """Deep copy of the RPG world_state, for the same undo/retry rollback as
-    snapshot_state (Phase 12)."""
-    state = adventure.world_state if isinstance(adventure.world_state, dict) else {}
-    return copy.deepcopy(state)
-
-
-# ---------- Retry history (variants) ----------
+# ---------- Retry history (sibling attempts) ----------
 #
-# Retry used to delete the AI action and generate a replacement. Now the row
-# survives and every attempt is appended to `Action.variants`, with
-# `variant_index` naming the live one. A variant carries only the parts that
-# actually differ between attempts — the narration and the state it produced —
-# never the assembled prompt, which is identical across attempts of one turn
-# and is by far the biggest thing in `context_snapshot`.
-
-# The per-attempt slices of context_snapshot. Everything else in the snapshot
-# (system/story/memories) is shared by every attempt at the same turn.
-VARIANT_SNAPSHOT_KEYS = ("world_state", "script", "raw_output")
+# Retry used to delete the AI action and generate a replacement, then kept the
+# row and pushed each attempt into a JSON list on it. Now every attempt is its
+# own node: same branch, same depth, one of them `live`. `app/attempts.py` owns
+# the group and both of its invariants; the endpoints below only ask it things.
 
 
 def world_delta_of(snapshot: dict | None) -> dict | None:
@@ -510,62 +495,6 @@ def world_delta_of(snapshot: dict | None) -> dict | None:
         "delta": ws.get("delta") or {},
         "applied": (ws.get("report") or {}).get("applied") or [],
     }
-
-
-def set_variants(action: models.Action, entries: list[dict]) -> None:
-    """The ONLY way to write Action.variants.
-
-    `variants` is deferred (it holds every discarded attempt's narration), so
-    `variant_count` exists to answer "how many attempts?" without fetching it.
-    Writing the list anywhere else would let the two drift and the pager would
-    lie about how many takes a turn has.
-    """
-    action.variants = entries
-    action.variant_count = len(entries)
-
-
-def variant_of(action: models.Action, adventure: models.Adventure) -> dict:
-    """Freeze an action's *current* content as a variant entry.
-
-    `adventure` supplies the resulting script/world state, so this must be
-    called before any rollback — those live values are this attempt's outcome.
-    """
-    snapshot = action.context_snapshot if isinstance(action.context_snapshot, dict) else {}
-    entry = {
-        "text": action.text,
-        "reasoning": action.reasoning,
-        "script_state": snapshot_state(adventure),
-        "created_at": action.created_at.isoformat() if action.created_at else None,
-    }
-    for key in VARIANT_SNAPSHOT_KEYS:
-        if key in snapshot:
-            entry[key] = copy.deepcopy(snapshot[key])
-    return entry
-
-
-def apply_variant(action: models.Action, adventure: models.Adventure, index: int) -> None:
-    """Make variant `index` the live one: its text onto the action, its
-    outcome back onto the adventure."""
-    entry = action.variants[index]
-    action.text = entry.get("text", "")
-    action.reasoning = entry.get("reasoning")
-    snapshot = dict(action.context_snapshot) if isinstance(action.context_snapshot, dict) else {}
-    for key in VARIANT_SNAPSHOT_KEYS:
-        if key in entry:
-            snapshot[key] = copy.deepcopy(entry[key])
-        else:
-            snapshot.pop(key, None)
-    action.context_snapshot = snapshot
-    action.world_delta = world_delta_of(snapshot)
-    action.variant_index = index
-    if isinstance(entry.get("script_state"), dict):
-        adventure.script_state = copy.deepcopy(entry["script_state"])
-    # The world state this attempt left behind lives inside its own snapshot
-    # slice; absent for adventures with no RPG layer, where there's nothing to
-    # restore anyway.
-    world_state = (entry.get("world_state") or {}).get("state")
-    if isinstance(world_state, dict):
-        adventure.world_state = copy.deepcopy(world_state)
 
 
 @router.patch("/{adventure_id}", response_model=schemas.AdventureOut)
@@ -684,12 +613,12 @@ async def generate_turn(
     """SSE generator: streams the AI continuation through the context/output
     script hooks, then stores the result.
 
-    With `retry_of`, the result is appended as a new variant of that existing
-    AI action rather than stored as a new one — the discarded attempt stays
-    readable. The caller must have seeded `retry_of.variants` and rolled the
-    adventure back first (see `retry_action`); if this generator ends without
-    saving, that rollback is undone so state can't drift from the text still
-    on screen."""
+    With `retry_of`, the result is stored as a *sibling* of that AI action —
+    same turn, same coordinate, another take — and the discarded attempt stays
+    exactly where it was written. The caller must have rolled the adventure
+    back to before the turn first (see `retry_action`); if this generator ends
+    without saving, that rollback is undone so state can't drift from the text
+    still on screen."""
     saved = False
     try:
         async for event in _generate_turn(adventure, db, pipeline, user, retry_of):
@@ -700,8 +629,9 @@ async def generate_turn(
     finally:
         if retry_of is not None and not saved:
             # Provider error, empty reply, a script stop, or the client hanging
-            # up: put the attempt we rolled away from back in charge.
-            apply_variant(retry_of, adventure, retry_of.variant_index)
+            # up: no sibling was written, so the attempt on screen is still the
+            # live one — put back the state it produced.
+            attempts.restore_state(adventure, retry_of)
             db.commit()
 
 
@@ -719,10 +649,10 @@ async def _generate_turn(
 ):
     settings = get_settings(db, user)
     cfg = auth.resolve_provider_config(settings)
-    # On a retry the row being regenerated is still attached to the adventure
-    # (it carries the variant history), so it has to be filtered out of the
-    # context — otherwise the model is shown the attempt it is replacing as if
-    # it were established story, and writes a continuation of it.
+    # On a retry the attempt being replaced is still the live node of its turn
+    # — it stays live until a replacement exists to take over — so it has to be
+    # filtered out of the context, or the model is shown the attempt it is
+    # supposed to be replacing as established story and writes a sequel to it.
     replacing_id = retry_of.id if retry_of is not None else None
     if cfg.using_demo:
         # No embedding/summarization calls on the server-funded key: memory
@@ -736,10 +666,6 @@ async def _generate_turn(
         memories = await memorybank.retrieve_memories(
             adventure, settings, update_stats=True, exclude_action_id=replacing_id
         )
-    # Scoreboard as it stands before this AI turn's context/output hooks mutate
-    # it — stapled onto the AI action so retry can start over from here.
-    state_before = snapshot_state(adventure)
-    world_state_before = snapshot_world_state(adventure)
     system_text, story_text, snapshot = build_context(
         adventure, settings, memories, exclude_action_id=replacing_id
     )
@@ -809,9 +735,15 @@ async def _generate_turn(
 
     # RPG world state (Phase 12): pull the AI's state delta out of the reply,
     # let the engine referee it, and strip the block from the shown text.
-    # A retry re-runs the *same* turn, so it keeps that turn's index — using
-    # next_index here would advance the clock the cooldown rules run on.
-    ai_index = retry_of.index if retry_of is not None else next_index(adventure)
+    # A retry re-runs the *same* turn, so it is played at that turn's depth —
+    # the clock the cooldown rules run on is a position in the story, and a
+    # second take on turn 12 is still turn 12. (It was `retry_of.index` until
+    # SP4, which held the same number; depth is the one that stays true once a
+    # branch has its own numbering.)
+    # `next_index` because `tree.place_action` still derives a new node's depth
+    # from its legacy index while the two columns coexist; they hold the same
+    # number, and SP8 removes the question.
+    ai_depth = retry_of.depth if retry_of is not None else next_index(adventure)
     stat_schema = adventure.scenario.stat_schema if adventure.scenario else None
     if worldstate.has_schema(stat_schema):
         text, delta = worldstate.extract_delta(text)
@@ -819,7 +751,7 @@ async def _generate_turn(
             yield sse({"type": "error", "detail": "The AI returned only a state update and no story text."})
             return
         new_world_state, ws_report = worldstate.apply_delta(
-            adventure.world_state, stat_schema, delta, ai_index
+            adventure.world_state, stat_schema, delta, ai_depth
         )
         adventure.world_state = new_world_state
         snapshot["world_state"] = {"delta": delta, "report": ws_report, "state": new_world_state}
@@ -827,33 +759,33 @@ async def _generate_turn(
     snapshot["raw_output"] = raw_output
 
     reasoning = "".join(reasoning_chunks).strip() or None
+    ai_action = models.Action(
+        adventure_id=adventure.id,
+        # A sibling shares the turn's legacy index for the same reason it
+        # shares its depth: it is the same turn. Two rows then hold one index,
+        # which `max_action_index` (a maximum, not a count) survives, and
+        # nothing else still reads the column.
+        index=retry_of.index if retry_of is not None else ai_depth,
+        type="ai",
+        text=text,
+        reasoning=reasoning,
+        context_snapshot=snapshot,
+        world_delta=world_delta_of(snapshot),
+    )
+    attempts.snapshot_outcome(adventure, ai_action)
     if retry_of is not None:
-        # Same row, one more attempt. Writing text/reasoning/snapshot through
-        # the variant list keeps the row and its history in step.
-        ai_action = retry_of
-        ai_action.context_snapshot = snapshot
-        history = list(ai_action.variants or [])
-        history.append({
-            "text": text,
-            "reasoning": reasoning,
-            "script_state": snapshot_state(adventure),
-            "created_at": models.utcnow().isoformat(),
-            **{k: copy.deepcopy(snapshot[k]) for k in VARIANT_SNAPSHOT_KEYS if k in snapshot},
-        })
-        set_variants(ai_action, history)
-        apply_variant(ai_action, adventure, len(history) - 1)
+        attempts.add_attempt(db, adventure, retry_of, ai_action)
+        db.add(ai_action)
+        # The text at this coordinate has just changed, so whatever was derived
+        # from it is no longer about the story: withdraw the memory hanging off
+        # the node and hand the ground back to both passes. Before SP4 this was
+        # unreachable, because the summarizer held the newest action back until
+        # a turn had landed on top of it — see `memorybank`.
+        memorybank.forget_node(db, adventure, retry_of)
+        cursors.rewind_all(adventure, retry_of.branch_id, ai_depth - 1)
+        db.flush()
+        attempts.renumber(attempts.group(db, ai_action))
     else:
-        ai_action = models.Action(
-            adventure_id=adventure.id,
-            index=ai_index,
-            type="ai",
-            text=text,
-            reasoning=reasoning,
-            context_snapshot=snapshot,
-            world_delta=world_delta_of(snapshot),
-            state_before=state_before,
-            world_state_before=world_state_before,
-        )
         tree.place_action(db, adventure, ai_action)
         db.add(ai_action)
     adventure.updated_at = models.utcnow()
@@ -890,10 +822,6 @@ async def run_player_turn(
 
     # An empty do/say/story is just a continue.
     if payload.type != "continue" and payload.text.strip():
-        # Scoreboard before the input hook mutates it — the pre-turn state that
-        # undo restores to (the AI action keeps its own post-input snapshot).
-        state_before = snapshot_state(adventure)
-        world_state_before = snapshot_world_state(adventure)
         # onInput sees the formatted text (as in AI Dungeon: "> You ...").
         formatted = format_player_input(payload.type, payload.text)
         modified, stop = pipeline.run("input", formatted)
@@ -906,9 +834,11 @@ async def run_player_turn(
             index=next_index(adventure),
             type=payload.type,
             text=modified,
-            state_before=state_before,
-            world_state_before=world_state_before,
         )
+        # The scoreboard once the input hook has run — what this node left
+        # behind, which is where the AI turn after it starts and where a retry
+        # of that turn rolls back to.
+        attempts.snapshot_outcome(adventure, player_action)
         tree.place_action(db, adventure, player_action)
         db.add(player_action)
         db.commit()
@@ -956,9 +886,10 @@ def retry_action(
 ):
     """Regenerate the last AI action, keeping the discarded attempt.
 
-    The row survives: its current content is frozen as a variant, the shared
-    script/world state rolls back to the pre-turn snapshot, and the new attempt
-    is appended as the next variant. Nothing the AI wrote is ever thrown away.
+    The attempt on screen is left exactly as it was written; the shared
+    script/world state rolls back to what the node in front of it left behind,
+    and the new take is stored as a sibling at the same coordinate. Nothing the
+    AI wrote is ever rewritten, let alone thrown away.
     """
     adventure = get_adventure_or_404(adventure_id, db, user)
     limits.rate_limit("turn", request, user)
@@ -969,19 +900,13 @@ def retry_action(
         newest = last_action(adventure, db)
         if newest is not None and newest.type == "ai":
             last_ai = newest
-            # First retry: the row has no history yet, so record what's on
-            # screen as variant 0 before anything is rolled back — the live
-            # script/world state is precisely that attempt's outcome.
-            if not last_ai.variant_count:
-                set_variants(last_ai, [variant_of(last_ai, adventure)])
-                last_ai.variant_index = 0
             # Roll the scoreboard back to before this AI turn's hooks ran, so
             # regenerating starts fresh instead of stacking output mutations on
-            # top of the discarded attempt. NULL for pre-migration actions.
-            if last_ai.state_before is not None:
-                adventure.script_state = copy.deepcopy(last_ai.state_before)
-            if last_ai.world_state_before is not None:
-                adventure.world_state = copy.deepcopy(last_ai.world_state_before)
+            # top of the attempt being replaced. A no-op where the preceding
+            # node has no snapshot (a row written before SP4 the migration
+            # could not derive one for), which leaves the state alone rather
+            # than resetting it.
+            attempts.roll_back_before(db, adventure, last_ai)
             db.commit()
             db.refresh(adventure)
     except BaseException:
@@ -1011,21 +936,28 @@ def list_variants(
 ):
     """Every attempt made for one AI turn. Fetched on demand — the adventure
     payload carries only the counts, so old narration doesn't ride along on
-    every page load."""
+    every page load.
+
+    Addressed by *any* attempt at the turn, not only the live one: switching
+    changes which row the story tells, and a client holding the id it was given
+    a moment ago must still be able to ask about the same turn.
+    """
     get_adventure_or_404(adventure_id, db, user)
     action = db.get(models.Action, action_id)
     if action is None or action.adventure_id != adventure_id:
         raise HTTPException(404, "Action not found")
-    variants = action.variants if isinstance(action.variants, list) else []
+    rows = attempts.group(db, action)
+    if len(rows) < 2:
+        return []  # never retried: the turn is its own only take
     return [
         schemas.VariantOut(
             index=i,
-            text=entry.get("text", ""),
-            reasoning=entry.get("reasoning"),
-            created_at=entry.get("created_at"),
-            active=(i == action.variant_index),
+            text=row.text,
+            reasoning=row.reasoning,
+            created_at=row.created_at.isoformat() if row.created_at else None,
+            active=row.live,
         )
-        for i, entry in enumerate(variants)
+        for i, row in enumerate(rows)
     ]
 
 
@@ -1051,11 +983,11 @@ def select_variant(
     action = db.get(models.Action, action_id)
     if action is None or action.adventure_id != adventure_id:
         raise HTTPException(404, "Action not found")
-    variants = action.variants if isinstance(action.variants, list) else []
-    if not 0 <= payload.index < len(variants):
+    rows = attempts.group(db, action)
+    if not 0 <= payload.index < len(rows) or len(rows) < 2:
         raise HTTPException(400, "No such attempt for this action")
     newest = last_action(adventure, db)
-    if newest is None or newest.id != action.id:
+    if newest is None or newest.depth != action.depth or newest.branch_id != action.branch_id:
         raise HTTPException(
             400,
             "Only the latest message can be switched — the story has already "
@@ -1063,13 +995,40 @@ def select_variant(
         )
     acquire_turn_lock(adventure_id)
     try:
-        apply_variant(action, adventure, payload.index)
+        chosen = rows[payload.index]
+        if not chosen.live:
+            # The story at this coordinate is about to say something else, so
+            # anything derived from what it used to say is withdrawn — the same
+            # move a retry makes, for the same reason.
+            memorybank.forget_node(db, adventure, chosen)
+            cursors.rewind_all(adventure, chosen.branch_id, (chosen.depth or 0) - 1)
+        attempts.make_live(db, adventure, chosen)
         adventure.updated_at = models.utcnow()
         db.commit()
-        db.refresh(action)
-        return action
+        db.refresh(chosen)
+        # The row that answers is the one now in the story, which is a
+        # *different row* from the one addressed — that is the whole change: an
+        # attempt is a node, so choosing one moves the story onto it rather
+        # than rewriting anything.
+        return chosen
     finally:
         _active_turns.discard(adventure_id)
+
+
+def delete_turn(
+    db: Session, adventure: models.Adventure, node: models.Action
+) -> None:
+    """Remove a turn: every attempt at it, not only the one on screen.
+
+    A discarded attempt is a leaf hanging off the same coordinate, and it is
+    only reachable *through* that coordinate — leaving it behind when the turn
+    goes would leave a row nothing can name and no read can see. Whatever the
+    turn produced is withdrawn once, because a memory hangs off the coordinate
+    rather than off one of its attempts.
+    """
+    memorybank.forget_node(db, adventure, node)
+    for attempt in attempts.group(db, node):
+        db.delete(attempt)
 
 
 @router.post("/{adventure_id}/undo", response_model=schemas.ActionPage)
@@ -1099,19 +1058,18 @@ def undo_turn(
         if not newest or newest[0].type == "start":
             raise HTTPException(400, "Nothing to undo")
         last = newest[0]
-        preceding = newest[1] if len(newest) > 1 else None
-        # The earliest action removed in this turn holds the pre-turn scoreboard.
+        before_that = newest[1] if len(newest) > 1 else None
         first_removed = last
-        memorybank.forget_node(db, adventure, last)
-        db.delete(last)
-        if last.type == "ai" and preceding is not None and preceding.type in ("do", "say", "story"):
-            first_removed = preceding
-            memorybank.forget_node(db, adventure, first_removed)
-            db.delete(first_removed)
-        if first_removed.state_before is not None:
-            adventure.script_state = copy.deepcopy(first_removed.state_before)
-        if first_removed.world_state_before is not None:
-            adventure.world_state = copy.deepcopy(first_removed.world_state_before)
+        if last.type == "ai" and before_that is not None and before_that.type in ("do", "say", "story"):
+            first_removed = before_that
+        # Where the story stands once the turn is gone: what the node in front
+        # of the earliest removed one left behind. Read before the deletes, so
+        # the question is asked of a story that still has them in it.
+        restore_to = attempts.preceding(db, adventure, first_removed)
+        delete_turn(db, adventure, last)
+        if first_removed is not last:
+            delete_turn(db, adventure, first_removed)
+        attempts.restore_state(adventure, restore_to)
         db.flush()  # apply the deletes before anything reads the story back
         db.expire(adventure, ["actions"])
         # The tip moved back with them.
@@ -1140,22 +1098,28 @@ def export_adventure(
 ):
     """Full backup: plot components, story cards, scripts (+state), every action."""
     adv = get_adventure_or_404(adventure_id, db, user)
-    # Export is the one read that genuinely wants every attempt, so it asks for
-    # the deferred `variants` column up front — iterating adv.actions instead
-    # would lazy-load it one row at a time.
-    #
-    # And the one read deliberately left un-pathed: a backup wants the whole
+    # The one read deliberately left un-pathed: a backup wants the whole
     # adventure, not the branch its owner happens to be standing on. `index`
     # orders it because the v1 bundle is a flat list keyed on index and its
     # reader has no idea branches exist — which is exactly why SP6 replaces the
     # format rather than quietly widening this query.
+    #
+    # Attempts at one turn share that index (SP4), so the flat list is built by
+    # folding each group back into the `variants` array the format expects.
+    # That array is the *only* remaining producer of the v1 shape: nothing in
+    # the database holds one any more.
     exported_actions = (
         db.query(models.Action)
         .filter(models.Action.adventure_id == adv.id)
-        .options(undefer(models.Action.variants))
-        .order_by(models.Action.index)
+        .order_by(models.Action.index, models.Action.variant_index, models.Action.id)
         .all()
     )
+    turns: list[list[models.Action]] = []
+    for action in exported_actions:
+        if turns and turns[-1][0].index == action.index:
+            turns[-1].append(action)
+        else:
+            turns.append([action])
     return {
         "format": "ai-dnd-adventure-v1",
         "title": adv.title,
@@ -1194,24 +1158,61 @@ def export_adventure(
             }
             for s in adv.scripts
         ],
-        "actions": [
-            {
-                "index": a.index, "type": a.type, "text": a.text,
-                "reasoning": a.reasoning,
-                # Retry history, narration only — a bundle carries no context
-                # snapshots, so the per-attempt script/world state it would
-                # restore isn't there to export either.
-                "variants": [
-                    {"text": v.get("text", ""), "reasoning": v.get("reasoning"),
-                     "createdAt": v.get("created_at")}
-                    for v in (a.variants or [])
-                ] or None,
-                "variantIndex": a.variant_index,
-                "createdAt": a.created_at.isoformat(),
-            }
-            for a in exported_actions
-        ],
+        "actions": [_exported_turn(group) for group in turns],
     }
+
+
+def _exported_turn(group: list[models.Action]) -> dict:
+    """One turn as a v1 bundle entry: the attempt in the story, plus the rest.
+
+    Narration only — a bundle carries no context snapshots, so the per-attempt
+    script/world state a switch would restore isn't there to export either.
+    """
+    live = next((a for a in group if a.live), group[0])
+    return {
+        "index": live.index, "type": live.type, "text": live.text,
+        "reasoning": live.reasoning,
+        "variants": [
+            {"text": a.text, "reasoning": a.reasoning,
+             "createdAt": a.created_at.isoformat() if a.created_at else None}
+            for a in group
+        ] if len(group) > 1 else None,
+        "variantIndex": group.index(live),
+        "createdAt": live.created_at.isoformat(),
+    }
+
+
+def _imported_turn(
+    adventure: models.Adventure, entry: dict, index: int
+) -> list[models.Action]:
+    """A v1 bundle entry as the nodes it describes: one per attempt.
+
+    A bundle's `variants` array is the repeating group SP4 unpacked, so
+    importing one is the same split the migration does — every attempt gets a
+    row at the turn's coordinate, and `variantIndex` picks which is live.
+    Clamped, because a hand-edited bundle can name an attempt its own list
+    doesn't have, and a turn with no live node is a turn no read can see.
+    """
+    kind = str(entry.get("type") or "story")[:20]  # VARCHAR(20)
+    variants = [v for v in (entry.get("variants") or []) if isinstance(v, dict)]
+    if not variants:
+        variants = [{"text": entry["text"], "reasoning": entry.get("reasoning")}]
+    live = min(max(int(entry.get("variantIndex", 0)), 0), len(variants) - 1)
+    rows = []
+    for i, variant in enumerate(variants):
+        text = str(variant.get("text") or "")
+        reasoning = variant.get("reasoning")
+        rows.append(models.Action(
+            adventure_id=adventure.id,
+            index=index,
+            type=kind,
+            text=text,
+            reasoning=str(reasoning) if reasoning else None,
+            live=(i == live),
+            variant_index=i,
+            variant_count=len(variants) if len(variants) > 1 else 0,
+        ))
+    return rows
 
 
 @router.post("/import", response_model=schemas.AdventureOut, status_code=201)
@@ -1294,26 +1295,9 @@ def import_adventure(
 
     for i, a in enumerate(bundle.get("actions") or []):
         if isinstance(a, dict) and str(a.get("text") or ""):
-            variants = [
-                {"text": str(v.get("text") or ""), "reasoning": v.get("reasoning"),
-                 "created_at": v.get("createdAt")}
-                for v in (a.get("variants") or [])
-                if isinstance(v, dict)
-            ]
-            action = models.Action(
-                adventure_id=adventure.id,
-                index=int(a.get("index", i)),
-                type=str(a.get("type") or "story")[:20],  # VARCHAR(20)
-                text=str(a["text"]),
-                reasoning=str(a["reasoning"]) if a.get("reasoning") else None,
-                variants=variants or None,
-                variant_count=len(variants),
-                # Clamped: a bundle could name an index its variant list
-                # doesn't have, which would make the pager point at nothing.
-                variant_index=min(max(int(a.get("variantIndex", 0)), 0), max(len(variants) - 1, 0)),
-            )
-            tree.place_action(db, adventure, action)
-            db.add(action)
+            for action in _imported_turn(adventure, a, int(a.get("index", i))):
+                tree.place_action(db, adventure, action)
+                db.add(action)
 
     # The bundle's cursors are positions in a flat story and the marks are
     # nodes, so the translation waits until the actions exist — this is the
@@ -1782,15 +1766,10 @@ def update_action(
     action = db.get(models.Action, action_id)
     if action is None or action.adventure_id != adventure_id:
         raise HTTPException(404, "Action not found")
+    # One row, one text. Nothing mirrors it any more, so nothing has to be kept
+    # in step — the edit used to have to be written into the live variant entry
+    # as well, or paging away and back silently reverted it.
     action.text = payload.text
-    # Keep the live variant in step, or paging away and back would silently
-    # revert the edit.
-    if action.variant_count:
-        variants = action.variants if isinstance(action.variants, list) else []
-        if 0 <= action.variant_index < len(variants):
-            history = copy.deepcopy(variants)
-            history[action.variant_index]["text"] = payload.text
-            set_variants(action, history)
     db.commit()
     return action
 
@@ -1806,11 +1785,10 @@ def delete_action(
     action = db.get(models.Action, action_id)
     if action is None or action.adventure_id != adventure_id:
         raise HTTPException(404, "Action not found")
-    # Same as undo: withdraw whatever this node produced. Nothing else needs
-    # doing — the marks are depths, and a depth does not move because an action
-    # in front of it went away.
-    memorybank.forget_node(db, adventure, action)
-    db.delete(action)
+    # Same as undo: the turn goes, attempts and all, and whatever it produced
+    # is withdrawn. Nothing else needs doing — the marks are depths, and a
+    # depth does not move because an action in front of it went away.
+    delete_turn(db, adventure, action)
     db.flush()
     db.expire(adventure, ["actions"])
     # Deleting the newest action moves the tip; deleting a middle one leaves a

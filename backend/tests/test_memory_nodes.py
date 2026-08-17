@@ -294,8 +294,11 @@ def test_the_summary_folds_in_only_the_path_it_is_on(forked, monkeypatch):
     assert "on B" in prompt and "on C" in prompt
     assert "on A's own continuation" not in prompt
     assert "on the shared trunk" not in prompt  # behind the mark
-    # Caught up to the settled end of the story: C7 is retryable, C6 is not.
-    assert cursors.SUMMARY.stored(adventure) == (ids["c"], 6)
+    # Caught up to the end of the story. Until SP4 that was C6: the newest
+    # action was held back because retrying it rewrote the row underneath the
+    # mark. A retry writes a sibling now, and the withdrawal that follows takes
+    # the mark back with it, so there is nothing to hold back.
+    assert cursors.SUMMARY.stored(adventure) == (ids["c"], 7)
 
 
 def test_a_block_is_summarized_from_the_path_and_hung_off_its_last_node(
@@ -317,13 +320,16 @@ def test_a_block_is_summarized_from_the_path_and_hung_off_its_last_node(
     monkeypatch.setattr(memorybank, "summary_provider", lambda s: stub)
     asyncio.run(memorybank._create_due_memories(adventure, settings, db))
 
-    # Two blocks of four from a path of eight, minus the held-back newest: one.
-    [excerpt] = stub.excerpts
-    assert "A5" not in excerpt, "a sibling's narration reached the summarizer"
-    assert ["A0", "A1", "A2", "A3"] == [line for line in excerpt.split() if line[0] in "ABC"]
+    # Two blocks of four from a path of eight, and since SP4 nothing is held
+    # back, so both form in one pass.
+    first, second = stub.excerpts
+    assert "A5" not in first + second, "a sibling's narration reached the summarizer"
+    assert ["A0", "A1", "A2", "A3"] == [line for line in first.split() if line[0] in "ABC"]
+    assert ["B4", "B5", "C6", "C7"] == [line for line in second.split() if line[0] in "ABC"]
     made = db.query(models.Memory).filter_by(text="Memory 1.").one()
     assert (made.branch_id, made.depth) == (ids["a"], 3)
-    assert cursors.MEMORY.stored(adventure) == (ids["a"], 3)
+    # The mark ends up on the node the *second* block hangs off — the tip.
+    assert cursors.MEMORY.stored(adventure) == (ids["c"], 7)
 
 
 # ------------------------------------------------------ the cost of forking

@@ -145,12 +145,17 @@ def test_loading_an_adventure_does_not_fetch_context_snapshot(client, sql_log):
     assert offenders == [], f"context_snapshot was fetched in bulk:\n{offenders[0][:400]}"
 
 
-def test_state_before_and_world_state_before_are_not_fetched_in_bulk(client, sql_log):
-    """Both are rollback snapshots, only ever needed for the single action
-    being undone or retried."""
+def test_the_state_snapshots_are_not_fetched_in_bulk(client, sql_log):
+    """All four are rollback snapshots, only ever needed for the single node
+    being undone, retried past or switched to.
+
+    The `_after` pair is the live one since SP4 and the `_before` pair is dead
+    weight until SP8 drops it — a page load must pay for neither.
+    """
     client.get(f"/api/adventures/{client.adv_id}")
     selects = action_selects(sql_log)
-    for column in ("state_before", "world_state_before"):
+    for column in ("state_before", "world_state_before",
+                   "state_after", "world_state_after"):
         offenders = [s for s in selects if column in s]
         assert offenders == [], f"{column} was fetched in bulk"
 
@@ -199,7 +204,8 @@ def test_counting_actions_does_not_name_the_deferred_columns(client, sql_log):
         assert history.count(adventure) == 12
         counts = [s for s in sql_log if "count" in s.lower()]
         assert counts, "expected a COUNT to be emitted"
-        for column in ("context_snapshot", "state_before", "world_state_before", "variants"):
+        for column in ("context_snapshot", "state_after", "world_state_after",
+                       "state_before", "world_state_before", "variants"):
             assert not any(column in s for s in counts), (
                 f"{column} is named by the count query:\n{counts[0][:400]}"
             )

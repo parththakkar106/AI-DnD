@@ -1,15 +1,18 @@
-"""Memories must never describe an attempt the player can still retry away,
-and must never skip a stretch of story.
+"""Memories must never describe narration that is no longer in the story, and
+must never skip a stretch of it.
 
-Only the last action is retryable, so summarization holds the newest action
-back one turn (memorybank.settled_story_actions). Without that, a memory could
-cover the just-generated AI turn; retrying it rewrites Action.text but the mark
-has already moved past it, so the memory is never regenerated and goes on
-describing narration that is no longer in the story.
+For six phases the answer was a **holdback**: summarization stopped one action
+short of the newest, because only the last action was retryable and a retry
+rewrote `Action.text` under a mark that had already moved past it. SP4 ended
+that — a retry writes a sibling node and the coordinate's derived work is
+withdrawn as it does, which is the same repair undo and delete already made.
+So the holdback is gone, and the first half of this file now asserts the
+property that replaced it: a block forms as soon as there is a block, and
+changing what a coordinate says takes back what was derived from it.
 
-Phase 14 SP3 changed what that mark *is*. It used to be a count of covered
-story actions, and the second half of this file is the price of that: deleting
-an action from in front of a position slid a never-summarized action into the
+Phase 14 SP3 changed what the mark *is*. It used to be a count of covered story
+actions, and the second half of this file is the price of that: deleting an
+action from in front of a position slid a never-summarized action into the
 covered range, so every delete had to slide the cursors too. The mark is a node
 now — `(branch_id, depth)` — and a node does not move when something in front
 of it is deleted, so those tests assert that nothing happens where they used to
@@ -30,7 +33,7 @@ os.environ.pop("DATABASE_URL", None)
 import pytest
 
 from app import memorybank, models, tree
-from app.context import cursors
+from app.context import cursors, history
 from app.database import Base, SessionLocal, engine
 
 
@@ -104,56 +107,25 @@ def run_memories(db, adventure, stub, monkeypatch):
     asyncio.run(memorybank._create_due_memories(adventure, settings, db))
 
 
-# ------------------------------------------------------------------- settling
+# --------------------------------------------------- no holdback, since SP4
 
-def test_settled_actions_holds_back_the_newest(db):
-    adventure = make_adventure(db, 5)
-    settled = memorybank.settled_story_actions(adventure)
-    assert [a.index for a in settled] == [0, 1, 2, 3]
+def test_a_block_forms_as_soon_as_the_story_holds_one(db, monkeypatch):
+    """Covered to action 5 with 12 actions: block 6-11 ends on the *newest*
+    action, and is summarized now rather than a turn later.
 
-
-def test_settled_actions_is_a_prefix_so_cursors_stay_valid(db):
-    """The safety property behind the whole approach: dropping the newest
-    action can never renumber or skip an earlier one."""
-    adventure = make_adventure(db, 9)
-    full = memorybank.story_actions(adventure)
-    settled = memorybank.settled_story_actions(adventure)
-    assert full[: len(settled)] == settled
-
-
-def test_settled_actions_on_a_one_action_story(db):
-    adventure = make_adventure(db, 1)
-    assert memorybank.settled_story_actions(adventure) == []
-
-
-# ------------------------------------------------------- the bug this prevents
-
-def test_memory_never_covers_the_newest_retryable_action(db, monkeypatch):
-    """Covered up to action 5 with 12 actions is exactly the case that used to
-    bite: the 6-action block ends on the newest action, still retryable."""
+    This is exactly the case the holdback existed to refuse. What makes it safe
+    is no longer that the block stops short — it is that a retry of node 11
+    would withdraw this memory on its way past (see
+    `test_deleting_a_summarized_node_withdraws_its_memory`, the same repair).
+    """
     adventure = make_adventure(db, 12)
     cover(db, adventure, 6)
 
     stub = StubSummarizer()
     run_memories(db, adventure, stub, monkeypatch)
 
-    assert stub.excerpts == []  # only 11 settled — one short of a block
-    assert db.query(models.Memory).count() == 0
-    assert covered_depth(db, adventure) == 5
-
-
-def test_the_block_lands_a_turn_later_without_the_newest_action(db, monkeypatch):
-    """One more action and the same block is summarized — minus the new one."""
-    adventure = make_adventure(db, 13)
-    cover(db, adventure, 6)
-
-    stub = StubSummarizer()
-    run_memories(db, adventure, stub, monkeypatch)
-
     assert len(stub.excerpts) == 1
-    excerpt = stub.excerpts[0]
-    assert "Action 11." in excerpt  # the block's real last action
-    assert "Action 12." not in excerpt  # the newest, still retryable
+    assert "Action 11." in stub.excerpts[0]
     memory = db.query(models.Memory).one()
     assert (memory.source_start, memory.source_end) == (6, 11)
     # The mark and the memory name the same node — that is what keeps them from
@@ -162,28 +134,31 @@ def test_the_block_lands_a_turn_later_without_the_newest_action(db, monkeypatch)
     assert covered_depth(db, adventure) == 11
 
 
-def test_first_memory_waits_one_action_past_memory_start(db, monkeypatch):
-    adventure = make_adventure(db, memorybank.MEMORY_START)
+def test_the_first_memory_lands_at_memory_start(db, monkeypatch):
+    adventure = make_adventure(db, memorybank.MEMORY_START - 1)
     stub = StubSummarizer()
     run_memories(db, adventure, stub, monkeypatch)
-    assert stub.excerpts == []
+    assert stub.excerpts == []  # too short to have started at all
 
     db.add(models.Action(
-        adventure_id=adventure.id, index=memorybank.MEMORY_START, type="do", text="Later.",
+        adventure_id=adventure.id, index=memorybank.MEMORY_START - 1,
+        type="do", text="Later.",
     ))
     db.commit()
     db.refresh(adventure)
     run_memories(db, adventure, stub, monkeypatch)
-    # 12 settled actions = two full blocks, caught up in one run (MAX_MEMORIES_
-    # PER_RUN allows 5); neither may reach the newly added newest action.
+    # MEMORY_START is 12 actions = two full blocks, caught up in one run
+    # (MAX_MEMORIES_PER_RUN allows 5), and the newest is in the second of them.
     assert len(stub.excerpts) == 2
-    assert not any("Later." in e for e in stub.excerpts)
+    assert "Later." in stub.excerpts[-1]
+    assert covered_depth(db, adventure) == memorybank.MEMORY_START - 1
 
 
 def test_legacy_caught_up_adventure_is_not_rewound(db, monkeypatch):
     """An adventure summarized under the OLD rule carries a cursor equal to its
-    action count — one past the settled end. That used to need a clamp on every
-    post-turn pass, and clamping it to the *settled* count re-covered an action.
+    action count — one past the end of the story. That used to need a clamp on
+    every post-turn pass, and clamping it to the settled count re-covered an
+    action.
 
     A mark that names a node has no such edge: the newest action is the node,
     and "everything after it" is empty until the story grows.
@@ -194,7 +169,7 @@ def test_legacy_caught_up_adventure_is_not_rewound(db, monkeypatch):
     cover(db, adventure, 12)
 
     assert covered_depth(db, adventure) == 11  # the newest action, not one past it
-    assert memorybank.settled_after(adventure, covered_depth(db, adventure)) == -1
+    assert history.count_after(adventure, covered_depth(db, adventure)) == 0
 
     # Grow the story and let the next block form.
     for i in range(12, 25):

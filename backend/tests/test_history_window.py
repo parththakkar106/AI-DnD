@@ -203,8 +203,7 @@ def test_helpers_agree_with_the_full_list(story):
     assert [a.id for a in history.slice_(adventure, 10, 6)] == [a.id for a in actions[10:16]]
     assert [a.id for a in history.tail_range(adventure, 5, 3)] == \
         [a.id for a in actions[-8:-5]]
-    assert memorybank.settled_count(adventure) == len(actions) - 1
-    assert history.newest_settled(adventure).id == actions[-2].id
+    assert history.newest(adventure).id == actions[-1].id
 
     for probe in (0, 1, ACTION_COUNT // 2, ACTION_COUNT - 1):
         boundary = actions[probe].depth
