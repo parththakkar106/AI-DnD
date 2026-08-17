@@ -319,6 +319,7 @@ def _backfill_context_snapshot(conn) -> None:
         ).all()
         if not rows:
             return
+        params = []
         for row_id, stored in rows:
             value = json.loads(stored) if isinstance(stored, str) else stored
             if value is None:
@@ -330,9 +331,16 @@ def _backfill_context_snapshot(conn) -> None:
                     "compress/decompress round trip; refusing to drop the "
                     "original column"
                 )
+            params.append({"z": packed, "id": row_id})
+        if params:
+            # One executemany per batch, not one statement per row. This runs
+            # at container start, before the port opens, against a database on
+            # the other end of a network: a thousand round trips is the
+            # difference between a deploy that comes up and a health check that
+            # times out waiting for it.
             conn.execute(
                 text("UPDATE actions SET context_snapshot_z = :z WHERE id = :id"),
-                {"z": packed, "id": row_id},
+                params,
             )
         last_id = rows[-1][0]
 
