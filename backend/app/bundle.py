@@ -545,6 +545,16 @@ def _write_memories(
         # last action it summarises, which on one branch is that node's depth.
         if memory.depth is None and memory.source_end is not None:
             memory.depth = memory.source_end
+        # A v1 memory that summarises nothing — one the player typed — has no
+        # depth to derive, and leaving it NULL here would rebuild by import the
+        # exact state migration 62 exists to end: `Path._entry_clause` compares
+        # `depth <= max_depth`, which a NULL fails, so the memory would vanish
+        # from every branch the moment the imported adventure was forked. The
+        # root is the same answer the migration gives, and for the same reason
+        # — 0 is at or before every fork point, so it is visible from every
+        # path this adventure can grow.
+        if memory.depth is None:
+            memory.depth = lineage.ROOT_DEPTH
         db.add(memory)
 
 

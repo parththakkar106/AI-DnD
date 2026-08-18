@@ -533,6 +533,75 @@ def test_a_v2_bundle_brings_its_anchors_back(client):
         db.close()
 
 
+def test_a_v1_memory_that_summarises_nothing_lands_on_the_root(client):
+    """The import has to answer the question migration 62 answered.
+
+    A v1 file has no depths, and a memory the player typed has no `sourceEnd`
+    to derive one from — so it used to come back with a NULL depth, which is the
+    exact state SP7 removed from the schema. `Path._entry_clause` compares
+    `depth <= max_depth` and a NULL fails it, so the memory would read fine
+    until the imported adventure was forked and then vanish from the new branch.
+    """
+    payload = {
+        "format": bundle.LEGACY_FORMAT, "title": "Old backup",
+        "memoryCursor": 0, "summaryCursor": 0,
+        "actions": [
+            {"index": 0, "type": "start", "text": OPENING},
+            {"index": 1, "type": "story", "text": "A corridor."},
+        ],
+        "memories": [
+            {"text": "Kira is the innkeeper's daughter"},          # typed
+            {"text": "The corridor, summarised", "sourceStart": 1, "sourceEnd": 1},
+        ],
+    }
+    copy = _imported(client, payload)
+
+    db = SessionLocal()
+    try:
+        rows = {m.text: m for m in db.query(models.Memory)
+                .filter(models.Memory.adventure_id == copy).all()}
+        assert rows["Kira is the innkeeper's daughter"].depth == 0, (
+            "a typed memory anchors at the root, which every branch can see"
+        )
+        assert rows["The corridor, summarised"].depth == 1, "derived from its range"
+        assert all(m.depth is not None for m in rows.values())
+        assert all(m.branch_id is not None for m in rows.values())
+    finally:
+        db.close()
+
+
+def test_the_action_cap_counts_the_rows_a_v1_file_expands_into(client, monkeypatch):
+    """The cap has to count what gets written, not what the file lists.
+
+    A v1 turn carries its retries in a `variants` array, and SP4 made every
+    attempt a row — so one entry can become ten. Counting entries lets a file
+    inside the cap write a multiple of it, and the body limit is no help: the
+    text is tiny, it is the row count that is the cost.
+    """
+    monkeypatch.setattr(auth, "MULTI_USER", True)
+    monkeypatch.setattr(limits, "MAX_ACTIONS_PER_ADVENTURE", 6)
+    monkeypatch.setattr(limits, "_BUNDLE_LIST_CAPS",
+                        {**limits._BUNDLE_LIST_CAPS, "actions": 6})
+    payload = {
+        "format": bundle.LEGACY_FORMAT, "title": "Small file, many rows",
+        "memoryCursor": 0, "summaryCursor": 0,
+        "actions": [{"index": 0, "type": "start", "text": OPENING}] + [
+            {
+                "index": i, "type": "ai", "text": "Take four.",
+                "variants": [{"text": f"Take {n}."} for n in range(4)],
+                "variantIndex": 3,
+            }
+            for i in range(1, 4)
+        ],
+    }
+    assert len(payload["actions"]) <= 6, "the file itself is inside the cap"
+    before = _adventure_count()
+
+    r = _import(client, payload)
+    assert r.status_code == 409, r.text
+    assert _adventure_count() == before, "and nothing was written"
+
+
 def test_an_unknown_format_is_refused(client):
     r = _import(client, {"format": "ai-dnd-adventure-v3", "title": "From the future"})
     assert r.status_code == 400, r.text

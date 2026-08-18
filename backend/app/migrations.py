@@ -585,6 +585,17 @@ def _backfill_cursor_anchors(conn) -> None:
     Guarded on `_depth = -1` so a run that dies halfway resumes: every
     adventure this has already converted is skipped, and one it has not is
     indistinguishable from an untouched row.
+
+    **The row numbering is correlated, not ranked-then-filtered.** Numbering
+    every action in the table and picking one row out of the result reads the
+    whole of `actions` per adventure — the window function is what stops the
+    correlation being pushed down, so the planner has no way to make it cheaper
+    — and this runs inside the one transaction that holds the schema, at boot,
+    against a database with real stories in it. Restricting the scan to the
+    adventure being updated makes each pass an index lookup on
+    `actions.adventure_id` instead, and `PARTITION BY` is then a partition of
+    one. The two forms give the same answer for the same reason: the rows the
+    partition would have separated are exactly the rows the filter removes.
     """
     sqlite = conn.dialect.name == "sqlite"
     story = _story_text_sql("text", sqlite)
@@ -594,13 +605,14 @@ def _backfill_cursor_anchors(conn) -> None:
             SET {name}_cursor_branch_id = {_root_branch_of('adventures.id')},
                 {name}_cursor_depth = COALESCE(
                     (SELECT ranked.depth FROM (
-                        SELECT adventure_id, depth, ROW_NUMBER() OVER (
-                            PARTITION BY adventure_id ORDER BY depth, id
+                        SELECT depth, ROW_NUMBER() OVER (
+                            ORDER BY depth, id
                         ) AS rn
-                        FROM actions WHERE {story}
+                        FROM actions
+                        WHERE {story}
+                          AND actions.adventure_id = adventures.id
                      ) AS ranked
-                     WHERE ranked.adventure_id = adventures.id
-                       AND ranked.rn = adventures.{name}_cursor),
+                     WHERE ranked.rn = adventures.{name}_cursor),
                     (SELECT MAX(a.depth) FROM actions a
                       WHERE a.adventure_id = adventures.id
                         AND {_story_text_sql('a.text', sqlite)}),

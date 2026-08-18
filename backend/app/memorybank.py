@@ -171,6 +171,9 @@ def forget_node(db: Session, adventure: models.Adventure, action: models.Action)
     the node before it, which is a depth whether or not anything still sits
     there.
 
+    The opening node is the one exception, because migration 62 parked the
+    whole pre-coordinate bank on it — see the comment on `lineage.ROOT_DEPTH`.
+
     Returns how many memories were withdrawn.
     """
     if action.branch_id is None or action.depth is None:
@@ -184,6 +187,17 @@ def forget_node(db: Session, adventure: models.Adventure, action: models.Action)
         )
         .all()
     )
+    if action.depth == lineage.ROOT_DEPTH:
+        # The opening node is special, and only for memories that describe no
+        # stretch of story. Migration 62 parked every memory written before
+        # memories had coordinates at depth 0 — that was the choice that took
+        # nothing away from anybody, but it also collected them all onto one
+        # node, so withdrawing that node would retire a player's whole bank in
+        # a single click. A memory with no `source_start` was typed (or
+        # migrated), describes nothing that can fall off the end, and so has
+        # nothing to be withdrawn *from*: it stays. A summary that genuinely
+        # ends here is still withdrawn, because the text it describes is going.
+        doomed = [m for m in doomed if m.source_start is not None]
     if not doomed:
         return 0
     starts = [m.source_start for m in doomed if m.source_start is not None]

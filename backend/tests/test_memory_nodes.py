@@ -452,3 +452,53 @@ def test_retrieving_from_a_deep_fork_costs_what_a_flat_story_costs(deeply_forked
         f"retrieval on a 20-fork story cost {forked_bytes:,} B against the "
         f"{flat_bytes:,} B a flat story of the same length cost"
     )
+
+
+# ------------------------------------------------------- the opening node
+
+def test_a_typed_memory_on_the_opening_node_survives_that_node_going(forked):
+    """The one place a node and its memories part company.
+
+    A memory anchored to a node is withdrawn with the node, which is the rule
+    and is deliberate: it described that turn, and the turn is leaving. But
+    migration 62 parked *every* memory written before memories had coordinates
+    on depth 0 — the only landing spot visible from every branch — so the
+    opening node carries a whole bank it never produced. Withdrawing it would
+    retire all of that in one click, for every adventure predating the tree.
+
+    A memory with no `source_start` covers no stretch of story, so nothing about
+    it can go stale. It stays.
+    """
+    db, adventure, settings, ids = forked
+    typed = models.Memory(
+        adventure_id=adventure.id, text="Kira is the innkeeper's daughter",
+        source_start=None, source_end=None,
+    )
+    typed.branch_id, typed.depth = ids["a"], 0
+    db.add(typed)
+    db.commit()
+    typed_id = typed.id
+
+    withdrawn = memorybank.forget_node(db, adventure, ids["nodes"]["A0"])
+    db.commit()
+
+    assert withdrawn == 0
+    assert db.get(models.Memory, typed_id) is not None
+
+
+def test_a_summary_of_the_opening_node_is_still_withdrawn(forked):
+    """The exception is about memories that describe nothing, not about depth 0.
+
+    A summary that genuinely ends on the opening node describes text that is
+    going, so it goes too — otherwise the root would collect exactly the
+    dangling rows `forget_node` replaced `prune_dangling_memories` to prevent.
+    """
+    db, adventure, settings, ids = forked
+    derived = add_memory(db, adventure, "the opening, summarised", ids["nodes"]["A0"])
+    derived_id = derived.id
+
+    withdrawn = memorybank.forget_node(db, adventure, ids["nodes"]["A0"])
+    db.commit()
+
+    assert withdrawn == 1
+    assert db.get(models.Memory, derived_id) is None

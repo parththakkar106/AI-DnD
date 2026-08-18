@@ -150,7 +150,17 @@ def add_attempt(
     replacement.branch_id = previous.branch_id
     replacement.depth = previous.depth
     replacement.live = True
-    replacement.variant_index = previous.variant_index + 1
+    # The end of the group, not one past `previous` — which is only the same
+    # thing when `previous` is the newest take. Switch a three-take turn back to
+    # take 1 and retry, and `previous.variant_index + 1` collides with take 2;
+    # `renumber` then breaks the tie by id and files the new attempt *between*
+    # takes 2 and 3, so the pager walks the takes in an order they were not made
+    # in. `group` is oldest-first, and `replacement` is not in it yet.
+    siblings = group(db, previous)
+    replacement.variant_index = 1 + max(
+        (s.variant_index for s in siblings if s.variant_index is not None),
+        default=previous.variant_index or 0,
+    )
     previous.live = False
     # The replacement was assembled with a fresh snapshot, so the prompt for
     # this turn is now the one it carries; the superseded attempt keeps only

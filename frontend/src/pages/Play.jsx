@@ -1943,6 +1943,15 @@ export default function Play() {
                         // rewriting this one, so the reply carries a new id.
                         setActions((prev) => prev.map(
                           (a) => (a.id === action.id ? updated : a)))
+                        // Switching takes is not only a change of text. The
+                        // server puts back that attempt's script and world
+                        // state, withdraws the memory that hung off the
+                        // coordinate, and rewinds both cursors — none of which
+                        // the panels can see, because they key on
+                        // `actions.length` and the story is the same length it
+                        // was. Same class of bug as a branch switch, which
+                        // `adoptWindow` already bumps this for.
+                        setStateKey((k) => k + 1)
                       }}
                       onError={(message) => setToast({ text: message, isError: true })}
                     />

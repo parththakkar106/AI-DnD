@@ -321,10 +321,11 @@ def test_forking_a_turn_that_is_already_the_story_is_a_no_op(client):
     assert len(_branches(client)) == 1
 
 
-def test_forking_a_single_take_on_another_branch_is_refused(client):
-    """The only way to reach the refusal, and it names the wrong tool: a node
-    with no siblings is not a divergence, so what the caller wants is to switch
-    to the branch it is on."""
+def test_forking_a_live_node_on_another_branch_is_refused(client):
+    """A live node off the path is another line's story, not an attempt going
+    spare — so the refusal names the tool that would actually do it. It used to
+    answer "only one take", which was true of the group and no help at all: the
+    caller does not want another take, it wants the branch this one is on."""
     discarded = _divergent_story(client)
     _fork(client, discarded)
     parent_id = [b for b in _branches(client) if b["parent_branch_id"] is None][0]["id"]
@@ -333,7 +334,9 @@ def test_forking_a_single_take_on_another_branch_is_refused(client):
 
     r = _fork(client, stranded)
     assert r.status_code == 400
-    assert "one take" in r.json()["detail"]
+    assert "another branch" in r.json()["detail"]
+    # And refusing left the tree alone — the bug this guards is a fork that
+    # promotes a sibling on the branch it was called against.
     assert len(_branches(client)) == 2
 
 

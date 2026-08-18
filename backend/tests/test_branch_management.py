@@ -222,6 +222,24 @@ def test_a_name_longer_than_the_column_is_refused(client):
     assert _rename(client, forked, "x" * schemas.BRANCH_NAME_MAX).status_code == 200
 
 
+def test_a_rename_hands_back_the_row_the_listing_would_give(client):
+    """Renaming a branch does not change how many turns are on it.
+
+    `own_actions` was hard-coded to 0 in this response, which only stayed
+    invisible because the panel throws the body away and refetches. Anything
+    that trusted the reply would draw a branch that had just lost its turns.
+    """
+    root, forked = _forked(client)
+    listed = {b["id"]: b for b in _branches(client)}
+
+    renamed = _rename(client, forked, "the cellar").json()
+
+    assert renamed["own_actions"] == listed[forked]["own_actions"]
+    assert renamed["own_actions"] > 0, "the fixture put turns on this branch"
+    assert renamed["depth"] == listed[forked]["depth"]
+    assert renamed["is_head"] == listed[forked]["is_head"]
+
+
 def test_naming_a_branch_of_another_adventure_is_a_404(client):
     root, forked = _forked(client)
     db = SessionLocal()
