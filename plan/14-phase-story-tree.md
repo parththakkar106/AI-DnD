@@ -812,6 +812,17 @@ hand-driving *or* the harness and this took the first. The harness remains the t
 would catch a prepend regression without a person in the loop, and jsdom's lack of layout
 means it would not have settled the 5 px question either way.
 
+**One user-visible change nobody asked for, recorded here because a script
+author would otherwise find it by being surprised.** Moving `_history` onto
+`context_history.story_actions` fixed the branch bug it was there to fix, and
+carried a second change with it: `story_actions` drops blank-text rows, which
+`adventure.actions` did not. So a user script's `history` array and
+`info.actionCount` both got shorter for any adventure holding one. It is the
+right shape — a textless row is bookkeeping with no AI Dungeon counterpart, and
+the prompt never included one — but a script that fires "every N actions" now
+fires on different turns. Not compatible with both readings; this is the one
+chosen.
+
 ### SP8 — Drop the legacy columns
 
 Only once the tree is proven live. Migration drops `index`, `variants`, `variant_index`,

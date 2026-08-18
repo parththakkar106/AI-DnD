@@ -41,6 +41,14 @@ from .. import models
 # separately so a read never has to import the write half.
 NO_DEPTH = -1
 
+# The opening node of an adventure. Depth 0 exists only on the root branch — a
+# fork starts its own nodes after the depth it forked at — so this names one
+# node per adventure, not one per branch. It is also where migration 62 parked
+# every memory written before memories had coordinates, which is why the two
+# places that can retire a memory (`memorybank.forget_node`, and a v1 import
+# with no depth to read) both have to say something about it.
+ROOT_DEPTH = 0
+
 
 def entries_of(branch: models.Branch) -> list[tuple[int, int | None]]:
     """`branch.lineage` as (branch_id, max_depth) pairs, newest first.

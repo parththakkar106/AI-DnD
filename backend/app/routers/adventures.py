@@ -203,6 +203,13 @@ def _latest_narration(db: Session, head_branches: dict[int, int | None]) -> dict
             models.Action.adventure_id.in_(list(head_branches)),
             models.Action.branch_id.in_(branch_ids),
             models.Action.type.in_(NARRATION_TYPES),
+            # Siblings share a depth and the newest of them has the highest id,
+            # so without this the snippet quotes whichever attempt was written
+            # last rather than the one the story tells. Switching back to an
+            # earlier take would leave the index screen quoting the discarded
+            # one — the story on the screen and the story in the list would
+            # disagree, and only the list would be wrong.
+            models.Action.live.is_(True),
         )
         .subquery()
     )
@@ -1150,14 +1157,17 @@ def rename_branch(
     adventure.updated_at = models.utcnow()
     db.commit()
     db.refresh(branch)
-    tip = (
-        db.query(func.max(models.Action.depth))
+    # Both numbers in the one pass, and counted the way `list_branches` counts
+    # them — live rows on this branch. A renamed branch is the same branch, so
+    # the row this hands back has to be the row the panel would have fetched.
+    tip, own = (
+        db.query(func.max(models.Action.depth), func.count(models.Action.id))
         .filter(
             models.Action.adventure_id == adventure.id,
             models.Action.branch_id == branch.id,
             models.Action.live.is_(True),
         )
-        .scalar()
+        .one()
     )
     return schemas.BranchOut(
         id=branch.id,
@@ -1166,7 +1176,7 @@ def rename_branch(
         depth=tip if tip is not None else (
             branch.fork_depth if branch.fork_depth is not None else tree.NO_DEPTH
         ),
-        own_actions=0,
+        own_actions=own,
         is_head=(branch.id == adventure.head_branch_id),
         name=branch.name,
         created_at=branch.created_at,
@@ -1342,8 +1352,26 @@ def fork_from_attempt(
     # attempt alone on its branch: a client that repeats the call — a double
     # click, a retried request — must get the same answer, not a complaint that
     # the turn it just forked has nothing to fork to.
-    if action.live and action.branch_id == adventure.head_branch_id:
-        return current_window(db, adventure)
+    if action.live:
+        # A live node already *is* what its coordinate says, so there is no
+        # attempt here to take. On the path being read that is simply a no-op,
+        # and it has to stay one: a client that repeats the call — a double
+        # click, a retried request — must get the same answer, not a complaint
+        # that the turn it just forked has nothing to fork to. Off the path it
+        # is a different line's story, and moving there is a branch switch.
+        #
+        # The membership test is the whole lineage, not `head_branch_id`. A
+        # head borrows its ancestors' turns, so a live node on an ancestor is
+        # already being read; forking it would move the live row off the parent
+        # and promote a sibling in its place, rewriting the story on a branch
+        # nobody asked about *and* on this one, which borrows that depth.
+        if lineage.path_of(db, adventure).contains(action):
+            return current_window(db, adventure)
+        raise HTTPException(
+            400,
+            "That take is already the story on another branch. Switch to that "
+            "branch to read it.",
+        )
     if len(attempts.group(db, action)) < 2:
         raise HTTPException(
             400, "This turn has only one take, so there is nothing to fork to."
@@ -1482,6 +1510,18 @@ def import_adventure(
     # disagrees with itself is a 400 and not a half-imported adventure holding a
     # story with a hole in it.
     story = bundle.plan(payload, version)
+    # Counted again, on what will actually be written. The check above reads the
+    # file's own lists, and in a v1 file a turn is one entry carrying its retries
+    # in a `variants` array — which `plan()` expands into one row per attempt
+    # (SP4 made every attempt a node). So a file of 5,000 turns with ten takes
+    # each passes a 5,000-action cap and writes 50,000 rows, comfortably inside
+    # the 20 MB body limit. `plan()` is pure and the adventure does not exist
+    # yet, so this still costs nothing but the planning.
+    limits.check_bundle_lists(
+        actions=story["nodes"],
+        memories=story["memories"],
+        branches=story["branches"],
+    )
 
     # Raw-dict import bypasses the schemas — clamp strings headed for VARCHAR
     # columns (Postgres enforces the widths; see schemas.py).

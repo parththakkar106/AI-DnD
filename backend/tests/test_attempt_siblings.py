@@ -404,3 +404,53 @@ def test_export_carries_every_attempt_as_its_own_node(client):
     ai_rows = [a for a in rows if a.type == "ai"]
     assert [(a.text, a.live) for a in ai_rows] == [("One.", False), ("Two.", True)]
     assert len({(a.branch_id, a.depth) for a in ai_rows}) == 1
+
+
+def test_a_retry_after_switching_back_files_the_new_attempt_last(client):
+    """The group stays in the order the attempts were made.
+
+    `add_attempt` used to number a new take one past the take it replaced, which
+    is the end of the group only when the story is standing on the newest one.
+    Switch a three-take turn back to the first and retry, and the new attempt
+    collided with take 2 — `renumber` then broke the tie by id and filed it
+    *between* takes 2 and 3, so the pager walked them in an order nobody played.
+    """
+    ScriptedProvider.replies = ["One.", "Two.", "Three.", "Four."]
+    _play(client)
+    _retry(client)
+    _retry(client)
+    assert [a.text for a in _rows(client.adv_id) if a.type == "ai"] == [
+        "One.", "Two.", "Three."]
+
+    live = _page(client)["actions"][-1]
+    r = client.post(
+        f"/api/adventures/{client.adv_id}/actions/{live['id']}/variant",
+        json={"index": 0})
+    assert r.status_code == 200, r.text
+
+    _retry(client)
+    ai = [a for a in _rows(client.adv_id) if a.type == "ai"]
+    assert [a.text for a in ai] == ["One.", "Two.", "Three.", "Four."]
+    assert [a.variant_index for a in ai] == [0, 1, 2, 3]
+    assert attempts.live_in(ai).text == "Four."
+
+
+def test_the_adventure_list_quotes_the_take_the_story_tells(client):
+    """The index screen and the story have to agree.
+
+    Siblings share a depth and the newest of them has the highest id, so a
+    snippet ordered by `(depth, id)` alone quotes whichever attempt was written
+    last — which, after switching back, is the one the player threw away.
+    """
+    ScriptedProvider.replies = ["One.", "Two."]
+    _play(client)
+    _retry(client)
+    live = _page(client)["actions"][-1]
+    assert live["text"] == "Two."
+    client.post(f"/api/adventures/{client.adv_id}/actions/{live['id']}/variant",
+                json={"index": 0})
+
+    listed = client.get("/api/adventures").json()
+    row = [a for a in listed if a["id"] == client.adv_id][0]
+    assert "One." in row["snippet"]
+    assert "Two." not in row["snippet"]
