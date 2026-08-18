@@ -307,22 +307,7 @@ def test_forget_cached_vectors_drops_an_adventure(db, adventure, settings, bank)
 
 # ----------------------------------------------------------------- eviction
 
-def test_eviction_marks_the_least_used(db, adventure, settings):
-    settings.memory_bank_capacity = 2
-    db.commit()
-    keep = add_memory(db, adventure, "used often", (1.0, 0.0, 0.0), use_count=5)
-    also = add_memory(db, adventure, "used sometimes", (0.0, 1.0, 0.0), use_count=3)
-    drop = add_memory(db, adventure, "never used", (0.0, 0.0, 1.0), use_count=0)
-
-    memorybank._evict_over_capacity(adventure, settings, db)
-    db.expire_all()
-
-    assert db.get(models.Memory, drop.id).forgotten is True
-    assert db.get(models.Memory, keep.id).forgotten is False
-    assert db.get(models.Memory, also.id).forgotten is False
-
-
-def test_eviction_breaks_ties_on_recency(db, adventure, settings):
+def test_eviction_marks_the_least_recently_used(db, adventure, settings):
     settings.memory_bank_capacity = 1
     db.commit()
     now = models.utcnow()
@@ -337,6 +322,75 @@ def test_eviction_breaks_ties_on_recency(db, adventure, settings):
 
     assert db.get(models.Memory, stale.id).forgotten is True
     assert db.get(models.Memory, recent.id).forgotten is False
+
+
+def test_eviction_breaks_ties_on_use_count(db, adventure, settings):
+    """Two memories last wanted at the same moment: the one the story has
+    leaned on less goes. Only a tiebreak — ranking on the count first is what
+    used to freeze the bank (see below)."""
+    settings.memory_bank_capacity = 1
+    db.commit()
+    now = models.utcnow()
+    keep = add_memory(db, adventure, "used often", (1.0, 0.0, 0.0), use_count=5)
+    drop = add_memory(db, adventure, "used once", (0.0, 1.0, 0.0), use_count=1)
+    keep.last_used_at = drop.last_used_at = now
+    db.commit()
+
+    memorybank._evict_over_capacity(adventure, settings, db)
+    db.expire_all()
+
+    assert db.get(models.Memory, drop.id).forgotten is True
+    assert db.get(models.Memory, keep.id).forgotten is False
+
+
+def test_a_newborn_is_not_evicted_by_the_bank_it_joins(db, adventure, settings):
+    """The bank used to shut itself. Eviction ranked on use_count first, and a
+    memory written this turn has never been used, so the moment every survivor
+    had been retrieved even once the newborn was the lowest row in the bank and
+    was retired in the same post-turn run that wrote it — before retrieval ever
+    saw it. That state is absorbing: counts only go up, so no memory written
+    after it could ever get in either."""
+    settings.memory_bank_capacity = 3
+    db.commit()
+    now = models.utcnow()
+    established = [
+        add_memory(db, adventure, f"used once {i}", (1.0, 0.0, 0.0),
+                   use_count=1, last_used_at=now - timedelta(minutes=3 - i))
+        for i in range(3)
+    ]
+    newborn = add_memory(db, adventure, "written this turn", (0.0, 1.0, 0.0))
+
+    memorybank._evict_over_capacity(adventure, settings, db)
+    db.expire_all()
+
+    assert db.get(models.Memory, newborn.id).forgotten is False
+    # the least recently used goes instead
+    assert db.get(models.Memory, established[0].id).forgotten is True
+    assert db.get(models.Memory, established[2].id).forgotten is False
+
+
+def test_a_full_bank_still_turns_over(db, adventure, settings):
+    """The same failure seen over several turns: a bank at capacity has to keep
+    taking on what the story is doing now, or the adventure stops remembering
+    anything past the point it filled up."""
+    settings.memory_bank_capacity = 3
+    now = models.utcnow()
+    db.commit()
+    for i in range(3):
+        add_memory(db, adventure, f"opening {i}", (1.0, 0.0, 0.0),
+                   use_count=1, last_used_at=now - timedelta(minutes=10 - i))
+
+    later = []
+    for turn in range(4):
+        later.append(add_memory(db, adventure, f"turn {turn}", (0.0, 1.0, 0.0)))
+        memorybank._evict_over_capacity(adventure, settings, db)
+    db.expire_all()
+
+    active = {m.text for m in db.query(models.Memory).filter(
+        models.Memory.adventure_id == adventure.id,
+        models.Memory.forgotten.is_(False),
+    )}
+    assert active == {"turn 1", "turn 2", "turn 3"}
 
 
 def test_eviction_never_touches_a_pin(db, adventure, settings):
