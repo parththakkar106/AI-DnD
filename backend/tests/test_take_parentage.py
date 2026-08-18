@@ -246,6 +246,45 @@ def test_takes_under_one_parent_do_not_count_takes_under_its_sibling(client):
     assert _group_size(under_c1[0].id) == 2, "C1's line counts only its own two"
 
 
+def _page(client) -> list[dict]:
+    return client.get(f"/api/adventures/{client.adv_id}").json()["actions"]
+
+
+def test_the_page_carries_the_pager_numbers(client):
+    """`2/4` arrives with the page, not from a query per message."""
+    _play(client)
+    _retry(client)
+    _retry(client)
+
+    ai = [a for a in _page(client) if a["type"] == "ai"]
+    assert len(ai) == 1, "one take is on the path; the others are behind it"
+    assert ai[0]["take_count"] == 3
+    assert ai[0]["take_index"] == 2, "the newest take is the one being read"
+
+
+def test_a_turn_nobody_retook_reads_one_of_one(client):
+    _play(client)
+    for action in _page(client):
+        assert action["take_count"] == 1
+        assert action["take_index"] == 0
+
+
+def test_the_pager_still_counts_a_take_that_was_forked_away(client):
+    """The 1/3 case, seen from the wire rather than from `attempts.group`."""
+    _play(client)
+    _retry(client)
+    _retry(client)
+    _play(client, "press on")
+
+    first_take = _ai_rows(client.adv_id)[0]
+    _play(client, "a different way", after_id=first_take.id)
+
+    ai = [a for a in _page(client) if a["id"] == first_take.id]
+    assert ai, "the forked take is what this branch now tells"
+    assert ai[0]["take_count"] == 3
+    assert ai[0]["take_index"] == 0
+
+
 def _take(client, action_id, text):
     return client.post(
         f"/api/adventures/{client.adv_id}/actions/{action_id}/takes",
