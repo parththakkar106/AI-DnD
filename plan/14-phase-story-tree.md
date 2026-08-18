@@ -767,10 +767,31 @@ never been looked at is whether the *screen* re-reads it. On `tools/branch_fixtu
 switching between the two branches moves the World State drawer from **hp 60 to hp 95**
 live, redraws the bar, swaps the story to the other take (`hp -5`, not `hp -40`) and
 repoints Insights at the other path — "History: 5 of 5 actions", carrying the scratch and
-not the beating. The Memory Bank deliberately does *not* change: the drawer is
-adventure-wide so a memory can always be found and deleted, and it is retrieval that is
-path-scoped (`test_memory_nodes.py`). That split is worth stating out loud, because
-"memories did not change when I switched" reads as a bug and is the design.
+not the beating.
+
+**The memory drawer says which memories the model can actually see.** Retrieval has been
+path-scoped since SP3, so a memory on a branch this story never travelled is never sent.
+The drawer still lists the whole bank — hiding rows would leave memories impossible to
+find and delete, in a phase whose rule is that nothing is removed automatically — but
+listing them *alike* was its own lie: it told the player the model remembers something it
+cannot see. `MemoryOut.on_path` marks them, and the row is set back and labelled *another
+branch*. The flag is computed from **the predicate retrieval itself uses**
+(`path_of(...).clause(Memory, unanchored=True)`), not a second spelling of it, because two
+spellings drift and the failure would be a badge claiming the opposite of what the model
+gets. Pinning does not override it — the path clause runs before pinning is considered.
+
+**The relationship is asymmetric, and a test now says so.** A fork borrows its ancestors,
+so a memory written on the parent is on the fork's path too; the reverse is never true.
+Worth knowing before anyone "fixes" it into a symmetric check.
+
+**One known sharp edge, inherited rather than introduced.** A *hand-written* memory has a
+branch but no depth, and `unanchored=True` keeps it whatever the lineage cap says — so
+one typed on the parent follows you onto a fork whose events it may not describe. That is
+SP3's deliberate choice (`test_a_hand_written_memory_is_not_lost_at_the_first_fork`): the
+alternative is a memory vanishing at the first fork after it was typed. Auto-summarized
+memories carry a depth and *are* capped at the fork, so they behave as expected. If this
+ever bites, the fix is to anchor a hand-written memory at the head depth when it is
+created rather than to change the clause.
 
 **The scroll path was driven, and it holds.** Three prepends on the 602-action fixture,
 60 actions and ~16,200 px each. The same DOM node stayed at viewport top 792 → 787 — a

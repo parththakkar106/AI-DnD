@@ -31,9 +31,10 @@ os.environ.pop("DATABASE_URL", None)
 import pytest
 from fastapi import Depends
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from app import auth, limits, models, schemas
-from app.context import cursors
+from app.context import cursors, lineage
 from app.database import Base, SessionLocal, engine, get_db
 from app.main import app
 from app.providers import PromptParts
@@ -344,6 +345,88 @@ def test_deleting_a_branch_clears_a_cursor_that_stood_on_it(client):
 def test_deleting_an_unknown_branch_is_a_404(client):
     root, forked = _forked(client)
     assert _delete(client, forked + 9999).status_code == 404
+
+
+# --------------------------------------------------------- the bank vs a path
+
+def _memories(client) -> list[dict]:
+    r = client.get(f"/api/adventures/{client.adv_id}/memories")
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def _add_memory(client, text):
+    r = client.post(f"/api/adventures/{client.adv_id}/memories", json={"text": text})
+    assert r.status_code == 201, r.text
+    return r.json()["id"]
+
+
+def test_the_drawer_keeps_every_memory_but_says_which_are_off_the_path(client):
+    """Both halves of the split, in one test, because either alone is a bug.
+
+    Listing only the path's memories would leave the rest impossible to find
+    and delete, in a phase whose rule is that nothing is removed automatically.
+    Listing them all *alike* would tell the player the model remembers
+    something that is never retrieved on this branch.
+    """
+    root, forked = _forked(client)
+    on_the_fork = _add_memory(client, "Took the other door.")
+    _switch(client, root)
+    on_the_root = _add_memory(client, "Went the long way instead.")
+
+    listed = {m["id"]: m for m in _memories(client)}
+    assert set(listed) == {on_the_fork, on_the_root}, "the whole bank, always"
+    assert listed[on_the_root]["on_path"] is True
+    assert listed[on_the_fork]["on_path"] is False, "written on a branch we left"
+
+    # And it follows the reader rather than being a property of the memory —
+    # but **asymmetrically**, which is the part worth pinning. A fork borrows
+    # its parent's story, so a memory written on the parent is on the fork's
+    # path too. The reverse is not true: the parent never went down the fork.
+    _switch(client, forked)
+    listed = {m["id"]: m for m in _memories(client)}
+    assert listed[on_the_fork]["on_path"] is True
+    assert listed[on_the_root]["on_path"] is True, "an ancestor's memory is shared"
+
+
+def test_the_off_path_flag_agrees_with_what_retrieval_can_see(client):
+    """The flag has to come from retrieval's own predicate, not a second
+    spelling of it. Two spellings would drift, and the failure mode is a badge
+    claiming the opposite of what the model is actually given."""
+    root, forked = _forked(client)
+    _add_memory(client, "Took the other door.")
+    _switch(client, root)
+    _add_memory(client, "Went the long way instead.")
+
+    db = SessionLocal()
+    try:
+        adventure = db.get(models.Adventure, client.adv_id)
+        visible = {
+            row[0] for row in db.execute(
+                select(models.Memory.id).where(
+                    models.Memory.adventure_id == adventure.id,
+                    lineage.path_of(db, adventure).clause(
+                        models.Memory, unanchored=True
+                    ),
+                )
+            )
+        }
+    finally:
+        db.close()
+
+    flagged = {m["id"] for m in _memories(client) if m["on_path"]}
+    assert flagged == visible
+
+
+def test_a_memory_from_a_deleted_branch_is_gone_from_the_drawer(client):
+    """Not merely off-path — the row goes with the branch, through the cascade."""
+    root, forked = _forked(client)
+    doomed = _add_memory(client, "Took the other door.")
+    _switch(client, root)
+    assert doomed in {m["id"] for m in _memories(client)}
+
+    assert _delete(client, forked).status_code == 204
+    assert doomed not in {m["id"] for m in _memories(client)}
 
 
 # ------------------------------------------------------------------- backup
