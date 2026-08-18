@@ -745,12 +745,32 @@ Five things worth not rediscovering:
   group renumbers whenever an attempt is added, so an ordinal held across that points at
   a different take — the same reason SP4's note called the pager's index match "one line,
   and SP7 removes the pager anyway".
-- **The panel reloaded on the wrong thing, and only a browser could say so.** Its refresh
-  key was `actions.length`. A fork taken from the story column swaps one 60-action window
-  for another 60-action window, so the length never changes, and the panel went on
-  drawing a one-branch tree while the story was already being read on a second. The
-  server was correct throughout; nothing in 396 tests could see it. It keys off the
-  counter `adoptWindow` bumps now.
+- **Four panels reloaded on the wrong thing, and only a browser could say so.**
+  `actions.length` was the refresh key for the Branches panel, the Status drawer
+  (script state), Insights and the Memory Bank. **A branch switch does not change the
+  length of the story** — it changes which story it is. So the Branches panel drew a
+  one-branch tree while the reader was already on a second, Insights showed the prompt
+  for the path just left, and the scoreboard kept the other line's numbers. The server
+  was correct throughout, and nothing in 396 tests could see any of it. All four now key
+  on `${actions.length}:${stateKey}`, and `stateKey` is bumped by `adoptWindow` — the two
+  operations that move the head — plus branch deletion, which removes that branch's
+  memories without a turn being played.
+
+  `tools/branch_fixture.py` exists because of this: it builds two branches of **equal
+  path length**, which is the case `actions.length` cannot distinguish at all. The
+  `--keep` fixture could not have found it, and neither could a fixture whose branches
+  happened to differ in length.
+
+**What a switch puts back was checked end to end, not just server-side.** SP5 already
+proved `restore_state` in `test_switching_restores_the_script_and_world_state`; what had
+never been looked at is whether the *screen* re-reads it. On `tools/branch_fixture.py`,
+switching between the two branches moves the World State drawer from **hp 60 to hp 95**
+live, redraws the bar, swaps the story to the other take (`hp -5`, not `hp -40`) and
+repoints Insights at the other path — "History: 5 of 5 actions", carrying the scratch and
+not the beating. The Memory Bank deliberately does *not* change: the drawer is
+adventure-wide so a memory can always be found and deleted, and it is retrieval that is
+path-scoped (`test_memory_nodes.py`). That split is worth stating out loud, because
+"memories did not change when I switched" reads as a bug and is the design.
 
 **The scroll path was driven, and it holds.** Three prepends on the 602-action fixture,
 60 actions and ~16,200 px each. The same DOM node stayed at viewport top 792 → 787 — a
