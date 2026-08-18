@@ -254,6 +254,12 @@ class ActionCreate(BaseModel):
     after_id: int | None = None
 
 
+class TakeCreate(BaseModel):
+    """Another take of a turn the player wrote themselves (SP9)."""
+
+    text: ActionText
+
+
 class AdventureOut(ORMModel):
     id: int
     scenario_id: int | None

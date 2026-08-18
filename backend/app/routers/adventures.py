@@ -1422,6 +1422,75 @@ def fork_from_attempt(
         _active_turns.discard(adventure_id)
 
 
+@router.post("/{adventure_id}/actions/{action_id}/takes")
+def add_take(
+    adventure_id: int,
+    action_id: int,
+    payload: schemas.TakeCreate,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: models.User = CurrentUser,
+):
+    """Play one of the player's own turns again, differently.
+
+    The gap SP7 left: a retry gives an AI turn another take, and nothing gave
+    one to the player's own message. So the only way to change something you
+    had written was to overwrite it and lose the story it led to.
+
+    This is the same move a retry makes, on the other kind of node. The turn is
+    played again with new text; whatever the story did with the old one stays
+    exactly where it is, on the line it was written on.
+
+    A branch is needed here for the same reason `fork` needs one — the turn
+    being retaken already has a story after it, and that story was written as a
+    continuation of the old text. `branch_at` leaves the path just before this
+    turn, so the new take is written at the same depth, under the same parent,
+    with the line it is leaving untouched. Nothing below is copied.
+    """
+    adventure = get_adventure_or_404(adventure_id, db, user)
+    limits.rate_limit("turn", request, user)
+    limits.check_row_cap("actions", db, user, adventure=adventure)
+    check_demo_cap(db, user)
+    action = db.get(models.Action, action_id)
+    if action is None or action.adventure_id != adventure_id:
+        raise HTTPException(404, "Action not found")
+    if action.type == "ai":
+        raise HTTPException(
+            400, "Retry gives an AI turn another take; this is for your own."
+        )
+    if action.type not in ("do", "say", "story", "continue"):
+        # The opening is not a turn anybody played, so there is no second way
+        # to have played it. Editing the scenario is what changes it.
+        raise HTTPException(400, "The opening of a story has no other take.")
+    if action.depth is None or not lineage.path_of(db, adventure).contains(action):
+        raise HTTPException(400, "That turn is not on the story you are reading.")
+    acquire_turn_lock(adventure_id)
+    try:
+        # Only when something was played after it. At the tip there is no story
+        # to protect and no branch is owed — the same rule `stand_on` follows.
+        if adventure.head_depth > action.depth:
+            tree.branch_at(db, adventure, action.depth - 1)
+            adventure.updated_at = models.utcnow()
+            db.commit()
+            db.refresh(adventure)
+    except BaseException:
+        _active_turns.discard(adventure_id)
+        raise
+    return StreamingResponse(
+        with_turn_lock(
+            adventure_id,
+            run_player_turn(
+                adventure,
+                db,
+                schemas.ActionCreate(type=action.type, text=payload.text),
+                user,
+            ),
+        ),
+        media_type="text/event-stream",
+        headers=SSE_HEADERS,
+    )
+
+
 def stand_on(
     db: Session, adventure: models.Adventure, action: models.Action
 ) -> None:
