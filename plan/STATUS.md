@@ -78,34 +78,42 @@ needed; nothing requires reading a row of anyone's story.
 
 ## Pick up here
 
-**`plan/14-phase-story-tree.md`, SP4 — variants become sibling nodes.** SP0 (the
-regression contract and the `--rich` fixture), SP1 (schema, migration, and the writer that
-keeps new rows on the tree), SP2 (the branch clause: every action read selects on
-`(branch_id, depth)` through `app/context/lineage.py`) and SP3 (memories hang off nodes,
-and both marks are `(branch_id, depth)` through `app/context/cursors.py`) are done and
-green; **nothing is deployed yet**. SP4 is where retry stops rewriting a row and writes a
-sibling leaf at the same depth instead, where `state_before`/`world_state_before` become
-*after* snapshots, and where the legacy `variants` JSON is migrated into rows. It is also
-the first subphase allowed to move the baseline test, and only for
-`variant_count`/`variant_index` semantics.
+**`plan/14-phase-story-tree.md`, SP6 — export/import v2.** SP0–SP5 are done and green
+(**365 tests**); **nothing is deployed yet**. The tree is complete as a storage model: a
+retry writes a sibling node, continuing from a discarded attempt forks a branch, and
+`GET /branches`, `POST /branches/{id}/switch` and `POST /actions/{id}/fork` are the
+endpoints SP7's tree view will be drawn on. What is left is the bundle format (SP6), the
+frontend (SP7) and dropping the legacy columns (SP8).
+
+**Do SP6 before SP7, and the reason is a live gap.** A forked adventure has no honest v1
+export — the format has one story and there are two — so export currently emits every
+branch's turns interleaved by `index`, which reads as a mangled story. Nobody can reach
+that state through the product yet, because forking has no UI until SP7. That ordering is
+the whole mitigation, so keep it.
 
 **The schema is live in code but not on production.** When this ships, the deploy needs
 one `VACUUM FULL actions;` on the direct (non-`-pooler`) endpoint afterwards — SP1's
-migration rewrites every row, and SP4's does it again. SP3's own migrations touch
-`adventures` only and need no vacuum. See the 144 MB lesson at the top of this file.
+migration rewrites every row and SP4's rewrites it three times more, so **two vacuums are
+owed and one run settles both**. SP3's and SP5's changes touch `adventures` only (SP5 adds
+no migration at all) and need none. See the 144 MB lesson at the top of this file.
 
-Three things to carry into it:
+Three things to carry into SP6:
 
-- **The holdback dies in SP4 and nowhere earlier.** `settled_story_actions` exists
-  because retry mutates a row in place; it survived SP3 as the `- 1` inside
-  `memorybank.settled_after`. Retry stops mutating in SP4, which is the only point at
-  which removing it does not reopen the bug it was written for.
-- **Anything derived attaches to the node that produced it.** A memory now does
-  (`tree.attach_memory`), and so do both marks. A sibling leaf is a node, so whatever SP4
-  derives per attempt hangs off the attempt — and `memorybank.forget_node` is what
-  withdraws it when the node goes.
+- **The `variants` array now exists in exactly one place: the export bundle.** Nothing in
+  the database holds one. `export_adventure` folds each sibling group back into the shape
+  the v1 reader expects, and `_imported_turn` splits one back out into rows. Those two
+  functions are the whole v1 surface, and v2 replaces them.
+- **A v2 bundle needs branches, `live`, and both after-snapshots.** `state_after` /
+  `world_state_after` are what a branch switch restores; a bundle that carried the
+  actions but not the outcomes would import a tree nobody could switch inside.
+  `limits.check_bundle_lists` has to learn about branches too.
 - **Weigh new columns in bytes.** `actions` is already the table that fills the disk.
-  `tests/test_egress.py` has byte ceilings now — they will tell you.
+  `tests/test_egress.py` has byte ceilings — they will tell you.
+
+And one known cost, not a bug: the two memory marks are a single pair on the adventure,
+so switching branches makes the mark on the branch being left unreadable from the new one
+and that ground is summarized again. `Path.depth_on` answers "nothing covered", which is
+the safe direction. Per-branch cursors are the fix if it ever matters.
 
 **After any migration that rewrites `actions`:** one `VACUUM FULL actions;`. That is the
 lesson of the 144 MB above — a rewrite doubles the table and only a `VACUUM FULL` gives
@@ -116,6 +124,56 @@ frontend work lands on the same scroll path that has still never been driven by 
 drive it before rewriting it.
 
 ---
+
+## What happened on 2026-08-18, part two — the tree, SP4 and SP5
+
+A retry stopped rewriting a row, and a story learned to go two ways at once.
+
+**SP4** (branch `sp4-sibling-nodes`, **347 tests green**). Every attempt at a turn is now
+its own node at the same `(branch_id, depth)`, with a `live` flag naming the one the story
+tells; `app/attempts.py` owns the group. The JSON repeating group on `actions.variants` is
+read one last time — by migration 60, which writes it out as the rows it always described
+— and then goes unread. The state snapshots turned around with it: an action carries what
+it left *behind* (`state_after` / `world_state_after`) rather than what it started from,
+because attempts at one turn share a starting position and differ exactly in their
+outcome. **The SP0 baseline and `test_retry_variants.py` both pass unmodified**, which SP4
+was permitted to change and did not need to.
+
+**SP5** (branch `sp5-fork-on-continue`, **365 tests green**). Taking the story down an
+attempt the line has already moved past gives that attempt a branch of its own, forked at
+the depth just before it. One row inserted, one row moved, nothing copied. Measured on a
+40-turn story forked twenty times against the same story flat: 21 branches, 140 rows, an
+80-action story, page load **31,652 B against 31,433 B (1.007×)**, and a branch costs
+**103 B** of cached ancestry.
+
+Four things to carry forward:
+
+- **The holdback was the wrong repair, not an unnecessary one.** The plan said retry would
+  stop mutating rows so nothing could go stale, and that is not quite true — siblings
+  share a coordinate and the mark names the coordinate, so replacing what a turn says
+  still invalidates the memory covering it. What made `settled_story_actions` deletable is
+  that the *right* repair already existed: `forget_node` plus a rewind, which undo and
+  delete have called since SP3. Retry and a sibling switch make it too. **If a mark still
+  needs correcting when the story changes, correct it — do not decline to make the mark.**
+- **A fork must move nothing derived, and the first cut moved it all.** Memories at the
+  forked coordinate were being carried onto the new branch and the cursors re-anchored.
+  Both wrong, for one reason: a memory describes whichever attempt was *live* there, and
+  that one stays on the parent. The right answer needs no code — the lineage caps the
+  parent one depth short of it, so it is simply out of range from the fork, and the block
+  is summarized again from the text this branch actually tells. **When a coordinate system
+  already answers a question, adding bookkeeping to answer it again is how it gets two
+  answers.**
+- **Storage arrangements have invariants too.** A `context_snapshot` is ~163 kB of prompt
+  that every attempt at a turn shares — the JSON list existed to store it once. Giving
+  each sibling row a copy would have made retry a permanent multiplier on the biggest
+  column in the database. So the prompt moves with the `live` flag and a superseded
+  attempt keeps only its own few hundred bytes. Migrating the real 600-action fixture:
+  **700 rows for the same 600-turn story, prompt archive byte-identical at 0.50 MB**, and
+  index/page-load/turn egress unmoved at 1.8 kB / 62.7 kB / 734.8 kB.
+- **`autoflush=False` is set in `database.py`**, and it bit once: `tree.fork` read the
+  sibling group *after* moving the node out of it, so the move had not been written and
+  the node was renumbered straight back into the group it had just left. Anything in this
+  phase that mutates rows and then queries the same rows has to order itself by hand.
 
 ## What happened on 2026-08-18 — the tree, SP3
 
@@ -445,7 +503,7 @@ the SQLite dev parity this codebase protects on purpose).
 
 ```
 cd backend
-.venv/Scripts/python.exe -m pytest tests/          # 330 tests (~55s)
+.venv/Scripts/python.exe -m pytest tests/          # 365 tests (~100s)
 .venv/Scripts/python.exe -m tools.stress_session   # egress report (SQLite)
 
 # Same harness against a real Postgres. The target must be a THROWAWAY database
@@ -474,9 +532,9 @@ the fixture never lands in a commit.
 
 **A fixture to check correctness against, rather than bytes.** The measuring fixture
 leaves every column it does not weigh at its default, which turns out to be exactly the
-set a story tree has to migrate — `state_before`/`world_state_before` NULL on all 600
+set a story tree has to migrate — the per-action state snapshots identical on all 600
 rows, no RPG scenario, no adventure scripts, both cursors 0, and retry attempts whose
-text is byte-identical with `variant_index` always 0. `--rich` fills in those and only
+text is byte-identical with the first always live. `--rich` fills in those and only
 those:
 
 ```

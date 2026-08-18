@@ -25,6 +25,21 @@ mutable list**:
 
 It also resolves the 1NF violation: `variants` as a JSON repeating group becomes rows.
 
+**Scored, 2026-08-18, with SP1–SP5 shipped.** Six of the seven are gone as described.
+The seventh — the one-turn holdback — is gone too, but the reasoning above was wrong
+about *why* it could go: siblings share a coordinate, so replacing what a turn says still
+invalidates the memory covering it. What made it deletable is that the repair already
+existed for undo and delete; see the trap note below. Two rows want a footnote:
+
+- **Editing a summarised action** is still unfixed. The table says editing makes a new
+  node; nothing in SP1–SP5 makes it do that, and no subphase is scheduled to. `PATCH
+  /actions/{id}` still writes over the text in place, and the memory covering it goes
+  stale exactly as before. What *has* changed is that the machinery to fix it now exists
+  — an edit could write a sibling and switch to it, which is a retry the player typed —
+  so it is a small change whenever it is wanted.
+- **The 1NF violation** is resolved in the database. The `variants` array survives in
+  exactly one place: the v1 export bundle, which SP6 replaces.
+
 ## Design decisions (settled 2026-08-16)
 
 - **Full branching, with UI.** Not the "tree schema, no branch picker" middle option —
@@ -107,10 +122,10 @@ number — `A4` and `B4` are alternatives, not duplicates.
 
 ## Open
 
-- **`retry_of.index` reuse** stops the world-state cooldown clock advancing on a re-run of
-  the same turn. Whatever replaces it must preserve that. (Carried into SP5 below.)
-
-Everything else that stood open here was decided on 2026-08-17 — see the next section.
+Nothing. The last item — **`retry_of.index` reuse**, which stopped the world-state
+cooldown clock advancing on a re-run of the same turn — was closed in SP4 by reusing the
+retried node's *depth*, and pinned by a test in SP5. Everything else that stood open here
+was decided on 2026-08-17; see the next section.
 
 ---
 
@@ -160,6 +175,13 @@ even there only where the change is deliberate and named below.
   delete there — deleting it in SP3 reopens the exact bug it was written for. It survived
   SP3 as `memorybank.settled_after`, which is the `- 1` in "how much story is past the
   mark"; that subtraction is the whole of it.
+
+  *Closed in SP4, but not for the stated reason.* Siblings share a coordinate and the
+  mark names the coordinate, so replacing what a turn says still invalidates the memory
+  covering it — retry mutating a row was never the whole of the problem. What let the
+  holdback go is that the right repair (`forget_node` plus a rewind) already existed for
+  undo and delete, and retry and a sibling switch now make it too. **If a mark still
+  needs correcting when the story changes, correct it; do not decline to make the mark.**
 
 ## Subphases
 
@@ -437,6 +459,68 @@ results, including that the gold script is not double-applied. `test_state_rever
 against after-snapshots. Migration test: attempt count preserved, the active attempt
 becomes the head.
 
+**Done, 2026-08-18** (branch `sp4-sibling-nodes`). **347 tests green**, the 330 SP3
+finished with plus 13 in the new `test_attempt_siblings.py`, 8 in `test_tree_migration
+.py`, and three holdback tests deleted. `app/attempts.py` is the new module; migrations
+57–60 add `live`, `state_after`, `world_state_after`, derive the after-snapshots, and
+split every `variants` list into rows.
+
+**The baseline test did not have to move, and neither did `test_retry_variants.py`.**
+Both pass unmodified. SP4 was *permitted* to change the variant-count semantics and it
+turned out nothing observable needed changing — which is the strongest form the pass
+condition could have taken, and worth knowing before SP6 asks for the same licence.
+
+Seven things worth not rediscovering:
+
+- **A coordinate needs a `live` flag, and the branch clause is where it belongs.**
+  Siblings share `(branch_id, depth)`, so the lineage clause alone returns all of them
+  and the story tells itself twice. `Path.clause` adds `Action.live` for actions (and
+  only for actions — memories have no siblings to lose to), which means no read of the
+  story had to learn that retries exist. `app/attempts.py` is the only code that looks
+  past it.
+- **The prompt has to move with the flag or retry becomes a storage multiplier.** A
+  `context_snapshot` is ~163 kB of prompt that every attempt at a turn shares, and the
+  old JSON list existed precisely to store it once. Giving each sibling row a copy would
+  have undone that. So the invariant is: the assembled prompt lives on the attempt the
+  story tells, and a superseded one keeps only its own slices (`ATTEMPT_KEYS` — the
+  world-state delta, the script report, the raw reply). Measured on the pre-tree
+  600-action fixture, migrated: **700 rows for the same 600-turn story, and the prompt
+  archive byte-identical at 0.50 MB.**
+- **The holdback was not quite unnecessary — it was the wrong repair.** The plan said
+  retry stops mutating rows so nothing goes stale. Not so: siblings share a coordinate,
+  and the mark and the memory both name the *coordinate*, so replacing what a turn says
+  still invalidates them. What made the holdback deletable is that the right repair
+  already existed — `forget_node` plus a rewind, which undo and delete have called since
+  SP3. Retry and a sibling switch now call it too, and the holdback (`settled_count`,
+  `settled_after`, `settled_story_actions`, `newest_settled`) is gone. **A memory can
+  now cover the newest action**, which it never could before.
+- **`state_after` needed the same flush guard `place_action` has.** The migration
+  derives every existing row's outcome from the next row's `state_before`, and the tip's
+  from the adventure's live state — but a row written by a fixture or a script after
+  that has nobody to derive from, and the failure mode is undo silently leaving the
+  scoreboard where it was. `tree.stamp_outcome` runs from `before_flush` beside
+  `place_new_nodes`. It writes the truth as of the flush: a writer that changes no state
+  between two nodes leaves the same state behind both.
+- **Switching attempts hands the caller a different row id**, because that is what an
+  attempt being a node *means*. The endpoints are addressed by any attempt at the turn
+  rather than by the live one, so a client holding a stale id still asks about the right
+  turn — but `Play.jsx` matched the reply against `updated.id` and had to be changed to
+  match against the action it asked about. One line, and SP7 removes the pager anyway.
+- **Deleting a turn deletes its attempts.** A discarded attempt is only reachable
+  *through* its coordinate, so leaving it behind would leave a row nothing can name and
+  no read can see. `delete_turn` is that rule in one place, called by undo and by
+  delete-an-action, and it works whichever attempt's id the caller happens to hold.
+- **Siblings share the legacy `index`.** They are takes on one turn, so two rows now
+  carry one index — which `max_action_index` (a maximum, not a count) survives, and
+  which is what lets the v1 export fold a group back into a `variants` array. Export is
+  now the only producer of that shape anywhere; nothing in the database holds one.
+
+Measured: index **1.8 kB**, page load **62.7 kB**, one turn **734.8 kB** — the first two
+byte-identical to SP1's and SP3's, the turn up 1.0 kB (0.14 %) for the `live` column
+across a 346-row read. Migrations 57–59 each rewrite every row of `actions` and 60
+inserts one per discarded attempt, so **this deploy owes a `VACUUM FULL actions;`** —
+the SP1 one is still owed too, and one vacuum after this deploy settles both.
+
 ### SP5 — Fork on continue
 
 Playing past a non-head sibling promotes it: a `branches` row with `parent_branch_id`,
@@ -448,6 +532,74 @@ turn** — the one item still open above.
 correct and capped at each `fork_depth`; both branches read independently; switching
 restores the right script/world state; the cooldown test from `test_worldstate.py`
 still holds across a retry.
+
+**Done, 2026-08-18** (branch `sp5-fork-on-continue`). **365 tests green**, the 347 from
+SP4 plus 18 in `test_branch_forking.py`. `tree.fork` is the whole of it; three endpoints
+(`GET /branches`, `POST /branches/{id}/switch`, `POST /actions/{id}/fork`) are what SP7's
+tree view will be drawn on.
+
+**Where the promotion happens, and why not where the plan said.** The plan put it on the
+*next turn*: attempts stay leaves, and one becomes a branch when a turn is played past
+it. Promoting the winner then means moving a row off the branch the reader is standing
+on and leaving that branch to pick a new node for the depth — it disturbs a story nobody
+asked to change. The same divergence, seen from the other side, promotes the attempt you
+are *leaving for*: `POST /actions/{id}/fork` gives the discarded attempt a branch and
+moves the head to it, and the line it leaves is untouched. Branch count is identical
+either way — one per divergence somebody actually built on — and one of the two never
+rewrites a story in place. Without it, the losing attempts would also be unreachable
+forever, since only the tip can be switched: fork-on-continue alone is a one-way door.
+
+Six things worth not rediscovering:
+
+- **A fork must not move the derived work, and it was about to.** The first cut moved the
+  memories at the forked coordinate onto the new branch and re-anchored the cursors that
+  named it. Both are wrong, and for the same reason: a memory describes whichever attempt
+  was *live* at that coordinate, which is the one staying on the parent. The right answer
+  needs no code at all — the lineage caps the parent at `fork_depth`, one depth short of
+  it, so the memory is simply out of range from the fork, invisible to both the retrieval
+  clause and `Path.depth_on`. The block is summarized again, from the text this branch
+  actually tells.
+- **Depth had to stop following `index`.** They agreed until now. `index` is
+  adventure-wide (the v1 bundle is keyed on it) so on a story forked at depth 6 after
+  twenty turns it hands the next node depth 21 and leaves a fourteen-deep hole in the
+  middle of a path — which every windowing estimate then has to work around.
+  `next_depth` is `head_depth + 1`; `place_action` still derives depth from index for
+  fixtures and imports, which is what that default is for.
+- **Undo has to stop at the fork.** It reads the newest two nodes on the path and deletes
+  the turn they make up — and on a fresh branch the second of them is borrowed from the
+  parent, whose story also contains it. The guard is on the row's own `branch_id`, not on
+  the fork depth, because that is the fact that decides it.
+- **The cooldown clock came out right for free.** It lives in `_meta.last_changed` inside
+  the world state, and the world state is restored from the tip's `world_state_after` on
+  every switch — so each branch carries its own clock without anything knowing there is
+  one. The carried-over open item (a retry must not advance it) is SP4's reused depth,
+  and both are pinned by tests.
+- **The session does not autoflush**, and `fork` read the sibling group after moving the
+  node out of it — so the move had not been written and the node was renumbered straight
+  back into the group it had just left. Read the group first. (`autoflush=False` is
+  deliberate, in `database.py`; anything in this phase that mutates then queries the same
+  rows has to order itself by hand.)
+- **`/fork` has to be idempotent before it is anything else**, because a fork leaves the
+  promoted attempt alone on its branch: a repeated call — a double click, a retried
+  request — would otherwise be told the turn it just forked has nothing to fork to. The
+  "already the story" case is answered before the shape of the turn is looked at.
+
+Measured, on a 40-turn story forked **twenty** times against the same story flat:
+21 branches, 140 rows, an 80-action story, and a page load of **31,652 B against
+31,433 B (1.007×)**. A branch costs **103 B** of id, parent, fork depth and cached
+ancestry. No migration, no vacuum.
+
+**One gap, deliberately left for SP6.** A forked adventure has no honest `v1` export —
+the format has one story and there are two — so export emits every branch's turns
+interleaved by index, which reads as a mangled story rather than as lost data. SP6's v2
+bundle fixes it, and SP7 is where a player first gets any way to fork at all, so the
+order those two ship in is the order that matters.
+
+**Also known, and not fixed here:** the two cursors are one pair on the adventure, so
+switching branches makes the mark on the branch being left unreadable from the new one
+(`Path.depth_on` answers "nothing covered", which is the safe direction — redo the work,
+never skip it). Switching back and forth therefore re-summarizes. Per-branch cursors are
+the fix if it ever matters; it costs AI calls, not correctness.
 
 ### SP6 — Export/import v2
 
@@ -475,6 +627,16 @@ Only once the tree is proven live. Migration drops `index`, `variants`, `variant
 and `summary_cursor`** — unread since SP3, kept only so a rolled-back build resumes from
 a real number. They are on `adventures`, so dropping them costs no vacuum.
 
+**And `actions.state_before` / `world_state_before`**, unwritten and unread since SP4 for
+the same reason: a rolled-back build still finds a real snapshot on every row it wrote
+itself. They are deferred JSON on `actions`, so they go in the same rewrite as `index`
+and cost nothing extra.
+
+`variant_count` and `variant_index` are the two to check before dropping: SP4 left them
+as a maintained cache of the sibling group's shape, because the pager reads both for
+every row of a page and must not pay a query per turn to get them. They are dead only
+once SP7's tree view has replaced the pager.
+
 **Verify:** full suite; egress ceilings; a measured before/after size, aggregates only.
 
 ## Standing constraints
@@ -484,4 +646,6 @@ a real number. They are on `adventures`, so dropping them costs no vacuum.
   fixture. If a real Postgres is ever needed for a write path, it is a throwaway
   database whose name contains `stress`/`scratch`, and it is asked for first.
 - **Any migration that rewrites `actions` is followed by `VACUUM FULL actions;`** on the
-  direct endpoint, not `-pooler`. SP1, SP4 and SP8 each rewrite every row.
+  direct endpoint, not `-pooler`. SP1, SP4 and SP8 each rewrite every row. **As of
+  2026-08-18 two are owed** (SP1's and SP4's) and neither has been deployed; one vacuum
+  after the SP4 deploy settles both.
