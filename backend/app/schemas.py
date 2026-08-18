@@ -244,6 +244,14 @@ class ActionUpdate(BaseModel):
 class ActionCreate(BaseModel):
     type: Literal["do", "say", "story", "continue"]
     text: ActionText = ""
+    # The node this action is played after (SP9). Omitted means "the tip",
+    # which is every ordinary turn.
+    #
+    # Naming a take the story moved past is how a branch gets made: stepping
+    # between takes costs nothing and creates nothing, and the fork happens on
+    # the first thing written below one. That is the only moment the player has
+    # said which line they mean — before it, they were reading.
+    after_id: int | None = None
 
 
 class AdventureOut(ORMModel):
