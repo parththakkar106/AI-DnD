@@ -78,41 +78,43 @@ needed; nothing requires reading a row of anyone's story.
 
 ## Pick up here
 
-**`plan/14-phase-story-tree.md`, SP7 — the frontend.** SP0–SP6 are done and green
-(**381 tests**); **nothing is deployed yet**. The tree is complete everywhere except the
-screen: a retry writes a sibling node, continuing from a discarded attempt forks a branch,
-and a backup carries the whole thing (`ai-dnd-adventure-v2`, with the v1 reader kept so
-existing bundles still import). What is left is the frontend (SP7) and dropping the legacy
-columns (SP8).
+**`plan/14-phase-story-tree.md`, SP8 — drop the legacy columns.** SP0–SP7 are done and
+green (**396 tests**); **nothing is deployed yet**. The tree is complete and reachable: a
+retry writes a sibling node, continuing from a discarded attempt forks a branch, a backup
+carries the whole thing (`ai-dnd-adventure-v2`, v1 reader kept), and as of SP7 there is a
+Branches panel that switches, renames and deletes. What is left of the phase is SP8.
 
-**SP7 is the release gate, and it is unscoped.** `VariantPager` comes out, a spatial tree
-view replaces it, and branch management — switch, rename, delete-with-confirm — is a hard
-dependency rather than a nice-to-have, because nothing auto-prunes and storage otherwise
-grows without limit. `api.js` gains `GET /branches`, `POST /branches/{id}/switch` and
-`POST /actions/{id}/fork`, which SP5 built for exactly this.
+**SP8 is gated on the tree being proven live, and it is not.** It drops `index`,
+`variants`, `variant_index`, `variant_count`, the two legacy cursors and the two
+`*_before` snapshots. `variant_count` / `variant_index` are the ones to watch: SP7's
+attempt chips still read both, so SP8 has to move the chips onto the sibling group before
+it drops them. Everything else has been unread since SP3/SP4.
 
-**Drive the 600-action `--keep` fixture in a browser by hand.** That is SP7's own verify
-line and the standing open gap in this project: the scroll path has never been driven by
-hand and has already hidden one bug. A vitest + jsdom harness covers the prepend
-arithmetic, but jsdom has no layout, so scroll position still needs eyes.
+**Deploy before SP8, not after.** SP7 is a natural release: the phase is usable from the
+screen for the first time, and dropping columns is the one step that cannot be rolled
+back by redeploying the previous build.
 
 **The schema is live in code but not on production.** When this ships, the deploy needs
 one `VACUUM FULL actions;` on the direct (non-`-pooler`) endpoint afterwards — SP1's
 migration rewrites every row and SP4's rewrites it three times more, so **two vacuums are
-owed and one run settles both**. SP3's, SP5's and SP6's changes need none (SP5 and SP6 add
-no migration at all). See the 144 MB lesson at the top of this file.
+owed and one run settles both**. SP3's, SP5's, SP6's and SP7's changes need none (SP5 and
+SP6 add no migration; SP7's migration 61 touches `branches`, a handful of rows per
+adventure). See the 144 MB lesson at the top of this file.
 
-Three things to carry into SP7:
+Three things to carry forward:
 
 - **The bundle is the one thing here a migration can never reach.** `app/bundle.py` owns
   both formats and nothing else knows either. Its rule — *carry what was chosen, never
-  what is derived* — is worth borrowing anywhere else state has to leave the database.
-- **`variant_count` and `variant_index` die with the pager.** SP4 left them as a
-  maintained cache of the sibling group's shape because the pager reads both for every
-  row of a page. They are dead the moment the tree view replaces it, and SP8 drops them.
-- **Nothing on the screen has ever seen a second branch.** Forking has no UI, which is
-  why the v1-export gap could be left open through SP5 — SP7 is the subphase that makes
-  a fork reachable, so it is also the one that makes every branch-shaped bug reachable.
+  what is derived* — decided SP7's naming too: `branches.name` is stored because a player
+  picked it, and an unnamed branch is drawn from its fork depth rather than given a
+  generated label that would go stale when a branch before it is deleted.
+- **A one-line subphase spec can hide a schema change.** SP7 read as "plus the UI for
+  switch/rename/delete"; two of those three had no backend at all. Check the routes exist
+  before believing a spec that says "frontend".
+- **The spatial node map was deliberately not built.** SP7 shipped a rail instead, on the
+  grounds that a per-node map is a second windowing problem at 600 nodes. It is a
+  standalone feature whenever it is wanted, and it needs no new endpoint — the rail and a
+  map both draw from `GET /branches`.
 
 And one known cost, not a bug: the two memory marks are a single pair on the adventure,
 so switching branches makes the mark on the branch being left unreadable from the new one
@@ -121,13 +123,45 @@ the safe direction. Per-branch cursors are the fix if it ever matters.
 
 **After any migration that rewrites `actions`:** one `VACUUM FULL actions;`. That is the
 lesson of the 144 MB above — a rewrite doubles the table and only a `VACUUM FULL` gives
-it back. Phase 14's migration rewrites every row.
+it back. SP8's migration rewrites every row.
 
-**There is a 600-action adventure to test against now** — `--keep`, below. The tree's
-frontend work lands on the same scroll path that has still never been driven by hand, so
-drive it before rewriting it.
+**The scroll gap is closed.** It was driven by hand on the 602-action `--keep` fixture
+during SP7 — three prepends, 5 px of drift, no throw-to-the-end. What is still missing is
+an automated version; see SP7's entry in `plan/14`.
 
 ---
+
+## What happened on 2026-08-18, part four — the tree, SP7
+
+The tree reached the screen. A Branches panel beside Plot/Memory/Scripts/Insights lists
+every line the story has taken and switches, renames or deletes one; under a retried turn
+the ‹ 2/3 › pager is gone, replaced by attempt chips and a **take this path** that forks
+when the story has already moved past. **396 tests green**, 15 new in
+`test_branch_management.py`. Branch `sp7-tree-ui`, migration 61, no vacuum owed by it.
+
+**Three mockups were built before a line of it was written**, because the spec was one
+paragraph and the choice was expensive: a per-node spatial map is a second windowing
+problem at 600 nodes. The rail won on the grounds that it does not delay the verification
+SP7 exists to do, and the map stays available as a later feature at no extra cost — both
+read the same `GET /branches`.
+
+**Two of the three operations SP7 "just needed UI for" did not exist.** `switch` did.
+`rename` had no column and no route; `delete` had no route. Migration 61 adds
+`branches.name`, and the two endpoints came with it.
+
+**One bug, and only a browser could have found it.** The panel refreshed on
+`actions.length`. Forking from the story column swaps a 60-action window for another
+60-action window, so the length never changes — the panel kept drawing a one-branch tree
+while the story was already being read on the second branch. The server was right the
+whole time and no test could see it. That is now three bugs on this frontend found by
+exercising it rather than by testing it, and the second found in a path that had just
+shipped.
+
+**The scroll path is finally driven.** 602-action fixture, three prepends of ~16,200 px
+each: the same DOM node held viewport top 792 → 787, and the view stayed 48,174 px from
+the bottom. PR #2's fix holds. Measuring note worth keeping — the fixture's prose repeats,
+so an anchor matched by *text* finds an older copy of the same sentence and reports a
+16,000 px jump that never happened. Hold the node.
 
 ## What happened on 2026-08-18, part three — the tree, SP6
 
