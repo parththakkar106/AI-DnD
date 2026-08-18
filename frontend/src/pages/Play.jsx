@@ -1091,7 +1091,7 @@ function orderBranches(branches) {
 // Delete is here rather than in some later subphase because nothing prunes a
 // tree on its own — this panel is the first place a fork can be made, so it
 // has to be the first place one can be unmade.
-function BranchPanel({ advId, refreshKey, onSwitched, onError }) {
+function BranchPanel({ advId, refreshKey, onSwitched, onTreeChanged, onError }) {
   const [branches, setBranches] = useState(null)
   const [failed, setFailed] = useState(null)
   const [busyId, setBusyId] = useState(null)
@@ -1113,6 +1113,10 @@ function BranchPanel({ advId, refreshKey, onSwitched, onError }) {
     try {
       await work()
       setTick((t) => t + 1)
+      // Deleting a branch takes its memories with it, and nothing else on the
+      // screen would hear about that — no turn is played, and the story on the
+      // current path does not change by a single action.
+      onTreeChanged()
     } catch (err) {
       onError(err.message)
     } finally {
@@ -1841,8 +1845,12 @@ export default function Play() {
 
   return (
     <div className={`play-layout ${panel ? 'with-panel' : ''}`}>
+      {/* Both drawers read per-adventure state that a branch switch puts back,
+          so neither can key on the story's length alone: switching between two
+          branches whose windows are both full changes every number in here
+          without changing `actions.length` by one. */}
       <WorldStateDrawer advId={id} refreshKey={`${actions.length}:${stateKey}`} />
-      <StatusDrawer advId={id} refreshKey={actions.length} />
+      <StatusDrawer advId={id} refreshKey={`${actions.length}:${stateKey}`} />
       <div className="page play-page">
         <div className="page-header">
           <h1>{adventure.title}</h1>
@@ -2021,7 +2029,10 @@ export default function Play() {
               onWorldStateChanged={() => setStateKey((k) => k + 1)} />
           ) : panel === 'memory' ? (
             <MemoryPanel adventure={adventure} setAdventure={setAdventure}
-              refreshKey={actions.length} />
+              // The bank is adventure-wide, so a switch does not change it —
+              // but deleting a branch deletes the memories that hung off it,
+              // and that happens without a turn being played.
+              refreshKey={`${actions.length}:${stateKey}`} />
           ) : panel === 'scripts' ? (
             <ScriptsPanel advId={id} />
           ) : panel === 'branches' ? (
@@ -2035,11 +2046,16 @@ export default function Play() {
               // the two operations that move the head.
               refreshKey={`${actions.length}:${stateKey}`}
               onSwitched={adoptWindow}
+              onTreeChanged={() => setStateKey((k) => k + 1)}
               onError={(message) => setToast({ text: message, isError: true })}
             />
           ) : (
+            // Insights is the prompt as it would be sent *now*, which is built
+            // from the story on the current path — so of everything on this
+            // screen it is the panel a branch switch changes most completely.
             <InsightsPanel advId={id} inspectActionId={inspectActionId}
-              onClearInspect={() => setInspectActionId(null)} refreshKey={actions.length} />
+              onClearInspect={() => setInspectActionId(null)}
+              refreshKey={`${actions.length}:${stateKey}`} />
           )}
         </div>
       )}

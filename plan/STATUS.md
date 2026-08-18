@@ -149,13 +149,22 @@ read the same `GET /branches`.
 `rename` had no column and no route; `delete` had no route. Migration 61 adds
 `branches.name`, and the two endpoints came with it.
 
-**One bug, and only a browser could have found it.** The panel refreshed on
-`actions.length`. Forking from the story column swaps a 60-action window for another
-60-action window, so the length never changes — the panel kept drawing a one-branch tree
-while the story was already being read on the second branch. The server was right the
-whole time and no test could see it. That is now three bugs on this frontend found by
-exercising it rather than by testing it, and the second found in a path that had just
-shipped.
+**One bug class, in four places, and only a browser could have found it.** The Branches
+panel, the Status drawer, Insights and the Memory Bank all refreshed on `actions.length`
+— and **a branch switch does not change the length of the story, it changes which story
+it is.** So the tree showed one branch while the reader was on a second, Insights showed
+the prompt for the path just left, and the scoreboard kept the other line's numbers. The
+server was right the whole time and no test could see any of it. All four key on
+`${actions.length}:${stateKey}` now.
+
+`backend/tools/branch_fixture.py` was written to catch exactly this and is worth keeping:
+a small bootable adventure with real stats whose **two branches have equal path length**,
+which is the case a length-based key cannot distinguish. `--keep` could not have found
+it. Run it, switch branches, and watch hp go 60 ↔ 95 with the drawer open.
+
+That is now four bugs on this frontend found by exercising it rather than by testing it,
+two of them in paths that had just shipped. The pattern is not subtle any more: **this
+frontend has no test runner, so anything not driven by hand is unverified.**
 
 **The scroll path is finally driven.** 602-action fixture, three prepends of ~16,200 px
 each: the same DOM node held viewport top 792 → 787, and the view stayed 48,174 px from
