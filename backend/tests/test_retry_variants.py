@@ -330,9 +330,12 @@ def test_export_and_import_round_trips_variants(client):
     _play(client)
     _retry(client)
     bundle = client.get(f"/api/adventures/{client.adv_id}/export").json()
-    ai = [a for a in bundle["actions"] if a["type"] == "ai"][0]
-    assert [v["text"] for v in ai["variants"]] == ["One.", "Two."]
-    assert ai["variantIndex"] == 1
+    # SP6: the attempts are nodes in the bundle too, sharing one coordinate,
+    # and `live` says which of them the story tells. The `variants` array
+    # survives only in the v1 *reader* — see the hand-edited bundle below.
+    ai = [a for a in bundle["actions"] if a["type"] == "ai"]
+    assert [(a["text"], a["live"]) for a in ai] == [("One.", False), ("Two.", True)]
+    assert len({(a["branch"], a["depth"]) for a in ai}) == 1
 
     r = client.post("/api/adventures/import", json=bundle)
     assert r.status_code == 201, r.text

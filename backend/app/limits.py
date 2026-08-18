@@ -158,6 +158,11 @@ MAX_SCRIPTS_PER_USER = 200
 MAX_STORY_CARDS_PER_OWNER = 200   # per scenario or adventure
 MAX_MEMORIES_PER_ADVENTURE = 1000
 MAX_ACTIONS_PER_ADVENTURE = 5000
+# Phase 14, SP6. A branch per divergence somebody built a story on, so a tree
+# with more of them than a story has turns is a file, not a game. Import-only
+# for now: forking is a POST that adds one row and has no cap of its own, and
+# the cap that matters there is `MAX_ACTIONS_PER_ADVENTURE` above it.
+MAX_BRANCHES_PER_ADVENTURE = 1000
 
 
 def check_row_cap(
@@ -232,12 +237,13 @@ _BUNDLE_LIST_CAPS = {
     "story_cards": MAX_STORY_CARDS_PER_OWNER,
     "memories": MAX_MEMORIES_PER_ADVENTURE,
     "actions": MAX_ACTIONS_PER_ADVENTURE,
+    "branches": MAX_BRANCHES_PER_ADVENTURE,
 }
 
 
 def check_bundle_lists(**lists) -> None:
     """409 when an import bundle's lists exceed the same caps live creation
-    enforces (kwargs: story_cards=, memories=, actions=)."""
+    enforces (kwargs: story_cards=, memories=, actions=, branches=)."""
     if not auth.MULTI_USER:
         return
     for name, value in lists.items():

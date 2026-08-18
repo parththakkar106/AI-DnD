@@ -451,9 +451,11 @@ def test_memories_are_created_listed_and_deleted(client):
 def test_export_carries_the_whole_story(client):
     """A bundle is a backup: every action, not the window.
 
-    NOTE for SP6 — the `format` assertion below is the one line in this file
-    expected to change, when the bundle becomes `ai-dnd-adventure-v2`. It is
-    correct through SP1-SP5.
+    SP6 changed the format assertion below, as this note said it would. It also
+    changed one more line in this file than the note allowed for — the
+    `variants` array in `test_export_keeps_retry_attempts`, which is the same
+    fact seen from the other side: a bundle that has coordinates has no use for
+    a repeating group. Everything else here still passes unmodified.
     """
     ScriptedProvider.replies = ["One.", "Two."]
     _play(client, "go north")
@@ -462,7 +464,7 @@ def test_export_carries_the_whole_story(client):
     r = client.get(f"/api/adventures/{client.adv_id}/export")
     assert r.status_code == 200, r.text
     bundle = r.json()
-    assert bundle["format"] == "ai-dnd-adventure-v1"
+    assert bundle["format"] == "ai-dnd-adventure-v2"
     assert bundle["title"] == "Cave"
     assert [a["text"] for a in bundle["actions"]] == [
         OPENING, "> You go north.", "One.", "> You go south.", "Two.",
@@ -490,8 +492,9 @@ def test_export_keeps_retry_attempts(client):
     client.post(f"/api/adventures/{client.adv_id}/retry")
 
     bundle = client.get(f"/api/adventures/{client.adv_id}/export").json()
-    ai = [a for a in bundle["actions"] if a["type"] == "ai"][-1]
-    assert [v["text"] for v in ai["variants"]] == ["Attempt one.", "Attempt two."]
+    ai = [a for a in bundle["actions"] if a["type"] == "ai"]
+    assert [a["text"] for a in ai] == ["Attempt one.", "Attempt two."]
+    assert [a["live"] for a in ai] == [False, True]
 
 
 # -------------------------------------------------------------- world state

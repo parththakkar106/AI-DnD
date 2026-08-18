@@ -380,18 +380,25 @@ def test_attempts_module_agrees_with_the_endpoint(client):
         db.close()
 
 
-def test_export_folds_the_group_back_into_one_v1_entry(client):
+def test_export_carries_every_attempt_as_its_own_node(client):
+    """SP6 changed the answer here, and the reason is the whole of that subphase.
+
+    A v1 bundle had one entry per turn and folded the group back into a
+    `variants` array, because the format had nowhere else to put a second take.
+    A v2 bundle has coordinates, so an attempt is a node in the file exactly as
+    it is a node in the database, and `live` says which one is the story.
+    """
     ScriptedProvider.replies = ["One.", "Two."]
     _play(client)
     _retry(client)
 
     bundle = client.get(f"/api/adventures/{client.adv_id}/export").json()
     ai = [a for a in bundle["actions"] if a["type"] == "ai"]
-    assert len(ai) == 1, "a v1 bundle carries one entry per turn, not per attempt"
-    assert [v["text"] for v in ai[0]["variants"]] == ["One.", "Two."]
-    assert ai[0]["variantIndex"] == 1
+    assert [(a["text"], a["live"]) for a in ai] == [("One.", False), ("Two.", True)]
+    assert len({(a["branch"], a["depth"]) for a in ai}) == 1, "one turn, two takes"
+    assert "variants" not in ai[0], "nothing writes the repeating group any more"
 
-    # ...and importing it splits it back out into the rows it describes.
+    # ...and importing it puts the group back exactly as it stood.
     imported = client.post("/api/adventures/import", json=bundle).json()["id"]
     rows = _rows(imported)
     ai_rows = [a for a in rows if a.type == "ai"]

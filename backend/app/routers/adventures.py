@@ -9,7 +9,8 @@ from sqlalchemy.orm import Session, load_only, undefer
 from sqlalchemy.orm.attributes import set_committed_value
 
 from .. import (
-    attempts, auth, images, limits, memorybank, models, schemas, tree, worldstate,
+    attempts, auth, bundle, images, limits, memorybank, models, schemas, tree,
+    worldstate,
 )
 from ..context import build_context, cursors
 from ..context import history as context_history
@@ -1303,185 +1304,55 @@ def undo_turn(
 def export_adventure(
     adventure_id: int, db: Session = Depends(get_db), user: models.User = CurrentUser
 ):
-    """Full backup: plot components, story cards, scripts (+state), every action."""
+    """Full backup: plot components, story cards, scripts (+state), the tree.
+
+    The format is `app/bundle.py`'s alone — both versions of it. A backup is the
+    one thing here that outlives the schema, so nothing about its shape is
+    decided at a call site.
+    """
     adv = get_adventure_or_404(adventure_id, db, user)
-    # The one read deliberately left un-pathed: a backup wants the whole
-    # adventure, not the branch its owner happens to be standing on. `index`
-    # orders it because the v1 bundle is a flat list keyed on index and its
-    # reader has no idea branches exist — which is exactly why SP6 replaces the
-    # format rather than quietly widening this query.
-    #
-    # Attempts at one turn share that index (SP4), so the flat list is built by
-    # folding each group back into the `variants` array the format expects.
-    # That array is the *only* remaining producer of the v1 shape: nothing in
-    # the database holds one any more.
-    #
-    # A *forked* adventure has no honest v1 rendering — the format has one
-    # story and there are two — so this emits every branch's turns interleaved
-    # by index, which reads as a mangled story rather than as lost data. SP6's
-    # v2 bundle is what fixes it, and SP7 is where a player first gets a way to
-    # fork at all, so the order those two ship in is the order that matters.
-    exported_actions = (
-        db.query(models.Action)
-        .filter(models.Action.adventure_id == adv.id)
-        .order_by(models.Action.index, models.Action.variant_index, models.Action.id)
-        .all()
-    )
-    turns: list[list[models.Action]] = []
-    for action in exported_actions:
-        if turns and turns[-1][0].index == action.index:
-            turns[-1].append(action)
-        else:
-            turns.append([action])
-    return {
-        "format": "ai-dnd-adventure-v1",
-        "title": adv.title,
-        "memory": adv.memory,
-        "authorsNote": adv.authors_note,
-        "aiInstructions": adv.ai_instructions,
-        "storySummary": adv.story_summary,
-        "scriptState": adv.script_state,
-        "worldState": adv.world_state,
-        "autoSummarize": adv.auto_summarize,
-        "memoryBankEnabled": adv.memory_bank_enabled,
-        # The bundle's coordinate system is a position in the story, and the
-        # cursors are nodes now, so they are counted back into one. A v1 bundle
-        # has to stay readable by builds that never heard of a depth — SP6's v2
-        # format carries the anchors themselves.
-        "memoryCursor": cursors.position_of(adv, cursors.MEMORY.depth(db, adv)),
-        "summaryCursor": cursors.position_of(adv, cursors.SUMMARY.depth(db, adv)),
-        "memories": [
-            {
-                "text": m.text, "pinned": m.pinned, "forgotten": m.forgotten,
-                "sourceStart": m.source_start, "sourceEnd": m.source_end,
-                "useCount": m.use_count,
-            }
-            for m in adv.memories
-        ],
-        "storyCards": [
-            {"type": c.type, "name": c.name, "keys": c.keys, "entry": c.entry, "notes": c.notes}
-            for c in adv.story_cards
-        ],
-        "scripts": [
-            {
-                "position": s.position, "enabled": s.enabled,
-                "name": s.name, "description": s.description,
-                "library": s.library_js, "input": s.input_js,
-                "context": s.context_js, "output": s.output_js,
-            }
-            for s in adv.scripts
-        ],
-        "actions": [_exported_turn(group) for group in turns],
-    }
-
-
-def _exported_turn(group: list[models.Action]) -> dict:
-    """One turn as a v1 bundle entry: the attempt in the story, plus the rest.
-
-    Narration only — a bundle carries no context snapshots, so the per-attempt
-    script/world state a switch would restore isn't there to export either.
-    """
-    live = next((a for a in group if a.live), group[0])
-    return {
-        "index": live.index, "type": live.type, "text": live.text,
-        "reasoning": live.reasoning,
-        "variants": [
-            {"text": a.text, "reasoning": a.reasoning,
-             "createdAt": a.created_at.isoformat() if a.created_at else None}
-            for a in group
-        ] if len(group) > 1 else None,
-        "variantIndex": group.index(live),
-        "createdAt": live.created_at.isoformat(),
-    }
-
-
-def _imported_turn(
-    adventure: models.Adventure, entry: dict, index: int
-) -> list[models.Action]:
-    """A v1 bundle entry as the nodes it describes: one per attempt.
-
-    A bundle's `variants` array is the repeating group SP4 unpacked, so
-    importing one is the same split the migration does — every attempt gets a
-    row at the turn's coordinate, and `variantIndex` picks which is live.
-    Clamped, because a hand-edited bundle can name an attempt its own list
-    doesn't have, and a turn with no live node is a turn no read can see.
-    """
-    kind = str(entry.get("type") or "story")[:20]  # VARCHAR(20)
-    variants = [v for v in (entry.get("variants") or []) if isinstance(v, dict)]
-    if not variants:
-        variants = [{"text": entry["text"], "reasoning": entry.get("reasoning")}]
-    live = min(max(int(entry.get("variantIndex", 0)), 0), len(variants) - 1)
-    rows = []
-    for i, variant in enumerate(variants):
-        text = str(variant.get("text") or "")
-        reasoning = variant.get("reasoning")
-        rows.append(models.Action(
-            adventure_id=adventure.id,
-            index=index,
-            type=kind,
-            text=text,
-            reasoning=str(reasoning) if reasoning else None,
-            live=(i == live),
-            variant_index=i,
-            variant_count=len(variants) if len(variants) > 1 else 0,
-        ))
-    return rows
+    return bundle.export(db, adv)
 
 
 @router.post("/import", response_model=schemas.AdventureOut, status_code=201)
 def import_adventure(
     request: Request,
-    bundle: dict = Body(...),
+    payload: dict = Body(...),
     db: Session = Depends(get_db),
     user: models.User = CurrentUser,
 ):
-    if bundle.get("format") != "ai-dnd-adventure-v1":
-        raise HTTPException(400, "Not an adventure export file (expected format ai-dnd-adventure-v1).")
+    version = bundle.check_format(payload)
     limits.rate_limit("import", request, user)
     limits.check_row_cap("adventures", db, user)
     limits.check_bundle_lists(
-        story_cards=bundle.get("storyCards"),
-        memories=bundle.get("memories"),
-        actions=bundle.get("actions"),
+        story_cards=payload.get("storyCards"),
+        memories=payload.get("memories"),
+        actions=payload.get("actions"),
+        branches=payload.get("branches"),
     )
+    # The tree is checked before the adventure row exists, so a file that
+    # disagrees with itself is a 400 and not a half-imported adventure holding a
+    # story with a hole in it.
+    story = bundle.plan(payload, version)
 
     # Raw-dict import bypasses the schemas — clamp strings headed for VARCHAR
     # columns (Postgres enforces the widths; see schemas.py).
     adventure = models.Adventure(
         user_id=user.id,
-        title=str(bundle.get("title") or "Imported Adventure")[:schemas.NAME_MAX],
-        memory=str(bundle.get("memory") or ""),
-        authors_note=str(bundle.get("authorsNote") or ""),
-        ai_instructions=str(bundle.get("aiInstructions") or ""),
-        story_summary=str(bundle.get("storySummary") or ""),
-        script_state=bundle.get("scriptState") or {},
-        world_state=bundle.get("worldState") or {},
-        auto_summarize=bool(bundle.get("autoSummarize", False)),
-        memory_bank_enabled=bool(bundle.get("memoryBankEnabled", False)),
-        memory_cursor=int(bundle.get("memoryCursor", 0)),
-        summary_cursor=int(bundle.get("summaryCursor", 0)),
+        title=str(payload.get("title") or "Imported Adventure")[:schemas.NAME_MAX],
+        memory=str(payload.get("memory") or ""),
+        authors_note=str(payload.get("authorsNote") or ""),
+        ai_instructions=str(payload.get("aiInstructions") or ""),
+        story_summary=str(payload.get("storySummary") or ""),
+        script_state=payload.get("scriptState") or {},
+        world_state=payload.get("worldState") or {},
+        auto_summarize=bool(payload.get("autoSummarize", False)),
+        memory_bank_enabled=bool(payload.get("memoryBankEnabled", False)),
     )
     db.add(adventure)
     db.flush()
-    # A v1 bundle is a linear story, which is a tree with one branch. SP6's v2
-    # format carries the branches themselves.
-    tree.head_branch(db, adventure)
 
-    for m in bundle.get("memories") or []:
-        if isinstance(m, dict) and str(m.get("text") or "").strip():
-            memory = models.Memory(
-                adventure_id=adventure.id,
-                text=str(m["text"]),
-                pinned=bool(m.get("pinned", False)),
-                forgotten=bool(m.get("forgotten", False)),
-                source_start=m.get("sourceStart"),
-                source_end=m.get("sourceEnd"),
-                use_count=int(m.get("useCount", 0)),
-            )
-            tree.place_memory(db, adventure, memory)
-            db.add(memory)
-
-    for card in bundle.get("storyCards") or []:
+    for card in payload.get("storyCards") or []:
         if isinstance(card, dict):
             db.add(models.StoryCard(
                 adventure_id=adventure.id,
@@ -1492,7 +1363,7 @@ def import_adventure(
                 notes=str(card.get("notes") or ""),
             ))
 
-    for i, s in enumerate(bundle.get("scripts") or []):
+    for i, s in enumerate(payload.get("scripts") or []):
         if isinstance(s, dict):
             db.add(models.AdventureScript(
                 adventure_id=adventure.id,
@@ -1506,21 +1377,14 @@ def import_adventure(
                 output_js=str(s.get("output") or ""),
             ))
 
-    for i, a in enumerate(bundle.get("actions") or []):
-        if isinstance(a, dict) and str(a.get("text") or ""):
-            for action in _imported_turn(adventure, a, int(a.get("index", i))):
-                tree.place_action(db, adventure, action)
-                db.add(action)
+    bundle.write(db, adventure, story)
 
-    # The bundle's cursors are positions in a flat story and the marks are
-    # nodes, so the translation waits until the actions exist — this is the
-    # only moment the two coordinate systems can be lined up against each
-    # other. The legacy columns keep the numbers the bundle gave: they are what
-    # a rolled-back build would read.
+    # The anchors and the legacy counts are the same boundary in two coordinate
+    # systems, and lining them up needs the actions queryable — this is the only
+    # moment both exist.
     db.flush()
     db.expire(adventure, ["actions"])
-    cursors.anchor_at_position(adventure, cursors.MEMORY, adventure.memory_cursor)
-    cursors.anchor_at_position(adventure, cursors.SUMMARY, adventure.summary_cursor)
+    bundle.settle(db, adventure, story)
 
     db.commit()
     db.refresh(adventure)
