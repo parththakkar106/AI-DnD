@@ -971,9 +971,15 @@ function WorldStateDrawer({ advId, refreshKey }) {
 // A take on this branch is a leaf by construction: whatever was played after
 // this turn was played after the take that is live, so a take that is not live
 // has nothing under it and the transcript simply ends there.
-function TakePager({ advId, action, busy, preview, onPreview, onSwitchedBranch, onError }) {
+function TakePager({
+  advId, action, busy, preview, takesKey, onPreview, onSwitchedBranch, onError,
+}) {
   const [takes, setTakes] = useState(null)
   const [loading, setLoading] = useState(false)
+  // The cached list is only as good as the text in it. Editing a take
+  // rewrites one of those rows, so the page says so and the list is fetched
+  // again on the next step.
+  useEffect(() => { setTakes(null) }, [takesKey])
   const count = action.take_count
   const live = action.take_index
   const current = preview ? preview.index : live
@@ -1513,6 +1519,10 @@ export default function Play() {
   // decision. It becomes one when something is written below it, and that is
   // what `after_id` carries.
   const [preview, setPreview] = useState(null)
+  // Bumped when a take's stored text changes under the pagers, which cache the
+  // list they fetched. Nothing else invalidates it: a take is added by playing
+  // a turn, and that re-reads the whole window anyway.
+  const [takesKey, setTakesKey] = useState(0)
   // The transcript is a window on the story, not the whole of it: the page
   // load brings the newest page and older ones arrive as the reader scrolls
   // up. `total` is the story's real length, for the "N earlier" line.
@@ -1821,8 +1831,16 @@ export default function Play() {
     return () => window.removeEventListener('keydown', onKey)
   })
 
+  // A take-edit belongs to the preview that opened it. Anything that leaves
+  // that take — playing a turn, switching branch — takes the box with it, so
+  // the pending edit goes too rather than being saved onto a take nobody is
+  // looking at any more.
+  useEffect(() => {
+    if (editing?.take && preview?.takeId !== editing.id) setEditing(null)
+  }, [editing, preview])
+
   async function saveEdit() {
-    const { id: actionId, text, fork } = editing
+    const { id: actionId, text, fork, take } = editing
     setEditing(null)
     if (fork) {
       // Not an edit at all: the turn is played again with this text, and what
@@ -1832,7 +1850,17 @@ export default function Play() {
     }
     try {
       const updated = await api.updateAction(id, actionId, text)
-      setActions((prev) => prev.map((a) => (a.id === actionId ? updated : a)))
+      // A take that is only being read is not in `actions` — the row there is
+      // the live one — so the new text goes back into the preview, which is
+      // what that row is drawing. The pager holds the take list it fetched, so
+      // it is told to drop it: stepping away and back would otherwise show the
+      // words before the edit.
+      if (take) {
+        setPreview((p) => (p && p.takeId === actionId ? { ...p, text: updated.text } : p))
+        setTakesKey((k) => k + 1)
+      } else {
+        setActions((prev) => prev.map((a) => (a.id === actionId ? updated : a)))
+      }
     } catch (err) {
       setToast({ text: err.message, isError: true })
     }
@@ -1955,7 +1983,14 @@ export default function Play() {
             // message without making it active (earlier turns only).
             const previewing = preview?.actionId === action.id ? preview : null
 
-            return editing?.id === action.id ? (
+            // The editor stands in for the row it was opened from. That row is
+            // keyed by the live node, so an edit on a take the pager is parked
+            // on carries the take's id instead and is matched through the
+            // preview.
+            const editingHere = editing
+              && (editing.take ? previewing?.takeId === editing.id : editing.id === action.id)
+
+            return editingHere ? (
               <div key={action.id} className="action-edit">
                 <AutoTextarea
                   autoFocus
@@ -1988,6 +2023,7 @@ export default function Play() {
                     action={action}
                     busy={busy}
                     preview={previewing}
+                    takesKey={takesKey}
                     onPreview={setPreview}
                     onSwitchedBranch={adoptWindow}
                     onError={(message) => setToast({ text: message, isError: true })}
@@ -1998,13 +2034,29 @@ export default function Play() {
                         <button title="View the exact prompt that produced this"
                           onClick={() => inspect(action.id)}>🔍</button>
                       )}
+                      {/* Edits the take that is *on screen*, which is not the
+                          live one while the pager is parked on another. The
+                          row is keyed by the live node's id, so seeding from
+                          `action` here opened the editor on take 4/4's text
+                          while 2/4 was being read — and saved over it. A take
+                          is an ordinary row to the edit endpoint, on the path
+                          or not, so its own id is all this needs. */}
                       <button title="Edit"
-                        onClick={() => setEditing({ id: action.id, text: action.text })}>✎</button>
+                        onClick={() => setEditing(previewing
+                          ? { id: previewing.takeId, text: previewing.text, take: true }
+                          : { id: action.id, text: action.text })}>✎</button>
                       {/* Play this turn again, differently. On the AI's turn
                           that is a regeneration; on your own it opens the text
                           so you can say something else. Either way the story
                           that followed the old take is kept, on the line it
-                          was written on. */}
+                          was written on.
+
+                          The id stays the live node's even while another take
+                          is being read: adding a take branches just above the
+                          turn, and the server only accepts a turn that is on
+                          the path. Only the seeded text follows the screen, so
+                          varying the take you are reading starts from its
+                          words. */}
                       {action.type !== 'start' && (
                         <button
                           title={action.type === 'ai'
@@ -2012,7 +2064,11 @@ export default function Play() {
                             : 'Say this differently, and keep both'}
                           onClick={() => (action.type === 'ai'
                             ? addTake(action.id, '')
-                            : setEditing({ id: action.id, text: action.text, fork: true }))}
+                            : setEditing({
+                              id: action.id,
+                              text: previewing ? previewing.text : action.text,
+                              fork: true,
+                            }))}
                         >⑂</button>
                       )}
                       <button title="Delete" onClick={() => removeAction(action.id)}>✕</button>
