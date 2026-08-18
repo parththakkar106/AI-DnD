@@ -189,6 +189,17 @@ class ActionOut(ORMModel):
     # GET /actions/{id}/variants so this payload stays small.
     variant_count: int = 0
     variant_index: int = 0
+    # SP9: the pager. How many takes this turn has, and which one is on screen —
+    # `2/4`. Keyed on the parent, so it counts the takes of *this* turn and not
+    # every node that happens to share a depth, and so it keeps counting them
+    # after one has been forked onto a branch of its own.
+    #
+    # 1/1 for a turn nobody has retaken, which is most of them; the client draws
+    # no pager for a count of one. That is a different convention from
+    # `variant_count`, which says 0 for the same case — those two are the
+    # pre-SP9 pair and SP8 drops them.
+    take_count: int = 1
+    take_index: int = 0
     created_at: datetime
 
 

@@ -44,6 +44,10 @@ ACTION_LIST_COLUMNS = (
     models.Action.world_delta,
     models.Action.variant_count,
     models.Action.variant_index,
+    # SP9: the pager's key. Deferred, it would be a lazy load per row — a query
+    # behind every message on the page, which is the whole thing `load_only`
+    # is here to stop.
+    models.Action.parent_id,
     models.Action.created_at,
 )
 
@@ -420,6 +424,10 @@ def get_adventure(
     """
     adventure = get_adventure_or_404(adventure_id, db, user)
     actions, total, _ = action_window(db, adventure)
+    # Before the window is handed over, because this path serialises through
+    # the relationship rather than building ActionOut itself — the pager
+    # numbers have to be on the rows by the time Pydantic reads them.
+    annotate_takes(db, adventure.id, actions)
     # Hand the response the window as if the relationship had loaded it.
     # `set_committed_value` is the only way to do this safely: assigning
     # `adventure.actions = [...]` marks the collection dirty, and the
@@ -1096,10 +1104,60 @@ def delete_turn(
 # actually built on, and the line being left is never disturbed.
 
 
+def annotate_takes(
+    db: Session, adventure_id: int, actions: list[models.Action]
+) -> list[models.Action]:
+    """Give every action on a page its `2/4` (SP9).
+
+    One query for the whole page, not one per row. The pager needs the shape of
+    each turn's take group, and asking `attempts.group` per action would put a
+    query behind every message on screen — the cost `variant_count` was cached
+    to avoid, and the reason SP8 could not simply drop it and be done.
+
+    Reading the siblings themselves rather than counting them: a group holds a
+    handful of takes, the page is bounded, and the alternative is a second query
+    for the ordinal. Only the id and the ordering keys are fetched, so this
+    stays cheap even where the text does not.
+    """
+    parents = {a.parent_id for a in actions if a.parent_id is not None}
+    if parents:
+        rows = (
+            db.query(
+                models.Action.id,
+                models.Action.parent_id,
+                models.Action.variant_index,
+            )
+            .filter(
+                models.Action.adventure_id == adventure_id,
+                models.Action.parent_id.in_(parents),
+            )
+            .order_by(models.Action.variant_index, models.Action.id)
+            .all()
+        )
+    else:
+        rows = []
+    siblings: dict[int, list[int]] = {}
+    for row_id, parent_id, _ in rows:
+        siblings.setdefault(parent_id, []).append(row_id)
+    for action in actions:
+        ids = siblings.get(action.parent_id) if action.parent_id else None
+        if not ids:
+            # A root node, or a pre-SP9 row the backfill could not place. Its
+            # own only take, which is what it was written as.
+            action.take_count, action.take_index = 1, 0
+            continue
+        action.take_count = len(ids)
+        action.take_index = ids.index(action.id) if action.id in ids else 0
+    return actions
+
+
 def current_window(db: Session, adventure: models.Adventure) -> schemas.ActionPage:
     actions, total, has_more = action_window(db, adventure)
     return schemas.ActionPage(
-        actions=[schemas.ActionOut.model_validate(a) for a in actions],
+        actions=[
+            schemas.ActionOut.model_validate(a)
+            for a in annotate_takes(db, adventure.id, actions)
+        ],
         total=total,
         has_more=has_more,
     )
@@ -1587,7 +1645,10 @@ def undo_turn(
         # to be repeated several times in a row.
         actions, total, has_more = action_window(db, adventure)
         return schemas.ActionPage(
-            actions=[schemas.ActionOut.model_validate(a) for a in actions],
+            actions=[
+            schemas.ActionOut.model_validate(a)
+            for a in annotate_takes(db, adventure.id, actions)
+        ],
             total=total,
             has_more=has_more,
         )
@@ -2140,7 +2201,10 @@ def list_actions(
         db, adventure, before_id=before_id, limit=limit
     )
     return schemas.ActionPage(
-        actions=[schemas.ActionOut.model_validate(a) for a in actions],
+        actions=[
+            schemas.ActionOut.model_validate(a)
+            for a in annotate_takes(db, adventure.id, actions)
+        ],
         total=total,
         has_more=has_more,
     )
