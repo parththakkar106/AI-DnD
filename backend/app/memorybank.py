@@ -507,12 +507,29 @@ def _evict_over_capacity(
     overflow = active - max(1, settings.memory_bank_capacity)
     if overflow <= 0:
         return
+    # Least recently touched goes first, and how often it was used only breaks
+    # a tie. The other way round — use_count first — shut the bank. A memory
+    # written this turn has never been used, so once every survivor had been
+    # retrieved even once the newborn was the lowest row in the bank and was
+    # evicted by the same post-turn run that wrote it, in the pass right after
+    # the one that embedded it. Counts only ever go up, so that state never
+    # ends: the bank an adventure happened to hold when it first filled is the
+    # bank it keeps for good, and everything the story does afterwards is
+    # summarized, marked forgotten, and never ranked.
+    #
+    # Recency does not have that hole, because a new memory carries the newest
+    # timestamp there is — it is the safest row in the bank rather than the
+    # most doomed, and it gets the whole span until something outlives it to
+    # prove itself. Little is given up by demoting the count: a memory that is
+    # genuinely used stays recently-used by being retrieved, so the two only
+    # disagree about memories that mattered once and have not been wanted
+    # since, which is what a full bank should be dropping anyway.
     doomed = db.execute(
         select(models.Memory.id)
         .where(*in_this_bank, models.Memory.pinned.is_(False))
         .order_by(
-            models.Memory.use_count,
             func.coalesce(models.Memory.last_used_at, models.Memory.created_at),
+            models.Memory.use_count,
         )
         .limit(overflow)
     ).scalars().all()
