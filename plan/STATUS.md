@@ -78,12 +78,60 @@ needed; nothing requires reading a row of anyone's story.
 
 ## Pick up here
 
-**`plan/14-phase-story-tree.md`, SP8 — drop the legacy columns.** SP0–SP7 are done and
-green (**409 tests**), and the whole stack is **open as PR #6** (`sp7-tree-ui` → `main`,
-CI green, not merged); **nothing is deployed yet**. The tree is complete and reachable: a
-retry writes a sibling node, continuing from a discarded attempt forks a branch, a backup
-carries the whole thing (`ai-dnd-adventure-v2`, v1 reader kept), and as of SP7 there is a
-Branches panel that switches, renames and deletes. What is left of the phase is SP8.
+**`plan/14-phase-story-tree.md`, SP9 — drive the new pager by hand.** SP7 shipped, PR #6
+merged, and the tree went live on 2026-08-18. It was then driven by hand and **found
+unusable**, which is what SP9 exists to fix; SP9's code is written and green (**426
+tests**) on branch `sp7b-take-pager`, **not merged and not deployed**. What it still needs
+is the thing that found the problem in the first place: a person clicking it.
+
+**What SP7 got wrong, in one line: a chip meant two different things.** At the tip it
+switched; further back it only previewed, and taking that line needed a second button. The
+meaning depended on where the reader was standing. SP9 replaces it with `‹ 2/4 ›` that only
+ever steps, a fork button on every turn, and a rule that decides everything else:
+
+> Reading a take is free and tells the server nothing. **Writing below one is what makes
+> the branch.**
+
+Three things came out of building it that outlive the subphase:
+
+- **Takes are grouped by parent, not by coordinate.** A take forked onto its own branch
+  leaves the (branch, depth) its siblings are at and would read `1/1` beside their `1/3`.
+  `actions.parent_id` fixes it, and is read for nothing else — one indexed lookup, never a
+  walk, no read of the story changed. See SP9 in the phase plan for why the alternative
+  (fork points as nodes rather than depths) was rejected.
+- **`delete_turn` meant "every take at this coordinate".** Once the group spans branches,
+  undo reached onto another branch and deleted a take belonging to a line nobody asked
+  about. Anything that reads a take group and then *writes* needs to ask whether it means
+  the turn or the coordinate.
+- **The adventure GET does not build `ActionOut`.** It hands the window to the
+  relationship with `set_committed_value` and lets Pydantic walk it. Patching every place
+  that builds `ActionOut` therefore misses the one path every page load takes — worth
+  remembering for the next field added to a page.
+
+**The vacuum ran on 2026-08-18, and the projection was wrong in the useful direction.**
+
+```
+before: database 82 MB, actions 69 MB (heap 5184 kB, indexes 184 kB)
+after:  database 71 MB, actions 58 MB (heap 1760 kB, indexes  96 kB)
+```
+
+**11 MB reclaimed**, against a "mid-hundreds of MB" guess. The heap is 1.7 MB and
+everything else is TOAST: `context_snapshot` is 94% of the table and lives out of line, so
+when SP1's and SP4's migrations updated small per-row columns each UPDATE wrote a new heap
+tuple and **reused the existing TOAST pointer** — Postgres only copies a toasted value when
+that value itself changes. Four rewrites bloated a 1.7 MB heap, not a 58 MB table, and the
+arithmetic closes (3.3 heap + 0.1 index + 7.6 TOAST = the 11 MB the database gave back).
+
+**So the rule keeps its cost estimate, not its size.** *After a migration that rewrites
+`actions`, one `VACUUM FULL`* still stands — but bloat scales with **the heap**, whenever
+the migration only touches small columns. The 144 MB incident was different because that
+rewrite genuinely moved every toasted value. **SP8 will be the 144 MB shape, not this one:**
+it drops `variants` and the two `*_before` snapshots, which are the toasted kind. And note
+`ALTER TABLE … DROP COLUMN` is metadata-only in Postgres — it frees nothing by itself, and
+the space comes back only at the next `VACUUM FULL`.
+
+Growth since the previous vacuum (65.0 MB / 52.1 MB) is real: migrations 61–62 and a day
+of play, not bloat.
 
 **SP8 is gated on the tree being proven live, and it is not.** It drops `index`,
 `variants`, `variant_index`, `variant_count`, the two legacy cursors and the two
