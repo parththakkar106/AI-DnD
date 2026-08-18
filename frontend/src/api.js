@@ -110,6 +110,23 @@ export const api = {
       method: 'POST', body: JSON.stringify({ index }),
     }),
 
+  // The story tree (Phase 14). One request draws the whole shape however many
+  // forks there are. The three that change it answer with the story as it now
+  // stands, so the caller replaces its window instead of reloading everything.
+  listBranches: (advId) => request(`/adventures/${advId}/branches`),
+  switchBranch: (advId, branchId) =>
+    request(`/adventures/${advId}/branches/${branchId}/switch`, { method: 'POST' }),
+  renameBranch: (advId, branchId, name) =>
+    request(`/adventures/${advId}/branches/${branchId}`, {
+      method: 'PATCH', body: JSON.stringify({ name }),
+    }),
+  deleteBranch: (advId, branchId) =>
+    request(`/adventures/${advId}/branches/${branchId}`, { method: 'DELETE' }),
+  // Take the story down one attempt. A fork only when it has to be: while the
+  // attempts are still at the tip they are leaves, and the server switches.
+  forkFromAttempt: (advId, actionId) =>
+    request(`/adventures/${advId}/actions/${actionId}/fork`, { method: 'POST' }),
+
   sendAction: (advId, payload, handlers, signal) =>
     streamSSE(`/adventures/${advId}/actions`, payload, handlers, signal),
   retry: (advId, handlers, signal) => streamSSE(`/adventures/${advId}/retry`, {}, handlers, signal),

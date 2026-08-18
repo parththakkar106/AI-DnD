@@ -193,6 +193,10 @@ class ActionOut(ORMModel):
 
 
 class VariantOut(BaseModel):
+    # Since SP4 every attempt is its own node, so each one has an id — and the
+    # client needs it: forking is addressed by the attempt being taken, not by
+    # its ordinal in a group that renumbers whenever one is added.
+    id: int
     index: int
     text: str
     reasoning: str | None = None

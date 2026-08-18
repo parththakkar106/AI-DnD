@@ -426,41 +426,135 @@ button:disabled { opacity: 0.45; cursor: default; transform: none; box-shadow: n
 }
 .story .action-tools button:hover { color: var(--text); }
 
-/* Retry-history pager under an AI beat. Stays quiet until hovered — it's a
-   footnote on the message, not part of the prose. */
-.variant-pager {
+/* The attempts at one AI beat. Stays quiet until hovered — it's a footnote on
+   the message, not part of the prose. */
+.attempts {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
+  flex-wrap: wrap;
   margin-top: 6px;
   font-family: var(--font-ui);
   opacity: 0.45;
   transition: opacity 0.15s;
 }
-.story .action:hover .variant-pager,
-.variant-pager:focus-within { opacity: 1; }
-.variant-pager button {
-  padding: 0 7px;
-  font-size: 0.9rem;
+.story .action:hover .attempts,
+.attempts:focus-within { opacity: 1; }
+.attempt-chip {
+  padding: 3px 10px;
+  font-size: 0.73rem;
   line-height: 1.5;
+  border-radius: 999px;
   color: var(--text-dim);
   background: transparent;
-  border: 1px solid transparent;
+  border: 1px solid var(--border);
 }
-.variant-pager button:hover:not(:disabled) { color: var(--accent-bright); border-color: var(--border); }
-.variant-pager button:disabled { opacity: 0.35; cursor: default; }
-.variant-count {
-  font-size: 0.74rem;
-  color: var(--text-dim);
-  font-variant-numeric: tabular-nums;
-  min-width: 30px;
-  text-align: center;
+.attempt-chip:hover:not(:disabled) { color: var(--text); border-color: var(--border-bright); }
+.attempt-chip[aria-pressed="true"] {
+  color: var(--bg);
+  background: var(--accent);
+  border-color: var(--accent);
+  font-weight: 600;
 }
-.variant-note {
-  margin-left: 4px;
+.attempt-chip:disabled { opacity: 0.35; cursor: default; }
+/* Dashed until hovered: taking a path the story moved past creates a branch,
+   so it should not look like the same weight of click as browsing one. */
+.take-path {
+  padding: 3px 10px;
+  font-size: 0.73rem;
+  line-height: 1.5;
+  color: var(--accent);
+  background: transparent;
+  border: 1px dashed var(--accent-dim);
+}
+.take-path:hover:not(:disabled) { color: var(--accent-bright); border-style: solid; }
+.take-path:disabled { opacity: 0.35; cursor: default; }
+.attempt-note {
+  margin-left: 2px;
   font-size: 0.72rem;
   font-style: italic;
   color: var(--accent-dim);
+}
+
+/* ---------- Branches panel (Phase 14, SP7) ---------- */
+
+.panel-empty {
+  padding: 18px 0;
+  color: var(--text-dim);
+  font-size: 0.85rem;
+}
+.branch-panel { display: flex; flex-direction: column; gap: 14px; }
+.branch-intro {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 0.82rem;
+  line-height: 1.55;
+}
+.branch-list { display: flex; flex-direction: column; gap: 8px; }
+.branch-row {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-input);
+}
+.branch-row.here {
+  border-color: var(--accent-dim);
+  background: rgba(212, 169, 78, 0.07);
+}
+.branch-head { display: flex; align-items: center; gap: 7px; }
+.branch-glyph { color: var(--border-bright); font-size: 0.85rem; }
+.branch-row.here .branch-glyph { color: var(--accent); }
+.branch-name {
+  font-family: var(--font-story);
+  font-size: 0.98rem;
+  color: var(--text);
+}
+.branch-row.here .branch-name { color: var(--accent-bright); }
+.branch-here {
+  margin-left: auto;
+  font-size: 0.64rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent-dim);
+}
+.branch-rename {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 7px;
+  font-family: var(--font-story);
+  font-size: 0.95rem;
+}
+.branch-meta {
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.branch-tools, .branch-confirm { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.branch-tools button, .branch-confirm button {
+  padding: 3px 9px;
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid var(--border);
+}
+.branch-tools button:hover:not(:disabled),
+.branch-confirm button:hover:not(:disabled) {
+  color: var(--accent-bright);
+  border-color: var(--border-bright);
+}
+.branch-tools button.danger:hover:not(:disabled),
+.branch-confirm button.danger:hover:not(:disabled) {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.branch-tools button:disabled, .branch-confirm button:disabled { opacity: 0.4; cursor: default; }
+.branch-confirm span {
+  font-size: 0.74rem;
+  color: var(--danger);
+  flex-basis: 100%;
 }
 
 .action-edit { margin-bottom: 14px; }

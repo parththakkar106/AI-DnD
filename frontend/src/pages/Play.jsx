@@ -952,35 +952,49 @@ function WorldStateDrawer({ advId, refreshKey }) {
   )
 }
 
-// ChatGPT-style ‹ 2/3 › pager under an AI message that has been retried.
+// The attempts at one turn, and the way onto one the story left behind.
 //
-// The last message can actually be switched (the server restores the stats that
-// attempt produced); earlier ones are read-only, because the turns after them
-// were written as a continuation of whatever is active now. Browsing an
-// earlier one is a local preview, so `onPreview` hands the text up to the story
-// renderer rather than the pager drawing it.
-function VariantPager({ advId, action, isLast, busy, previewIndex, onPreview, onSwitched, onError }) {
+// This replaces the ‹ 2/3 › pager, and the reason is not that chips look
+// better: a pager can only step between attempts, and stepping has nothing to
+// say about the thing the tree makes possible — taking a path the story moved
+// past *and keeping both*. Every attempt is its own node now (SP4), so a chip
+// is a node, and "take this path" is a fork (SP5).
+//
+// Two cases behind one control. While the turn is the tip its attempts are
+// still leaves, so choosing one is a switch and the server restores the state
+// that attempt produced. Once the story has moved past, choosing one is a
+// local preview — the turns after it were written as a continuation of
+// whatever is live — and taking it forks a branch.
+function AttemptChips({ advId, action, isLast, busy, preview, onPreview, onSwitched, onForked, onError }) {
   const [variants, setVariants] = useState(null)
   const [loading, setLoading] = useState(false)
   const count = action.variant_count
-  const current = previewIndex ?? action.variant_index
+  const live = action.variant_index
+  const current = preview ? preview.index : live
 
-  async function go(delta) {
-    const next = current + delta
-    if (next < 0 || next >= count || loading || busy) return
+  async function show(next) {
+    if (next === current || loading || busy) return
     setLoading(true)
     try {
       if (isLast) {
         onPreview(null)
         onSwitched(await api.selectVariant(advId, action.id, next))
       } else {
-        // Fetched once per message, then cached — paging back and forth
-        // shouldn't re-hit the server.
+        // Fetched once per message, then cached — moving back and forth
+        // between attempts shouldn't re-hit the server.
         const list = variants || await api.listVariants(advId, action.id)
         if (!variants) setVariants(list)
-        onPreview(next === action.variant_index
-          ? null
-          : { actionId: action.id, index: next, text: list[next].text, reasoning: list[next].reasoning })
+        onPreview(next === live ? null : {
+          actionId: action.id,
+          index: next,
+          // The attempt's own node id. A fork is addressed by the node being
+          // taken, never by its ordinal — the group renumbers whenever an
+          // attempt is added, and an ordinal held across that points at a
+          // different take.
+          attemptId: list[next].id,
+          text: list[next].text,
+          reasoning: list[next].reasoning,
+        })
       }
     } catch (err) {
       onError(err.message)
@@ -989,18 +1003,217 @@ function VariantPager({ advId, action, isLast, busy, previewIndex, onPreview, on
     }
   }
 
+  async function take(attemptId) {
+    if (loading || busy) return
+    setLoading(true)
+    try {
+      const page = await api.forkFromAttempt(advId, attemptId)
+      onPreview(null)
+      onForked(page)
+    } catch (err) {
+      onError(err.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
   return (
-    <div className="variant-pager">
-      <button type="button" onClick={() => go(-1)} disabled={current === 0 || busy || loading}
-        title="Previous attempt">‹</button>
-      <span className="variant-count">{current + 1}/{count}</span>
-      <button type="button" onClick={() => go(1)} disabled={current === count - 1 || busy || loading}
-        title="Next attempt">›</button>
-      {previewIndex !== null && (
-        <span className="variant-note">
-          earlier attempt — the story continued from {action.variant_index + 1}
+    <div className="attempts">
+      {Array.from({ length: count }, (_, i) => (
+        <button
+          key={i}
+          type="button"
+          className="attempt-chip"
+          aria-pressed={i === current}
+          disabled={busy || loading}
+          onClick={() => show(i)}
+          title={i === live ? 'The take the story follows' : `Attempt ${i + 1}`}
+        >
+          take {i + 1}
+        </button>
+      ))}
+      {preview?.attemptId != null && (
+        <button type="button" className="take-path" disabled={busy || loading}
+          onClick={() => take(preview.attemptId)}>
+          take this path ↗
+        </button>
+      )}
+      {preview && (
+        <span className="attempt-note">
+          the story continued from take {live + 1}
         </span>
       )}
+    </div>
+  )
+}
+
+// What an unnamed branch is called.
+//
+// Derived, never stored: a generated name in the column would go stale the
+// moment a branch before it is deleted. A fork depth is a coordinate, so it
+// says the same thing whatever else is thrown away.
+function branchLabel(branch) {
+  if (branch.name) return branch.name
+  if (branch.parent_branch_id === null) return 'The first telling'
+  return `Fork at moment ${branch.fork_depth + 1}`
+}
+
+// Parents before children, each child under the branch it left.
+function orderBranches(branches) {
+  const kids = new Map()
+  for (const b of branches) {
+    const key = b.parent_branch_id
+    if (!kids.has(key)) kids.set(key, [])
+    kids.get(key).push(b)
+  }
+  const out = []
+  const walk = (parentId, indent) => {
+    for (const b of kids.get(parentId) || []) {
+      out.push({ branch: b, indent })
+      walk(b.id, indent + 1)
+    }
+  }
+  // Anything whose parent is missing would otherwise never be walked. That
+  // cannot happen through the API, but a list that silently drops a branch is
+  // the one bug this panel exists to make impossible to have.
+  walk(null, 0)
+  const seen = new Set(out.map((row) => row.branch.id))
+  for (const b of branches) if (!seen.has(b.id)) out.push({ branch: b, indent: 0 })
+  return out
+}
+
+// Every line the story has taken, and the three things you can do to one.
+//
+// Drawn from a single request: `fork_depth` says where a branch leaves its
+// parent and `depth` where it currently ends, so the whole shape is two
+// numbers a row rather than a walk.
+//
+// Delete is here rather than in some later subphase because nothing prunes a
+// tree on its own — this panel is the first place a fork can be made, so it
+// has to be the first place one can be unmade.
+function BranchPanel({ advId, refreshKey, onSwitched, onError }) {
+  const [branches, setBranches] = useState(null)
+  const [failed, setFailed] = useState(null)
+  const [busyId, setBusyId] = useState(null)
+  const [renaming, setRenaming] = useState(null)   // { id, text }
+  const [confirming, setConfirming] = useState(null)
+  const [tick, setTick] = useState(0)
+
+  useEffect(() => {
+    let cancelled = false
+    setFailed(null)
+    api.listBranches(advId)
+      .then((list) => { if (!cancelled) setBranches(list) })
+      .catch((err) => { if (!cancelled) setFailed(err.message) })
+    return () => { cancelled = true }
+  }, [advId, refreshKey, tick])
+
+  async function run(branchId, work) {
+    setBusyId(branchId)
+    try {
+      await work()
+      setTick((t) => t + 1)
+    } catch (err) {
+      onError(err.message)
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  const switchTo = (b) => run(b.id, async () => onSwitched(await api.switchBranch(advId, b.id)))
+
+  const saveName = (b) => run(b.id, async () => {
+    await api.renameBranch(advId, b.id, renaming.text)
+    setRenaming(null)
+  })
+
+  const remove = (b) => run(b.id, async () => {
+    await api.deleteBranch(advId, b.id)
+    setConfirming(null)
+  })
+
+  if (failed) return <div className="panel-empty">Couldn’t read the branches — {failed}</div>
+  if (!branches) return <div className="panel-empty">Reading the tree…</div>
+
+  return (
+    <div className="branch-panel">
+      {branches.length === 1 && (
+        <p className="branch-intro">
+          One thread so far. Retry a turn, then take an attempt the story moved
+          past — that is what makes a second one.
+        </p>
+      )}
+      <div className="branch-list">
+        {orderBranches(branches).map(({ branch, indent }) => {
+          const isRenaming = renaming?.id === branch.id
+          const isConfirming = confirming === branch.id
+          const busy = busyId === branch.id
+          return (
+            <div key={branch.id} className={`branch-row ${branch.is_head ? 'here' : ''}`}
+              style={{ marginLeft: indent * 12 }}>
+              <div className="branch-head">
+                <span className="branch-glyph" aria-hidden="true">
+                  {branch.parent_branch_id === null ? '●' : '└'}
+                </span>
+                {isRenaming ? (
+                  <input
+                    className="branch-rename"
+                    autoFocus
+                    maxLength={80}
+                    value={renaming.text}
+                    onChange={(e) => setRenaming({ ...renaming, text: e.target.value })}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') saveName(branch)
+                      if (e.key === 'Escape') setRenaming(null)
+                    }}
+                  />
+                ) : (
+                  <span className="branch-name">{branchLabel(branch)}</span>
+                )}
+                {branch.is_head && <span className="branch-here">reading</span>}
+              </div>
+
+              <div className="branch-meta">
+                {branch.own_actions} of its own
+                {branch.parent_branch_id !== null && ` · forked at moment ${branch.fork_depth + 1}`}
+                {` · ends at ${branch.depth + 1}`}
+              </div>
+
+              {isConfirming ? (
+                <div className="branch-confirm">
+                  <span>Delete this branch and everything forked from it?</span>
+                  <button type="button" className="danger" disabled={busy}
+                    onClick={() => remove(branch)}>Delete</button>
+                  <button type="button" onClick={() => setConfirming(null)}>Keep</button>
+                </div>
+              ) : (
+                <div className="branch-tools">
+                  {!branch.is_head && (
+                    <button type="button" disabled={busy} onClick={() => switchTo(branch)}>Switch</button>
+                  )}
+                  {isRenaming ? (
+                    <>
+                      <button type="button" disabled={busy} onClick={() => saveName(branch)}>Save</button>
+                      <button type="button" onClick={() => setRenaming(null)}>Cancel</button>
+                    </>
+                  ) : (
+                    <button type="button" disabled={busy}
+                      onClick={() => setRenaming({ id: branch.id, text: branch.name || '' })}>
+                      Rename
+                    </button>
+                  )}
+                  {/* The root holds the turns every other branch borrows, and
+                      the server refuses it — so it is not offered. */}
+                  {branch.parent_branch_id !== null && (
+                    <button type="button" className="danger" disabled={busy}
+                      onClick={() => setConfirming(branch.id)}>Delete</button>
+                  )}
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
     </div>
   )
 }
@@ -1307,7 +1520,7 @@ export default function Play() {
   // (currently "Update from scenario"), which no action count would reflect.
   const [stateKey, setStateKey] = useState(0)
   const [inspectActionId, setInspectActionId] = useState(null)
-  // Read-only browsing of an earlier attempt at a past turn (see VariantPager).
+  // Read-only browsing of an earlier attempt at a past turn (see AttemptChips).
   // One at a time; null when every message is showing its active version.
   const [preview, setPreview] = useState(null)
   // The transcript is a window on the story, not the whole of it: the page
@@ -1361,6 +1574,25 @@ export default function Play() {
       })
       .catch(() => navigate('/'))
   }, [id, navigate])
+
+  // Take the story the server just handed back, whole.
+  //
+  // Switching a branch and forking one both answer with the newest window of
+  // the story as it now stands, so there is nothing to merge — the window on
+  // screen belonged to a path that is no longer the one being read. Pinning
+  // back to the bottom is deliberate: a switch lands the reader at the tip of
+  // the line they moved to, which is where the next turn will appear.
+  const adoptWindow = useCallback((page) => {
+    pinnedRef.current = true
+    setPreview(null)
+    setActions(page.actions)
+    setTotal(page.total)
+    setHasMore(page.has_more)
+    // The script and world state come back to what that branch's tip left
+    // behind, so anything drawn from them is now showing another line's
+    // numbers until it re-reads.
+    setStateKey((k) => k + 1)
+  }, [])
 
   // Fetch the page above the one on screen and prepend it.
   //
@@ -1621,6 +1853,8 @@ export default function Play() {
               onClick={() => setPanel(panel === 'memory' ? null : 'memory')}>Memory</button>
             <button className={panel === 'scripts' ? 'active' : ''}
               onClick={() => setPanel(panel === 'scripts' ? null : 'scripts')}>Scripts</button>
+            <button className={panel === 'branches' ? 'active' : ''}
+              onClick={() => setPanel(panel === 'branches' ? null : 'branches')}>Branches</button>
             <button className={panel === 'insights' ? 'active' : ''}
               onClick={() => { setInspectActionId(null); setPanel(panel === 'insights' ? null : 'insights') }}>
               Insights
@@ -1685,13 +1919,14 @@ export default function Play() {
                     <StateChangeChips changes={action.world_changes} />
                   )}
                   {action.type === 'ai' && action.variant_count > 1 && (
-                    <VariantPager
+                    <AttemptChips
                       advId={id}
                       action={action}
                       isLast={i === actions.length - 1}
                       busy={busy}
-                      previewIndex={previewing ? previewing.index : null}
+                      preview={previewing}
                       onPreview={setPreview}
+                      onForked={adoptWindow}
                       onSwitched={(updated) => {
                         // Matched on the action we asked about, not on the one
                         // that came back. Since the story tree made every
@@ -1778,7 +2013,7 @@ export default function Play() {
       {panel && (
         <div className="side-panel">
           <div className="side-panel-header">
-            <h2>{{ plot: 'Plot Components', memory: 'Memory Bank', scripts: 'Scripts', insights: 'Insights' }[panel]}</h2>
+            <h2>{{ plot: 'Plot Components', memory: 'Memory Bank', scripts: 'Scripts', branches: 'Branches', insights: 'Insights' }[panel]}</h2>
             <button onClick={() => setPanel(null)}>✕</button>
           </div>
           {panel === 'plot' ? (
@@ -1789,6 +2024,19 @@ export default function Play() {
               refreshKey={actions.length} />
           ) : panel === 'scripts' ? (
             <ScriptsPanel advId={id} />
+          ) : panel === 'branches' ? (
+            <BranchPanel
+              advId={id}
+              // Not `actions.length` alone. A fork taken from the story column
+              // replaces one window with another of the same size, so the
+              // length is unchanged and the panel would go on showing a tree
+              // with one branch in it while the story is being read on a
+              // second. `stateKey` is bumped by adoptWindow, which is exactly
+              // the two operations that move the head.
+              refreshKey={`${actions.length}:${stateKey}`}
+              onSwitched={adoptWindow}
+              onError={(message) => setToast({ text: message, isError: true })}
+            />
           ) : (
             <InsightsPanel advId={id} inspectActionId={inspectActionId}
               onClearInspect={() => setInspectActionId(null)} refreshKey={actions.length} />

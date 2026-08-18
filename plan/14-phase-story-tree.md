@@ -694,15 +694,75 @@ synthetic user and adventure into the local `backend/data.db` and printed perfec
 numbers, and only the second run tripped over the unique email. Anything importing that
 harness must import it first, and the file now says so where the imports are.
 
-### SP7 — Frontend: full tree visualisation
+### SP7 — Frontend: the tree becomes reachable
 
-`VariantPager` is removed. A spatial tree view replaces it, plus switch, rename and
+`VariantPager` is removed. A branch view replaces it, plus switch, rename and
 delete-with-confirm. `api.js` gains the branch endpoints.
 
 **Verify:** this is where the standing open gap gets closed — **drive the 600-action
 `--keep` fixture in a browser by hand**, on the same scroll path that has never been
 driven and already hid one bug. A vitest + jsdom harness covers the prepend arithmetic;
 jsdom has no layout, so scroll position still needs eyes.
+
+**Done, 2026-08-18** (branch `sp7-tree-ui`). **396 tests green**, the 381 SP6 finished
+with plus 15 in the new `test_branch_management.py`. Driven by hand against the `--keep`
+fixture in Chrome, which is how the one bug below was found.
+
+**Shape chosen: a branch rail, not a spatial node map.** Three mockups were built and
+compared before any of it was written, and the deciding argument was not aesthetic. A
+node map is a second windowing problem — the fixture this subphase must be verified
+against is 600 actions, which is 600 nodes — so building one would have spent SP7 on the
+thing that delays the verification SP7 exists to do. The rail ships now; the map is a
+later feature and costs nothing extra to add, because both draw from the same
+`GET /branches`. The panel sits beside Plot/Memory/Scripts/Insights, which is this app's
+existing idiom for a right-hand rail rather than a new one.
+
+**SP7 was not a frontend-only subphase, and the spec above did not say so.** Of the three
+operations it names, SP5 had built exactly one. `switch` existed; `rename` had no column
+and no route, `delete` had no route at all. So it opens with migration 61
+(`branches.name`), a `PATCH` and a `DELETE` — worth remembering for any future subphase
+whose one-line spec says "plus the UI for X".
+
+Five things worth not rediscovering:
+
+- **A name is stored; a label is derived.** `branches.name` is NULL until somebody
+  chooses one, and the client draws an unnamed branch from its fork depth
+  (`Fork at moment 547`). A generated "branch 4" in the column would be a lie the moment
+  branch 3 is deleted and the ordinals shift under it; a fork depth is a coordinate, and
+  nothing can shift it. The v2 bundle carries the name for exactly the reason SP6 gives
+  for carrying the fork points — it is a decision, not something computed from one.
+- **Refusing to delete the head is only half of it.** The other half is refusing any
+  branch the head was *forked from*: `parent_branch_id` cascades, so deleting an ancestor
+  takes the head with it and leaves `head_branch_id` pointing at a row that is gone. One
+  membership test against the head's own `lineage` covers both, because a lineage already
+  names itself and every branch it borrows from.
+- **A deleted branch's cursor has to be cleared, and the reason is SQLite.** On Postgres
+  a stale branch id simply never resolves. SQLite hands the freed id to the next fork, at
+  which point the anchor resolves onto a branch it has never seen and reports a stretch
+  of story as already summarized — losing it from the memories for good. Same class as
+  the width-mismatch `cosine` returning 0.0: it reports nothing.
+- **`VariantOut` had to grow an `id`.** A fork is addressed by the node being taken. The
+  group renumbers whenever an attempt is added, so an ordinal held across that points at
+  a different take — the same reason SP4's note called the pager's index match "one line,
+  and SP7 removes the pager anyway".
+- **The panel reloaded on the wrong thing, and only a browser could say so.** Its refresh
+  key was `actions.length`. A fork taken from the story column swaps one 60-action window
+  for another 60-action window, so the length never changes, and the panel went on
+  drawing a one-branch tree while the story was already being read on a second. The
+  server was correct throughout; nothing in 396 tests could see it. It keys off the
+  counter `adoptWindow` bumps now.
+
+**The scroll path was driven, and it holds.** Three prepends on the 602-action fixture,
+60 actions and ~16,200 px each. The same DOM node stayed at viewport top 792 → 787 — a
+**5 px drift** across the prepend — and the view stayed 48,174 px from the bottom, so PR
+#2's throw-to-the-end does not reproduce. Console clean. One note for anyone measuring it
+again: the fixture's prose repeats, so an anchor found by matching *text* lands on an
+older copy of the same sentence and reads as a huge jump. Hold the DOM node.
+
+**Still open, deliberately:** no vitest + jsdom harness. The verify line offers
+hand-driving *or* the harness and this took the first. The harness remains the thing that
+would catch a prepend regression without a person in the loop, and jsdom's lack of layout
+means it would not have settled the 5 px question either way.
 
 ### SP8 — Drop the legacy columns
 

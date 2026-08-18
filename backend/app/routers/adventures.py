@@ -963,6 +963,7 @@ def list_variants(
         return []  # never retried: the turn is its own only take
     return [
         schemas.VariantOut(
+            id=row.id,
             index=i,
             text=row.text,
             reasoning=row.reasoning,
