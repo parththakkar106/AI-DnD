@@ -595,7 +595,17 @@ def sse(obj: dict) -> str:
 SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
 
 
-def action_json(action: models.Action) -> dict:
+def action_json(action: models.Action, db: Session | None = None) -> dict:
+    """One action, as the wire sees it.
+
+    `db` is what gives it the pager numbers, and a turn that has just been
+    played must pass it: the take it created is often the *second* at its turn,
+    so the message arrives needing a pager the client cannot draw from a count
+    of one. Without this a retry showed no pager until the page was reloaded —
+    the same trap as the adventure GET, which builds its window a third way.
+    """
+    if db is not None:
+        annotate_takes(db, action.adventure_id, [action])
     return schemas.ActionOut.model_validate(action).model_dump(mode="json")
 
 
@@ -824,7 +834,7 @@ async def _generate_turn(
     db.commit()
     db.refresh(ai_action)
     yield _SAVED
-    yield sse({"type": "done", "action": action_json(ai_action), "script": pipeline.report()})
+    yield sse({"type": "done", "action": action_json(ai_action, db), "script": pipeline.report()})
     # Phase 6: fire-and-forget summarization/embedding (opens its own DB
     # session). Skipped on the demo key — background AI calls would be
     # unmetered spend on the server-funded key.
@@ -845,13 +855,25 @@ async def run_player_turn(
     db: Session,
     payload: schemas.ActionCreate,
     user: models.User,
+    preformatted: bool = False,
 ):
+    """Play a player's turn: their action, then the reply to it.
+
+    `preformatted` says the text already carries the "> You ..." conventions and
+    must be written as it stands. That is the case for another take of a turn
+    the player already played (SP9): the editor is seeded with the stored text,
+    which is the formatted form — the same text plain edit puts in the box and
+    writes back verbatim. Formatting it again gives "> You > You ...".
+    """
     pipeline = ScriptPipeline(adventure, db)
 
     # An empty do/say/story is just a continue.
     if payload.type != "continue" and payload.text.strip():
         # onInput sees the formatted text (as in AI Dungeon: "> You ...").
-        formatted = format_player_input(payload.type, payload.text)
+        formatted = (
+            payload.text.strip() if preformatted
+            else format_player_input(payload.type, payload.text)
+        )
         modified, stop = pipeline.run("input", formatted)
         if not modified.strip():
             yield sse({"type": "error", "detail": "A script's input modifier returned empty text.",
@@ -876,7 +898,7 @@ async def run_player_turn(
         # collection is stale — without this, build_context and next_index for
         # the AI action would not see the player action just saved.
         db.expire(adventure, ["actions"])
-        yield sse({"type": "player", "action": action_json(player_action)})
+        yield sse({"type": "player", "action": action_json(player_action, db)})
         if stop:
             # onInput { stop: true } prevents the AI call.
             yield sse({"type": "stopped", "script": pipeline.report()})
@@ -1558,6 +1580,9 @@ def add_take(
             db,
             schemas.ActionCreate(type=action.type, text=payload.text),
             user,
+            # The client seeded its editor from the stored text, which already
+            # carries the "> You ..." conventions.
+            preformatted=True,
         )
     return StreamingResponse(
         with_turn_lock(adventure_id, stream),

@@ -16,6 +16,7 @@ mean.
 
     python -m pytest tests/test_take_parentage.py -v
 """
+import json
 import os
 import tempfile
 
@@ -262,6 +263,34 @@ def test_the_page_carries_the_pager_numbers(client):
     assert ai[0]["take_index"] == 2, "the newest take is the one being read"
 
 
+def _done_action(response) -> dict:
+    """The action carried by the `done` event of a turn's SSE stream."""
+    for line in response.text.splitlines():
+        if not line.startswith("data: "):
+            continue
+        event = json.loads(line[len("data: "):])
+        if event.get("type") == "done":
+            return event["action"]
+    raise AssertionError("no done event in the stream")
+
+
+def test_the_streamed_action_carries_the_pager_too(client):
+    """Found by driving it, not by testing it.
+
+    A retry's reply *is* the second take of its turn, so it arrives needing a
+    pager. The stream builds its own ActionOut and so missed the annotation:
+    the pager appeared only once the page was reloaded, which is exactly the
+    moment nobody reloads.
+    """
+    _play(client)
+    r = client.post(f"/api/adventures/{client.adv_id}/retry")
+    assert r.status_code == 200, r.text
+
+    action = _done_action(r)
+    assert action["take_count"] == 2, "the take that just landed knows it has a sibling"
+    assert action["take_index"] == 1
+
+
 def test_a_turn_nobody_retook_reads_one_of_one(client):
     _play(client)
     for action in _page(client):
@@ -332,6 +361,27 @@ def test_a_players_own_turn_can_be_played_again(client):
     assert "smash the door instead" in blob
     assert "open the door" not in blob, "the new take replaces it on this line"
     assert "press on" not in blob, "what followed the old text stays behind"
+
+
+def test_a_retaken_player_turn_is_not_formatted_twice(client):
+    """Found by driving it: "> You > You open the door."
+
+    The editor is seeded from the stored text, which is already the formatted
+    form — the same text plain edit puts in the box and writes back verbatim.
+    Running it through the formatter again doubles the prefix.
+    """
+    _play(client, "open the door")
+    _play(client, "press on")
+
+    first = _user_rows(client.adv_id)[0]
+    assert first.text.startswith("> You "), "stored formatted, which is the premise"
+    r = _take(client, first.id, "> You smash the door instead.")
+    assert r.status_code == 200, r.text
+
+    new_take = [a for a in _user_rows(client.adv_id)
+                if "smash the door instead" in a.text][0]
+    assert new_take.text == "> You smash the door instead."
+    assert "> You > You" not in new_take.text
 
 
 def test_the_line_left_behind_keeps_its_whole_story(client):
