@@ -889,11 +889,43 @@ def create_action(
     limits.check_row_cap("actions", db, user, adventure=adventure)
     check_demo_cap(db, user)
     acquire_turn_lock(adventure_id)
+    try:
+        _move_to_after(db, adventure, payload.after_id)
+    except BaseException:
+        _active_turns.discard(adventure_id)
+        raise
     return StreamingResponse(
         with_turn_lock(adventure_id, run_player_turn(adventure, db, payload, user)),
         media_type="text/event-stream",
         headers=SSE_HEADERS,
     )
+
+
+def _move_to_after(
+    db: Session, adventure: models.Adventure, after_id: int | None
+) -> None:
+    """Put the story where `after_id` says before the turn is played.
+
+    This is the moment a branch is born (SP9). Reading a take the story moved
+    past changes nothing on the server — the player is looking, and looking is
+    free. Writing below one is the first time they have said which line they
+    mean, and that is when the fork happens.
+
+    A take already on the path needs nothing: it is where the story is.
+    """
+    if after_id is None:
+        return
+    node = db.get(models.Action, after_id)
+    if node is None or node.adventure_id != adventure.id:
+        raise HTTPException(404, "Action not found")
+    if node.live and lineage.path_of(db, adventure).contains(node):
+        return
+    if not node.live and len(attempts.group(db, node)) < 2:
+        # Not reachable through the pager, so nothing put the player here.
+        raise HTTPException(400, "That take is not one of this turn's.")
+    stand_on(db, adventure, node)
+    db.commit()
+    db.refresh(adventure)
 
 
 @router.post("/{adventure_id}/retry")
@@ -1381,29 +1413,46 @@ def fork_from_attempt(
         )
     acquire_turn_lock(adventure_id)
     try:
-        newest = last_action(adventure, db)
-        at_the_tip = (
-            newest is not None
-            and newest.branch_id == action.branch_id
-            and newest.depth == action.depth
-        )
-        if at_the_tip:
-            # The story at this coordinate is about to say something else, so
-            # what was derived from it is withdrawn — the same move retry
-            # makes. A fork needs none of that: it leaves the coordinate, and
-            # its memory, exactly where they are (see `tree.fork`).
-            memorybank.forget_node(db, adventure, action)
-            cursors.rewind_all(adventure, action.branch_id, (action.depth or 0) - 1)
-            attempts.make_live(db, adventure, action)
-        else:
-            tree.fork(db, adventure, action)
-            attempts.restore_state(adventure, action)
+        stand_on(db, adventure, action)
         adventure.updated_at = models.utcnow()
         db.commit()
         db.refresh(adventure)
         return current_window(db, adventure)
     finally:
         _active_turns.discard(adventure_id)
+
+
+def stand_on(
+    db: Session, adventure: models.Adventure, action: models.Action
+) -> None:
+    """Make `action` the take the story tells, forking only if it has to.
+
+    Two cases, and the caller does not have to know which. While the turn is
+    still the tip its takes are leaves nobody has built on, so this is a switch
+    and no branch is created. Once the story has moved past, the line being left
+    keeps every turn it has, so the take needs a branch of its own.
+
+    Called from the fork endpoint and from a turn played below a take the story
+    moved past — the same move, once as a request and once as the thing that
+    happens on the way to writing (SP9).
+    """
+    newest = last_action(adventure, db)
+    at_the_tip = (
+        newest is not None
+        and newest.branch_id == action.branch_id
+        and newest.depth == action.depth
+    )
+    if at_the_tip:
+        # The story at this coordinate is about to say something else, so what
+        # was derived from it is withdrawn — the same move retry makes. A fork
+        # needs none of that: it leaves the coordinate, and its memory, exactly
+        # where they are (see `tree.fork`).
+        memorybank.forget_node(db, adventure, action)
+        cursors.rewind_all(adventure, action.branch_id, (action.depth or 0) - 1)
+        attempts.make_live(db, adventure, action)
+    else:
+        tree.fork(db, adventure, action)
+        attempts.restore_state(adventure, action)
 
 
 @router.post("/{adventure_id}/undo", response_model=schemas.ActionPage)
