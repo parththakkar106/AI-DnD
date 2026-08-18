@@ -79,7 +79,8 @@ needed; nothing requires reading a row of anyone's story.
 ## Pick up here
 
 **`plan/14-phase-story-tree.md`, SP8 — drop the legacy columns.** SP0–SP7 are done and
-green (**396 tests**); **nothing is deployed yet**. The tree is complete and reachable: a
+green (**409 tests**), and the whole stack is **open as PR #6** (`sp7-tree-ui` → `main`,
+CI green, not merged); **nothing is deployed yet**. The tree is complete and reachable: a
 retry writes a sibling node, continuing from a discarded attempt forks a branch, a backup
 carries the whole thing (`ai-dnd-adventure-v2`, v1 reader kept), and as of SP7 there is a
 Branches panel that switches, renames and deletes. What is left of the phase is SP8.
@@ -130,6 +131,65 @@ during SP7 — three prepends, 5 px of drift, no throw-to-the-end. What is still
 an automated version; see SP7's entry in `plan/14`.
 
 ---
+
+## What happened on 2026-08-18, part five — the review, and PR #6
+
+The stack went up as **one PR (#6)** rather than seven stacked ones: `sp7-tree-ui` was
+sixteen commits ahead of `main` and **zero behind**, so the chain was already linear.
+Then a `/code-review high` over `origin/main...origin/sp7-tree-ui` raised nine findings,
+answered in commit `00feda8`. **409 tests.** Still not merged, still not deployed.
+
+**The headline finding was rejected, and the reasoning is the part worth keeping.** The
+review called it data loss: a memory the player types lands on the head's coordinate, and
+a retry withdraws every memory at that coordinate, so the note disappears. Reproduced,
+and real. But it is the rule working — *a memory anchored to a node describes that node
+and goes when the node goes* — and the product decision is that this is correct.
+
+**The root node is the exception, and the only one.** Migration 62 parks the entire
+pre-coordinate bank on depth 0, because 0 is the one depth every branch can see. That
+makes the opening node the one place holding memories it never produced, so withdrawing
+it would retire a whole bank in a click. `forget_node` now keeps memories with **no
+`source_start`** at `lineage.ROOT_DEPTH` and still withdraws a summary that genuinely
+ends there — blanket-protecting depth 0 would have rebuilt the dangling-memory problem
+`forget_node` replaced `prune_dangling_memories` to prevent. Both directions are tested.
+
+Eight repairs, of which three are worth remembering as classes rather than as bugs:
+
+- **A sibling group breaks every query that assumed one row per depth.** `_latest_narration`
+  ordered by `(depth desc, id desc)` and got the *newest* attempt, not the live one, so the
+  index screen quoted a take the player had thrown away. Anything ranking actions by
+  coordinate needs `live` in the filter.
+- **A cap has to count what gets written, not what the file says.** The import counted a v1
+  file's turns; each turn expands into a row per saved attempt, so a file inside a
+  5,000-action cap could write 50,000 rows. Re-checked after `plan()`, which is pure and
+  runs before the adventure row exists.
+- **`stateKey`, not `actions.length`, again.** SP7 fixed four components that refreshed on
+  story *length* when a branch switch changes *which story*; the attempt-switch path was
+  missed by the same reasoning, and `select_variant` restores state, withdraws a memory and
+  rewinds both cursors. Still nothing automated can see this: **the frontend has no test
+  runner.**
+
+Also: forking a live node on a borrowed ancestor promoted a sibling on a branch the caller
+never named (now a 400 naming the branch switch, tested); a v1 import gave a typed memory
+no depth, rebuilding the NULL migration 62 exists to remove; a retry after switching back
+filed the new attempt into the middle of its group; `rename_branch` answered
+`own_actions=0`; and `_backfill_cursor_anchors` numbered every action in the table once per
+adventure — a window function the planner cannot push a correlation into, running under
+lock at boot against live Postgres. It is correlated to the adventure being updated now,
+which makes it an index lookup. **That last one is verified on SQLite only** — no
+migration was pointed at Postgres to check it.
+
+**Every new test was checked to fail with its fix reverted** (reverse-apply the app-only
+diff, run, restore). A regression test that passes against the unfixed code is not a
+regression test, and seven of the eight fail as they should; the eighth — "a summary of
+the opening node is still withdrawn" — passes both ways on purpose, because it guards
+against over-correcting the root exception rather than against the original bug.
+
+**One behaviour change recorded rather than repaired.** Moving `_history` onto
+`context_history.story_actions` also dropped blank-text rows from a user script's
+`history` and from `info.actionCount`. It is the right shape — a textless row is this
+app's bookkeeping and never reached a prompt — but a script firing "every N actions" now
+fires on different turns, and no reading is compatible with both. `plan/14` says so.
 
 ## What happened on 2026-08-18, part four — the tree, SP7
 
