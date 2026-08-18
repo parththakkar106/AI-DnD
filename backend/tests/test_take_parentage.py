@@ -246,6 +246,121 @@ def test_takes_under_one_parent_do_not_count_takes_under_its_sibling(client):
     assert _group_size(under_c1[0].id) == 2, "C1's line counts only its own two"
 
 
+def _take(client, action_id, text):
+    return client.post(
+        f"/api/adventures/{client.adv_id}/actions/{action_id}/takes",
+        json={"text": text},
+    )
+
+
+def _path_texts(client) -> list[str]:
+    return [
+        a["text"]
+        for a in client.get(f"/api/adventures/{client.adv_id}").json()["actions"]
+    ]
+
+
+def _user_rows(adv_id) -> list[models.Action]:
+    db = SessionLocal()
+    try:
+        return (
+            db.query(models.Action)
+            .filter(
+                models.Action.adventure_id == adv_id,
+                models.Action.type == "do",
+            )
+            .order_by(models.Action.id)
+            .all()
+        )
+    finally:
+        db.close()
+
+
+def test_a_players_own_turn_can_be_played_again(client):
+    """The gap SP7 left: nothing could give a player's own message another take."""
+    _play(client, "open the door")
+    _play(client, "press on")
+    before = _branch_count(client.adv_id)
+
+    first = _user_rows(client.adv_id)[0]
+    r = _take(client, first.id, "smash the door instead")
+    assert r.status_code == 200, r.text
+
+    assert _branch_count(client.adv_id) == before + 1
+    # Stored text carries the player-action formatting ("> You ..."), so these
+    # are substring checks rather than equality.
+    blob = "\n".join(_path_texts(client))
+    assert "smash the door instead" in blob
+    assert "open the door" not in blob, "the new take replaces it on this line"
+    assert "press on" not in blob, "what followed the old text stays behind"
+
+
+def test_the_line_left_behind_keeps_its_whole_story(client):
+    _play(client, "open the door")
+    _play(client, "press on")
+    first = _user_rows(client.adv_id)[0]
+    _take(client, first.id, "smash the door instead")
+
+    # Everything written on the original line is still there, untouched.
+    kept = "\n".join(a.text for a in _user_rows(client.adv_id))
+    for written in ("open the door", "press on", "smash the door instead"):
+        assert written in kept
+
+
+def test_both_takes_of_a_players_turn_are_one_group(client):
+    _play(client, "open the door")
+    _play(client, "press on")
+    first = _user_rows(client.adv_id)[0]
+    _take(client, first.id, "smash the door instead")
+
+    new_take = [a for a in _user_rows(client.adv_id)
+                if "smash the door instead" in a.text][0]
+    assert _group_size(new_take.id) == 2, "a pager here reads 2/2"
+    assert _group_size(first.id) == 2, "and reads the same from the other take"
+
+
+def test_an_ai_turn_is_refused_by_the_take_endpoint(client):
+    _play(client)
+    ai = _ai_rows(client.adv_id)[0]
+    r = _take(client, ai.id, "nope")
+    assert r.status_code == 400
+    assert "Retry" in r.json()["detail"]
+
+
+def test_the_opening_has_no_other_take(client):
+    db = SessionLocal()
+    try:
+        start = (
+            db.query(models.Action)
+            .filter(models.Action.adventure_id == client.adv_id,
+                    models.Action.type == "start")
+            .one()
+        )
+        start_id = start.id
+    finally:
+        db.close()
+    r = _take(client, start_id, "a different beginning")
+    assert r.status_code == 400
+
+
+def test_retaking_even_the_newest_player_turn_forks(client):
+    """A player turn is never the tip: the reply to it is.
+
+    Retaking the *last* thing the player typed still has a story to protect —
+    the AI answered it, and that answer was written for the old text. So the
+    branch is owed here too, and the guard against forking for nothing only
+    ever fires for a player action with no reply under it.
+    """
+    _play(client, "open the door")
+    before = _branch_count(client.adv_id)
+
+    first = _user_rows(client.adv_id)[0]
+    r = _take(client, first.id, "knock politely")
+    assert r.status_code == 200, r.text
+
+    assert _branch_count(client.adv_id) == before + 1
+
+
 def test_naming_a_take_that_is_already_the_story_just_plays_on(client):
     """`after_id` pointing at the tip is an ordinary turn, and forks nothing."""
     _play(client)

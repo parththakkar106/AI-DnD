@@ -177,6 +177,48 @@ def fork(db: Session, adventure: models.Adventure, node: models.Action) -> model
     return db.get(models.Branch, new_id)
 
 
+def branch_at(
+    db: Session, adventure: models.Adventure, fork_depth: int
+) -> models.Branch:
+    """An empty branch leaving the path being read at `fork_depth`.
+
+    `fork` moves a node that already exists onto a line of its own. This is the
+    same branch with nothing in it yet, for the case where the take that will
+    live there has not been written: the player asking for another take of a
+    turn the story has moved past (SP9). The head lands at `fork_depth`, so the
+    next node written is the new take, at the same depth as the one it is a take
+    of, with the same parent — `place_action` resolves that from the path, and
+    the path now ends at exactly the node the original hangs off.
+
+    The line being left is not touched at all. It keeps its node at that depth,
+    it keeps that node live, and it keeps everything played after it.
+    """
+    parent = head_branch(db, adventure)
+    inherited = [
+        [branch_id, fork_depth if cap is None else min(cap, fork_depth)]
+        for branch_id, cap in lineage.entries_of(parent)
+    ]
+    # Core insert with the lineage written second, for the reason `root_branch`
+    # spells out: this can run inside a flush, and the lineage names its own id.
+    new_id = db.execute(
+        insert(models.Branch).values(
+            adventure_id=adventure.id,
+            parent_branch_id=parent.id,
+            fork_depth=fork_depth,
+            lineage=[],
+            created_at=models.utcnow(),
+        )
+    ).inserted_primary_key[0]
+    db.execute(
+        update(models.Branch)
+        .where(models.Branch.id == new_id)
+        .values(lineage=[[new_id, None]] + inherited)
+    )
+    adventure.head_branch_id = new_id
+    adventure.head_depth = fork_depth
+    return db.get(models.Branch, new_id)
+
+
 def place_action(
     db: Session,
     adventure: models.Adventure,
