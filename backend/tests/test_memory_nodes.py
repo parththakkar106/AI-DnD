@@ -212,18 +212,50 @@ def test_the_lineage_is_read_whole_not_windowed(forked):
     assert "on the shared trunk" in retrieved(adventure, settings)
 
 
-def test_a_hand_written_memory_is_not_lost_at_the_first_fork(forked):
-    """A memory nobody derived summarises no node, so it has a branch but no
-    depth. A capped `depth <= fork` would drop it the moment its branch stopped
-    being the newest entry — a memory vanishing some turns after it was typed,
-    which is exactly the kind of thing nothing reports."""
+def test_a_hand_written_memory_is_anchored_where_it_was_typed(forked):
+    """SP7: a typed memory takes the head, so it obeys the same rule as a
+    summarised one.
+
+    It used to carry no depth, which sounded like "belongs to the whole
+    adventure" and behaved like "cannot be capped at a fork" — it followed the
+    reader onto branches whose story it never described. Anchoring it makes the
+    bank answer one question rather than two.
+    """
     db, adventure, settings, ids = forked
     switch_to(db, adventure, ids["a"], 5)
     typed = add_memory(db, adventure, "typed by hand", None)
-    assert (typed.branch_id, typed.depth) == (ids["a"], None)
+    assert (typed.branch_id, typed.depth) == (ids["a"], 5), "the head it was typed at"
 
-    switch_to(db, adventure, ids["c"], 7)  # fork away from where it was written
-    assert "typed by hand" in retrieved(adventure, settings)
+
+def test_a_typed_memory_survives_a_fork_of_the_ground_it_was_typed_on(forked):
+    """The half of the old behaviour that was right, kept.
+
+    Typed on the shared trunk it is still there after forking away — but
+    because the fork's path goes through that node, not because the memory was
+    exempt from being capped.
+    """
+    db, adventure, settings, ids = forked
+    switch_to(db, adventure, ids["a"], 3)  # the trunk B, and so C, branch from
+    add_memory(db, adventure, "typed on the trunk", None)
+
+    switch_to(db, adventure, ids["c"], 7)
+    assert "typed on the trunk" in retrieved(adventure, settings)
+
+
+def test_a_typed_memory_does_not_follow_you_onto_a_path_it_is_not_on(forked):
+    """And the half that was wrong, fixed.
+
+    A5 is A's own continuation past the point B left it, so it is a sibling of
+    the story C tells — precisely where the `sibling` memory sits, and excluded
+    for precisely the same reason. Typing rather than summarising buys no
+    exemption from the path.
+    """
+    db, adventure, settings, ids = forked
+    switch_to(db, adventure, ids["a"], 5)
+    add_memory(db, adventure, "typed off the path", None)
+
+    switch_to(db, adventure, ids["c"], 7)
+    assert "typed off the path" not in retrieved(adventure, settings)
 
 
 # ------------------------------------------------------------------ the marks

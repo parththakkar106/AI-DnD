@@ -443,7 +443,7 @@ def test_a_memory_on_the_line_left_behind_is_out_of_range_on_the_fork(client):
         path = lineage.path_of(db, adventure)
         visible = db.query(models.Memory).filter(
             models.Memory.adventure_id == adventure.id,
-            path.clause(models.Memory, unanchored=True),
+            path.clause(models.Memory),
         ).all()
         assert visible == [], "a sibling's memory reached this branch"
         # ...and the mark reads as one depth short of it, so the block is due

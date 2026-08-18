@@ -361,38 +361,50 @@ def _add_memory(client, text):
     return r.json()["id"]
 
 
-def test_the_drawer_keeps_every_memory_but_says_which_are_off_the_path(client):
-    """Both halves of the split, in one test, because either alone is a bug.
+def test_a_hand_written_memory_is_anchored_where_it_was_written(client):
+    """It takes the head, so it is a memory *of a story* rather than of an
+    adventure. A NULL depth is a coordinate no fork can cap."""
+    root, forked = _forked(client)
+    memory_id = _add_memory(client, "Took the other door.")
 
-    Listing only the path's memories would leave the rest impossible to find
-    and delete, in a phase whose rule is that nothing is removed automatically.
-    Listing them all *alike* would tell the player the model remembers
-    something that is never retrieved on this branch.
+    db = SessionLocal()
+    try:
+        memory = db.get(models.Memory, memory_id)
+        adventure = db.get(models.Adventure, client.adv_id)
+        assert memory.branch_id == forked, "the branch being read"
+        assert memory.depth is not None, "never NULL again"
+        assert memory.depth == adventure.head_depth
+    finally:
+        db.close()
+
+
+def test_the_drawer_shows_the_path_being_read_and_nothing_else(client):
+    """The bank you can see is the bank the model can see.
+
+    An adventure-wide list would show memories from branches this story never
+    went down — which are never retrieved — and a reader cannot tell those from
+    the ones actually in play.
     """
     root, forked = _forked(client)
     on_the_fork = _add_memory(client, "Took the other door.")
     _switch(client, root)
     on_the_root = _add_memory(client, "Went the long way instead.")
 
-    listed = {m["id"]: m for m in _memories(client)}
-    assert set(listed) == {on_the_fork, on_the_root}, "the whole bank, always"
-    assert listed[on_the_root]["on_path"] is True
-    assert listed[on_the_fork]["on_path"] is False, "written on a branch we left"
+    assert {m["id"] for m in _memories(client)} == {on_the_root}, \
+        "the fork's memory is not on this story"
 
-    # And it follows the reader rather than being a property of the memory —
-    # but **asymmetrically**, which is the part worth pinning. A fork borrows
-    # its parent's story, so a memory written on the parent is on the fork's
-    # path too. The reverse is not true: the parent never went down the fork.
+    # Switching to the fork shows its own memory — and the root's, because a
+    # fork borrows its ancestors up to the point it left them. The relationship
+    # is asymmetric on purpose; the parent never went down the fork.
     _switch(client, forked)
-    listed = {m["id"]: m for m in _memories(client)}
-    assert listed[on_the_fork]["on_path"] is True
-    assert listed[on_the_root]["on_path"] is True, "an ancestor's memory is shared"
+    listed = {m["id"] for m in _memories(client)}
+    assert on_the_fork in listed
+    assert on_the_root not in listed, "written after the fork left this branch"
 
 
-def test_the_off_path_flag_agrees_with_what_retrieval_can_see(client):
-    """The flag has to come from retrieval's own predicate, not a second
-    spelling of it. Two spellings would drift, and the failure mode is a badge
-    claiming the opposite of what the model is actually given."""
+def test_the_drawer_and_retrieval_agree_on_what_is_visible(client):
+    """One predicate, so a memory can never be listed but unretrievable (or the
+    reverse). Two spellings of "on this path" would eventually drift."""
     root, forked = _forked(client)
     _add_memory(client, "Took the other door.")
     _switch(client, root)
@@ -401,32 +413,42 @@ def test_the_off_path_flag_agrees_with_what_retrieval_can_see(client):
     db = SessionLocal()
     try:
         adventure = db.get(models.Adventure, client.adv_id)
-        visible = {
+        retrievable = {
             row[0] for row in db.execute(
                 select(models.Memory.id).where(
                     models.Memory.adventure_id == adventure.id,
-                    lineage.path_of(db, adventure).clause(
-                        models.Memory, unanchored=True
-                    ),
+                    lineage.path_of(db, adventure).clause(models.Memory),
                 )
             )
         }
     finally:
         db.close()
 
-    flagged = {m["id"] for m in _memories(client) if m["on_path"]}
-    assert flagged == visible
+    assert {m["id"] for m in _memories(client)} == retrievable
 
 
-def test_a_memory_from_a_deleted_branch_is_gone_from_the_drawer(client):
-    """Not merely off-path — the row goes with the branch, through the cascade."""
+def test_deleting_a_branch_deletes_the_memories_written_on_it(client):
+    """Not merely out of view — the row goes with the branch, through the
+    cascade. That is what keeps "the drawer shows only your path" from
+    stranding anything: a memory you cannot see is on a branch you can still
+    switch to, and deleting that branch takes it for good."""
     root, forked = _forked(client)
     doomed = _add_memory(client, "Took the other door.")
     _switch(client, root)
-    assert doomed in {m["id"] for m in _memories(client)}
+
+    db = SessionLocal()
+    try:
+        assert db.get(models.Memory, doomed) is not None, "still on its own branch"
+    finally:
+        db.close()
 
     assert _delete(client, forked).status_code == 204
-    assert doomed not in {m["id"] for m in _memories(client)}
+
+    db = SessionLocal()
+    try:
+        assert db.get(models.Memory, doomed) is None, "gone with the branch"
+    finally:
+        db.close()
 
 
 # ------------------------------------------------------------------- backup

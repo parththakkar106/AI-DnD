@@ -208,16 +208,27 @@ def place_memory(
     memory: models.Memory,
     branch: models.Branch | None = None,
 ) -> models.Branch:
-    """Attach a memory to the node that produced it.
+    """Attach a memory to the node it belongs to.
 
     `source_end` is the index of the last action the memory summarises, which is
-    that node's depth. A hand-written memory summarises nothing, so its depth
-    stays NULL and it belongs to the adventure rather than to a path.
+    that node's depth. A hand-written memory summarises nothing, so it takes the
+    head instead: **the story you were reading when you wrote it.**
+
+    That anchor is what makes a memory mean one thing (SP7). Before it, a
+    hand-written memory kept a NULL depth and "belonged to the adventure rather
+    than to a path" — which sounded harmless and meant it followed you onto
+    branches whose story it did not describe, because a NULL cannot be capped at
+    a fork. Every memory now sits at a coordinate, so "is this part of the story
+    I am reading?" has one answer for every row in the bank, and it is the same
+    answer the lineage already gives for nodes.
     """
     branch = branch or head_branch(db, adventure)
     memory.branch_id = branch.id
-    if memory.depth is None and memory.source_end is not None:
-        memory.depth = memory.source_end
+    if memory.depth is None:
+        memory.depth = (
+            memory.source_end if memory.source_end is not None
+            else adventure.head_depth
+        )
     return branch
 
 

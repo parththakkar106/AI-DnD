@@ -261,8 +261,10 @@ class Memory(Base):
     # automatically, and a memory covering a stretch of branch B is invisible
     # from any path that does not go through B.
     #
-    # `depth` is NULL for a hand-written memory, which no node produced; that
-    # reads as "belongs to the adventure, not to a path".
+    # Every memory has one, including a hand-written one: it takes the head at
+    # the moment it was written (SP7). A NULL depth used to mean "belongs to the
+    # adventure, not to a path", which is a category no fork could cap — the
+    # memory followed the reader onto branches whose story it never described.
     branch_id: Mapped[int | None] = mapped_column(
         ForeignKey("branches.id", ondelete="CASCADE"), nullable=True
     )

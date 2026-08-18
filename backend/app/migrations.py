@@ -257,6 +257,15 @@ MIGRATIONS: list[tuple[int, str | dict[str, str]]] = [
     # than one per turn, so unlike SP1's and SP4's this rewrite is a few hundred
     # rows against a few hundred thousand and needs no VACUUM FULL of its own.
     (61, "ALTER TABLE branches ADD COLUMN name VARCHAR(80)"),
+    # Phase 14, SP7 — every memory gets a node. A hand-written memory used to
+    # keep a NULL depth, which no fork could cap, so it followed the reader onto
+    # branches whose story it never described. New ones anchor at the head; the
+    # ones already written land at **depth 0 of the branch they are on**, which
+    # is the only choice that takes nothing away from anybody: 0 is at or before
+    # every fork point, so a memory stays visible from exactly the paths it is
+    # visible from today. Anchoring them at the tip instead would have emptied
+    # them out of every branch forked earlier than they were typed.
+    (62, "UPDATE memories SET depth = 0 WHERE depth IS NULL"),
 ]
 
 LATEST_VERSION = max((v for v, _ in MIGRATIONS), default=1)

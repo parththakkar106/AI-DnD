@@ -229,7 +229,7 @@ async def retrieve_memories(
     catalogue = db.execute(
         select(models.Memory.id, models.Memory.pinned).where(
             models.Memory.adventure_id == adventure.id,
-            lineage.path_of(db, adventure).clause(models.Memory, unanchored=True),
+            lineage.path_of(db, adventure).clause(models.Memory),
             models.Memory.forgotten.is_(False),
             models.Memory.embedded.is_(True),
         )
