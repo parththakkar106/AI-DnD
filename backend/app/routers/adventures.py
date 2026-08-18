@@ -4,7 +4,7 @@ import threading
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from sqlalchemy import func
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, load_only, undefer
 from sqlalchemy.orm.attributes import set_committed_value
 
@@ -1874,7 +1874,7 @@ def action_context(
 def list_memories(
     adventure_id: int, db: Session = Depends(get_db), user: models.User = CurrentUser
 ):
-    get_adventure_or_404(adventure_id, db, user)
+    adventure = get_adventure_or_404(adventure_id, db, user)
     # A query naming its columns, not a walk of `adventure.memories`. The walk
     # is what retrieval used to do, and it is the reason a turn cost megabytes:
     # a relationship load takes whole entities, so it picks up whatever the
@@ -1885,13 +1885,32 @@ def list_memories(
     # the story being played, the drawer manages the bank. Hiding a branch's
     # memories from the drawer would mean memories nobody can find to delete,
     # in a phase whose rule is that nothing is ever removed automatically.
-    return (
+    rows = (
         db.query(models.Memory)
         .options(load_only(*MEMORY_LIST_COLUMNS))
         .filter(models.Memory.adventure_id == adventure_id)
         .order_by(models.Memory.id)
         .all()
     )
+    # ...but listing them alike would be its own lie. A memory on a branch this
+    # story never travelled is never retrieved, so showing it beside one that is
+    # tells the player the model remembers something it cannot see. The ids come
+    # from **the predicate retrieval itself uses**, deliberately: two spellings
+    # of "on this path" would eventually disagree, and the failure would be a
+    # badge that says the opposite of what the model gets.
+    on_path = {
+        row[0] for row in db.execute(
+            select(models.Memory.id).where(
+                models.Memory.adventure_id == adventure_id,
+                lineage.path_of(db, adventure).clause(
+                    models.Memory, unanchored=True
+                ),
+            )
+        )
+    }
+    for row in rows:
+        row.on_path = row.id in on_path
+    return rows
 
 
 @router.post("/{adventure_id}/memories", response_model=schemas.MemoryOut, status_code=201)

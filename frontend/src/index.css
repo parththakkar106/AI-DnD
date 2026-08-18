@@ -1362,6 +1362,17 @@ button:disabled { opacity: 0.45; cursor: default; transform: none; box-shadow: n
   border-radius: 999px;
   padding: 0 8px;
 }
+/* A memory belonging to another branch. Set back rather than hidden: it is
+   still findable and still deletable, but it is never sent to the AI while
+   this branch is being read, and a row that looked identical to a live one
+   would be claiming the opposite. The dashed edge is the tell that carries
+   even when the badge scrolls out of view. */
+.memory-row.off-path {
+  opacity: 0.6;
+  border-style: dashed;
+  background: transparent;
+}
+.memory-badge.off-path { color: var(--text-dim); }
 
 .script-report { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 8px; }
 .script-error { color: var(--danger); font-size: 0.85rem; margin-bottom: 4px; white-space: pre-wrap; }

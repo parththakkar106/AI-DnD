@@ -337,7 +337,8 @@ function MemoryRow({ memory, onChange, onDelete }) {
   }
 
   return (
-    <div className={`memory-row ${memory.forgotten ? 'forgotten' : ''}`}>
+    <div className={`memory-row ${memory.forgotten ? 'forgotten' : ''}`
+      + (memory.on_path === false ? ' off-path' : '')}>
       {editText !== null ? (
         <div className="action-edit" style={{ margin: 0 }}>
           <AutoTextarea autoFocus value={editText} rows={3}
@@ -353,6 +354,17 @@ function MemoryRow({ memory, onChange, onDelete }) {
           <div className="memory-meta">
             {memory.pinned && <span className="memory-badge">📌 pinned</span>}
             {memory.forgotten && <span className="memory-badge">forgotten</span>}
+            {/* Kept in the list so it stays possible to find and delete, but
+                said plainly: this one belongs to a branch the story being read
+                never went down, and it is never retrieved. Pinning does not
+                override it — the path clause runs before pinning is
+                considered. */}
+            {memory.on_path === false && (
+              <span className="memory-badge off-path"
+                title="On another branch — this is never sent to the AI while you are reading this one">
+                another branch
+              </span>
+            )}
             {!memory.embedded && !memory.forgotten && (
               <span className="memory-badge" title="Embedded on the next turn">not embedded yet</span>
             )}

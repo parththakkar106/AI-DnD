@@ -166,6 +166,16 @@ That is now four bugs on this frontend found by exercising it rather than by tes
 two of them in paths that had just shipped. The pattern is not subtle any more: **this
 frontend has no test runner, so anything not driven by hand is unverified.**
 
+**The memory drawer now says what the model can see.** Retrieval has been path-scoped
+since SP3, but the drawer listed every memory alike — so on a fork you read "Fell down
+the cellar stairs" and reasonably concluded the AI knew it, when that memory is never
+retrieved on that branch. Rows off the current path are set back and labelled *another
+branch*, still fully editable and deletable. The flag comes from the predicate retrieval
+itself uses, so the badge cannot drift from the behaviour. Note the asymmetry before
+changing it: a fork borrows its ancestors, so a parent's memory *is* on the fork's path;
+the reverse never is. And a hand-written memory has no depth, so it survives the fork cap
+by design — see SP7's entry in `plan/14` for the one case where that surprises.
+
 **The scroll path is finally driven.** 602-action fixture, three prepends of ~16,200 px
 each: the same DOM node held viewport top 792 → 787, and the view stayed 48,174 px from
 the bottom. PR #2's fix holds. Measuring note worth keeping — the fixture's prose repeats,

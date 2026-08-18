@@ -289,6 +289,12 @@ class MemoryOut(ORMModel):
     last_used_at: datetime | None
     source_start: int | None
     source_end: int | None
+    # Whether this memory is on the story currently being read (Phase 14, SP7).
+    # The drawer lists the whole bank so nothing becomes impossible to find and
+    # delete, but a memory belonging to another branch will never be retrieved
+    # into context — and a list that showed the two alike would be telling the
+    # player the model knows something it cannot see.
+    on_path: bool = True
     created_at: datetime
 
 
