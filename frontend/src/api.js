@@ -105,10 +105,15 @@ export const api = {
   // attempts themselves are fetched when the reader actually pages through.
   listVariants: (advId, actionId) =>
     request(`/adventures/${advId}/actions/${actionId}/variants`),
-  selectVariant: (advId, actionId, index) =>
-    request(`/adventures/${advId}/actions/${actionId}/variant`, {
-      method: 'POST', body: JSON.stringify({ index }),
-    }),
+  // The same endpoint under the name the pager uses. "Take" is what the UI
+  // calls one of these now, and the vocabulary is worth keeping straight —
+  // `variant` belongs to the pre-tree pair of columns SP8 drops.
+  listTakes: (advId, actionId) =>
+    request(`/adventures/${advId}/actions/${actionId}/variants`),
+  // No `selectVariant` / `forkFromAttempt` here any more. Both endpoints still
+  // exist and are tested, but the pager needs neither: stepping between takes
+  // tells the server nothing, and what used to be "take this path" is now
+  // whatever the reader writes next, carried by `after_id` on the turn itself.
 
   // The story tree (Phase 14). One request draws the whole shape however many
   // forks there are. The three that change it answer with the story as it now
@@ -122,11 +127,18 @@ export const api = {
     }),
   deleteBranch: (advId, branchId) =>
     request(`/adventures/${advId}/branches/${branchId}`, { method: 'DELETE' }),
-  // Take the story down one attempt. A fork only when it has to be: while the
-  // attempts are still at the tip they are leaves, and the server switches.
-  forkFromAttempt: (advId, actionId) =>
-    request(`/adventures/${advId}/actions/${actionId}/fork`, { method: 'POST' }),
+  // Play a turn again, differently (SP9). An AI turn regenerates; a player's
+  // own takes the text given. Streams, because it is a turn like any other.
+  //
+  // Reaches any turn, not only the newest — which is the whole difference from
+  // `retry`, and the reason the pager can offer this on every message.
+  addTake: (advId, actionId, text, handlers, signal) =>
+    streamSSE(`/adventures/${advId}/actions/${actionId}/takes`, { text }, handlers, signal),
 
+  // `afterId` names the take the turn is played after. Omitted it means the
+  // tip, which is every ordinary turn. Naming a take the story moved past is
+  // what forks a branch — stepping between takes to read them does not, and
+  // the server is never told about it.
   sendAction: (advId, payload, handlers, signal) =>
     streamSSE(`/adventures/${advId}/actions`, payload, handlers, signal),
   retry: (advId, handlers, signal) => streamSSE(`/adventures/${advId}/retry`, {}, handlers, signal),

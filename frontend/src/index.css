@@ -426,51 +426,50 @@ button:disabled { opacity: 0.45; cursor: default; transform: none; box-shadow: n
 }
 .story .action-tools button:hover { color: var(--text); }
 
-/* The attempts at one AI beat. Stays quiet until hovered — it's a footnote on
-   the message, not part of the prose. */
-.attempts {
+/* The takes of one turn: ‹ 2/4 ›. Stays quiet until hovered — it's a footnote
+   on the message, not part of the prose.
+
+   Small and unemphatic on purpose. Stepping through takes reads them and does
+   nothing else, so it should not carry the visual weight of a decision; the
+   decision is made by writing, which happens in the composer below. */
+.take-pager {
   display: flex;
   align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
+  gap: 2px;
   margin-top: 6px;
   font-family: var(--font-ui);
   opacity: 0.45;
   transition: opacity 0.15s;
 }
-.story .action:hover .attempts,
-.attempts:focus-within { opacity: 1; }
-.attempt-chip {
-  padding: 3px 10px;
-  font-size: 0.73rem;
-  line-height: 1.5;
-  border-radius: 999px;
+.story .action:hover .take-pager,
+.take-pager:focus-within { opacity: 1; }
+.take-pager button {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  font-size: 0.9rem;
+  line-height: 1;
   color: var(--text-dim);
   background: transparent;
-  border: 1px solid var(--border);
+  border: 1px solid transparent;
+  border-radius: 4px;
 }
-.attempt-chip:hover:not(:disabled) { color: var(--text); border-color: var(--border-bright); }
-.attempt-chip[aria-pressed="true"] {
-  color: var(--bg);
-  background: var(--accent);
-  border-color: var(--accent);
-  font-weight: 600;
+.take-pager button:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--border-bright);
 }
-.attempt-chip:disabled { opacity: 0.35; cursor: default; }
-/* Dashed until hovered: taking a path the story moved past creates a branch,
-   so it should not look like the same weight of click as browsing one. */
-.take-path {
-  padding: 3px 10px;
-  font-size: 0.73rem;
-  line-height: 1.5;
-  color: var(--accent);
-  background: transparent;
-  border: 1px dashed var(--accent-dim);
+.take-pager button:disabled { opacity: 0.3; cursor: default; }
+.take-count {
+  min-width: 30px;
+  text-align: center;
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
 }
-.take-path:hover:not(:disabled) { color: var(--accent-bright); border-style: solid; }
-.take-path:disabled { opacity: 0.35; cursor: default; }
-.attempt-note {
-  margin-left: 2px;
+/* Only while a take that isn't the live one is on screen: it says what the
+   next thing typed will do, because that is the click that forks. */
+.take-note {
+  margin-left: 6px;
   font-size: 0.72rem;
   font-style: italic;
   color: var(--accent-dim);

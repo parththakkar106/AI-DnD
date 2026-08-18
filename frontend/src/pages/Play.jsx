@@ -952,48 +952,59 @@ function WorldStateDrawer({ advId, refreshKey }) {
   )
 }
 
-// The attempts at one turn, and the way onto one the story left behind.
+// The takes of one turn: ‹ 2/4 ›, and nothing else.
 //
-// This replaces the ‹ 2/3 › pager, and the reason is not that chips look
-// better: a pager can only step between attempts, and stepping has nothing to
-// say about the thing the tree makes possible — taking a path the story moved
-// past *and keeping both*. Every attempt is its own node now (SP4), so a chip
-// is a node, and "take this path" is a fork (SP5).
+// SP7 shipped chips instead, on the grounds that a pager can only step between
+// takes while a chip could also offer "take this path". Driving it by hand said
+// otherwise. The chip meant two different things depending on where the reader
+// was standing — a real switch at the tip, a preview needing a second button
+// above it — and two meanings in one control is what made the tree unusable.
 //
-// Two cases behind one control. While the turn is the tip its attempts are
-// still leaves, so choosing one is a switch and the server restores the state
-// that attempt produced. Once the story has moved past, choosing one is a
-// local preview — the turns after it were written as a continuation of
-// whatever is live — and taking it forks a branch.
-function AttemptChips({ advId, action, isLast, busy, preview, onPreview, onSwitched, onForked, onError }) {
-  const [variants, setVariants] = useState(null)
+// So the pager comes back, and stepping is all it does. Stepping is free: it
+// tells the server nothing, because reading a take is not a decision. The
+// decision is made by *writing* below one, and that is where the branch is
+// created (SP9, `after_id`).
+//
+// One step still reaches the server, and it is not a fork either. A take that
+// has a story of its own lives on its own branch, so going there is a branch
+// switch — the story below has to change, and only the server can say to what.
+// A take on this branch is a leaf by construction: whatever was played after
+// this turn was played after the take that is live, so a take that is not live
+// has nothing under it and the transcript simply ends there.
+function TakePager({ advId, action, busy, preview, onPreview, onSwitchedBranch, onError }) {
+  const [takes, setTakes] = useState(null)
   const [loading, setLoading] = useState(false)
-  const count = action.variant_count
-  const live = action.variant_index
+  const count = action.take_count
+  const live = action.take_index
   const current = preview ? preview.index : live
 
-  async function show(next) {
-    if (next === current || loading || busy) return
+  async function step(delta) {
+    const next = current + delta
+    if (next < 0 || next >= count || loading || busy) return
     setLoading(true)
     try {
-      if (isLast) {
+      // Fetched once per message, then cached — walking back and forth through
+      // the takes should not re-hit the server for a list that has not changed.
+      const list = takes || await api.listTakes(advId, action.id)
+      if (!takes) setTakes(list)
+      const target = list[next]
+      if (target.branch_id !== action.branch_id) {
+        // It has a story of its own. Only the server knows what is under it.
         onPreview(null)
-        onSwitched(await api.selectVariant(advId, action.id, next))
+        onSwitchedBranch(await api.switchBranch(advId, target.branch_id))
+      } else if (next === live) {
+        onPreview(null)
       } else {
-        // Fetched once per message, then cached — moving back and forth
-        // between attempts shouldn't re-hit the server.
-        const list = variants || await api.listVariants(advId, action.id)
-        if (!variants) setVariants(list)
-        onPreview(next === live ? null : {
+        onPreview({
           actionId: action.id,
           index: next,
-          // The attempt's own node id. A fork is addressed by the node being
-          // taken, never by its ordinal — the group renumbers whenever an
-          // attempt is added, and an ordinal held across that points at a
-          // different take.
-          attemptId: list[next].id,
-          text: list[next].text,
-          reasoning: list[next].reasoning,
+          // The take's own node id, never its ordinal: the group renumbers
+          // whenever a take is added, and an ordinal held across that points
+          // at a different one. This is what `after_id` is given if the reader
+          // writes from here.
+          takeId: target.id,
+          text: target.text,
+          reasoning: target.reasoning,
         })
       }
     } catch (err) {
@@ -1003,45 +1014,16 @@ function AttemptChips({ advId, action, isLast, busy, preview, onPreview, onSwitc
     }
   }
 
-  async function take(attemptId) {
-    if (loading || busy) return
-    setLoading(true)
-    try {
-      const page = await api.forkFromAttempt(advId, attemptId)
-      onPreview(null)
-      onForked(page)
-    } catch (err) {
-      onError(err.message)
-    } finally {
-      setLoading(false)
-    }
-  }
-
+  if (count < 2) return null
   return (
-    <div className="attempts">
-      {Array.from({ length: count }, (_, i) => (
-        <button
-          key={i}
-          type="button"
-          className="attempt-chip"
-          aria-pressed={i === current}
-          disabled={busy || loading}
-          onClick={() => show(i)}
-          title={i === live ? 'The take the story follows' : `Attempt ${i + 1}`}
-        >
-          take {i + 1}
-        </button>
-      ))}
-      {preview?.attemptId != null && (
-        <button type="button" className="take-path" disabled={busy || loading}
-          onClick={() => take(preview.attemptId)}>
-          take this path ↗
-        </button>
-      )}
+    <div className="take-pager">
+      <button type="button" disabled={busy || loading || current === 0}
+        onClick={() => step(-1)} title="The take before this one" aria-label="Previous take">‹</button>
+      <span className="take-count" aria-live="polite">{current + 1}/{count}</span>
+      <button type="button" disabled={busy || loading || current === count - 1}
+        onClick={() => step(1)} title="The take after this one" aria-label="Next take">›</button>
       {preview && (
-        <span className="attempt-note">
-          the story continued from take {live + 1}
-        </span>
+        <span className="take-note">write below to keep this one</span>
       )}
     </div>
   )
@@ -1524,8 +1506,12 @@ export default function Play() {
   // (currently "Update from scenario"), which no action count would reflect.
   const [stateKey, setStateKey] = useState(0)
   const [inspectActionId, setInspectActionId] = useState(null)
-  // Read-only browsing of an earlier attempt at a past turn (see AttemptChips).
-  // One at a time; null when every message is showing its active version.
+  // Which take is being read, when it is not the live one (see TakePager).
+  // One at a time; null when every message is showing the take the story tells.
+  //
+  // Purely local: the server is not told, because reading a take is not a
+  // decision. It becomes one when something is written below it, and that is
+  // what `after_id` carries.
   const [preview, setPreview] = useState(null)
   // The transcript is a window on the story, not the whole of it: the page
   // load brings the newest page and older ones arrive as the reader scrolls
@@ -1553,6 +1539,15 @@ export default function Play() {
   const firstNarrationId = useMemo(
     () => actions.find((a) => a.type === 'start' || a.type === 'ai')?.id ?? null,
     [actions],
+  )
+  // Where the transcript stops while a take that is not the live one is being
+  // read. Such a take is a leaf by construction — whatever was played after
+  // this turn was played after the take that *is* live — so there is nothing
+  // under it, and showing the rest would attach one line's story to another's
+  // text. -1 while nothing is being previewed, which is the ordinary case.
+  const previewCutoff = useMemo(
+    () => (preview ? actions.findIndex((a) => a.id === preview.actionId) : -1),
+    [preview, actions],
   )
   // send() sets streaming to '' before the request goes out; reasoningStream
   // stays null until reasoning tokens (if any) arrive. Both still at those
@@ -1746,14 +1741,28 @@ export default function Play() {
 
   function send(type = mode) {
     const text = input.trim()
+    // Where the reader is standing. Stepping to a take the story moved past
+    // told the server nothing; this is the moment it has to be told, and it is
+    // the moment the branch is made (SP9).
+    const after_id = preview?.takeId
+    // The window below belongs to the line being left, so it is re-read rather
+    // than appended to — same reasoning as `addTake`.
+    const run = (payload) => runTurn(async (signal) => {
+      try {
+        await api.sendAction(id, payload, handleEvent, signal)
+      } finally {
+        if (after_id) await resync()
+      }
+    })
+    setPreview(null)
     if (type === 'continue') {
       // Continue never consumes typed text — leave it in the box.
-      runTurn((signal) => api.sendAction(id, { type: 'continue', text: '' }, handleEvent, signal))
+      run({ type: 'continue', text: '', after_id })
       return
     }
-    const payload = { type: text ? type : 'continue', text }
+    const payload = { type: text ? type : 'continue', text, after_id }
     setInput('')
-    runTurn((signal) => api.sendAction(id, payload, handleEvent, signal))
+    run(payload)
   }
 
   function retry() {
@@ -1813,14 +1822,56 @@ export default function Play() {
   })
 
   async function saveEdit() {
-    const { id: actionId, text } = editing
+    const { id: actionId, text, fork } = editing
     setEditing(null)
+    if (fork) {
+      // Not an edit at all: the turn is played again with this text, and what
+      // the story made of the old text is kept on the line it was written on.
+      addTake(actionId, text)
+      return
+    }
     try {
       const updated = await api.updateAction(id, actionId, text)
       setActions((prev) => prev.map((a) => (a.id === actionId ? updated : a)))
     } catch (err) {
       setToast({ text: err.message, isError: true })
     }
+  }
+
+  // Play a turn again, differently. Anywhere in the story, either kind of node.
+  //
+  // The transcript is re-read rather than appended to, which is the difference
+  // from an ordinary turn: a take above the tip leaves the line it was on and
+  // the whole window below it belongs to a story this branch no longer tells.
+  // `handleEvent` appends the new node as it streams; the resync afterwards is
+  // what drops everything that is no longer under it.
+  function addTake(actionId, text) {
+    setPreview(null)
+    runTurn(async (signal) => {
+      try {
+        await api.addTake(id, actionId, text, handleEvent, signal)
+      } finally {
+        await resync()
+      }
+    })
+  }
+
+  // Re-read the newest window from the server.
+  //
+  // For a turn that left the line it was on: `handleEvent` appends the new node
+  // as it streams, and everything already on screen below the take belongs to a
+  // story this branch no longer tells. Only the server can say what replaces
+  // it. A failed resync leaves the transcript stale rather than wrong, so it is
+  // swallowed — the next page load settles it.
+  async function resync() {
+    try {
+      const adv = await api.getAdventure(id)
+      setActions(adv.actions)
+      setTotal(adv.action_count ?? adv.actions.length)
+      setHasMore(adv.actions.length < (adv.action_count ?? adv.actions.length))
+      // The branch, the script state and the world state can all have moved.
+      setStateKey((k) => k + 1)
+    } catch { /* stale beats wrong */ }
   }
 
   async function removeAction(actionId) {
@@ -1891,6 +1942,8 @@ export default function Play() {
             </div>
           )}
           {actions.map((action, i) => {
+            // Below the take being read there is nothing on this line yet.
+            if (previewCutoff !== -1 && i > previewCutoff) return null
             const isPlayer = PLAYER_TYPES.includes(action.type)
             // A player action opens a new turn, so that's where the ornamental
             // break belongs — never above the very first line on the page.
@@ -1926,36 +1979,19 @@ export default function Play() {
                   {action.type === 'ai' && !previewing && (
                     <StateChangeChips changes={action.world_changes} />
                   )}
-                  {action.type === 'ai' && action.variant_count > 1 && (
-                    <AttemptChips
-                      advId={id}
-                      action={action}
-                      isLast={i === actions.length - 1}
-                      busy={busy}
-                      preview={previewing}
-                      onPreview={setPreview}
-                      onForked={adoptWindow}
-                      onSwitched={(updated) => {
-                        // Matched on the action we asked about, not on the one
-                        // that came back. Since the story tree made every
-                        // attempt its own row (phase 14 SP4), switching moves
-                        // the story onto a *different* row rather than
-                        // rewriting this one, so the reply carries a new id.
-                        setActions((prev) => prev.map(
-                          (a) => (a.id === action.id ? updated : a)))
-                        // Switching takes is not only a change of text. The
-                        // server puts back that attempt's script and world
-                        // state, withdraws the memory that hung off the
-                        // coordinate, and rewinds both cursors — none of which
-                        // the panels can see, because they key on
-                        // `actions.length` and the story is the same length it
-                        // was. Same class of bug as a branch switch, which
-                        // `adoptWindow` already bumps this for.
-                        setStateKey((k) => k + 1)
-                      }}
-                      onError={(message) => setToast({ text: message, isError: true })}
-                    />
-                  )}
+                  {/* On every kind of node, not only the AI's: a player's own
+                      turn can be played again too (SP9), so it can have takes
+                      to step through. The pager draws nothing for a count of
+                      one, which is most turns. */}
+                  <TakePager
+                    advId={id}
+                    action={action}
+                    busy={busy}
+                    preview={previewing}
+                    onPreview={setPreview}
+                    onSwitchedBranch={adoptWindow}
+                    onError={(message) => setToast({ text: message, isError: true })}
+                  />
                   {!busy && (
                     <span className="action-tools">
                       {action.type === 'ai' && (
@@ -1964,6 +2000,21 @@ export default function Play() {
                       )}
                       <button title="Edit"
                         onClick={() => setEditing({ id: action.id, text: action.text })}>✎</button>
+                      {/* Play this turn again, differently. On the AI's turn
+                          that is a regeneration; on your own it opens the text
+                          so you can say something else. Either way the story
+                          that followed the old take is kept, on the line it
+                          was written on. */}
+                      {action.type !== 'start' && (
+                        <button
+                          title={action.type === 'ai'
+                            ? 'Another take on this turn'
+                            : 'Say this differently, and keep both'}
+                          onClick={() => (action.type === 'ai'
+                            ? addTake(action.id, '')
+                            : setEditing({ id: action.id, text: action.text, fork: true }))}
+                        >⑂</button>
+                      )}
                       <button title="Delete" onClick={() => removeAction(action.id)}>✕</button>
                     </span>
                   )}
