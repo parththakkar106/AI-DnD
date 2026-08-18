@@ -66,6 +66,18 @@ class Cursor:
 
     # ------------------------------------------------------------- writing
 
+    def anchor(
+        self, adventure: models.Adventure, branch_id: int | None, depth: int
+    ) -> None:
+        """Put the anchor at a coordinate given outright.
+
+        The plain setter under `anchor_at`. Only an import has a coordinate
+        without a node to read it off — a v2 bundle carries the anchor itself
+        (`app/bundle.py`), and the node it named lives in another database.
+        """
+        setattr(adventure, self.branch_field, branch_id)
+        setattr(adventure, self.depth_field, max(depth, NO_DEPTH))
+
     def anchor_at(self, adventure: models.Adventure, node: models.Action) -> None:
         """Mark the work done up to and including `node`.
 
@@ -73,9 +85,8 @@ class Cursor:
         actions can end before the fork this branch was made at, and the
         coverage belongs where the ground is.
         """
-        setattr(adventure, self.branch_field, node.branch_id)
-        setattr(adventure, self.depth_field, lineage.NO_DEPTH
-                if node.depth is None else node.depth)
+        self.anchor(adventure, node.branch_id, lineage.NO_DEPTH
+                    if node.depth is None else node.depth)
 
     def rewind_to(
         self, adventure: models.Adventure, branch_id: int | None, depth: int

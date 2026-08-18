@@ -78,37 +78,41 @@ needed; nothing requires reading a row of anyone's story.
 
 ## Pick up here
 
-**`plan/14-phase-story-tree.md`, SP6 — export/import v2.** SP0–SP5 are done and green
-(**365 tests**); **nothing is deployed yet**. The tree is complete as a storage model: a
-retry writes a sibling node, continuing from a discarded attempt forks a branch, and
-`GET /branches`, `POST /branches/{id}/switch` and `POST /actions/{id}/fork` are the
-endpoints SP7's tree view will be drawn on. What is left is the bundle format (SP6), the
-frontend (SP7) and dropping the legacy columns (SP8).
+**`plan/14-phase-story-tree.md`, SP7 — the frontend.** SP0–SP6 are done and green
+(**381 tests**); **nothing is deployed yet**. The tree is complete everywhere except the
+screen: a retry writes a sibling node, continuing from a discarded attempt forks a branch,
+and a backup carries the whole thing (`ai-dnd-adventure-v2`, with the v1 reader kept so
+existing bundles still import). What is left is the frontend (SP7) and dropping the legacy
+columns (SP8).
 
-**Do SP6 before SP7, and the reason is a live gap.** A forked adventure has no honest v1
-export — the format has one story and there are two — so export currently emits every
-branch's turns interleaved by `index`, which reads as a mangled story. Nobody can reach
-that state through the product yet, because forking has no UI until SP7. That ordering is
-the whole mitigation, so keep it.
+**SP7 is the release gate, and it is unscoped.** `VariantPager` comes out, a spatial tree
+view replaces it, and branch management — switch, rename, delete-with-confirm — is a hard
+dependency rather than a nice-to-have, because nothing auto-prunes and storage otherwise
+grows without limit. `api.js` gains `GET /branches`, `POST /branches/{id}/switch` and
+`POST /actions/{id}/fork`, which SP5 built for exactly this.
+
+**Drive the 600-action `--keep` fixture in a browser by hand.** That is SP7's own verify
+line and the standing open gap in this project: the scroll path has never been driven by
+hand and has already hidden one bug. A vitest + jsdom harness covers the prepend
+arithmetic, but jsdom has no layout, so scroll position still needs eyes.
 
 **The schema is live in code but not on production.** When this ships, the deploy needs
 one `VACUUM FULL actions;` on the direct (non-`-pooler`) endpoint afterwards — SP1's
 migration rewrites every row and SP4's rewrites it three times more, so **two vacuums are
-owed and one run settles both**. SP3's and SP5's changes touch `adventures` only (SP5 adds
-no migration at all) and need none. See the 144 MB lesson at the top of this file.
+owed and one run settles both**. SP3's, SP5's and SP6's changes need none (SP5 and SP6 add
+no migration at all). See the 144 MB lesson at the top of this file.
 
-Three things to carry into SP6:
+Three things to carry into SP7:
 
-- **The `variants` array now exists in exactly one place: the export bundle.** Nothing in
-  the database holds one. `export_adventure` folds each sibling group back into the shape
-  the v1 reader expects, and `_imported_turn` splits one back out into rows. Those two
-  functions are the whole v1 surface, and v2 replaces them.
-- **A v2 bundle needs branches, `live`, and both after-snapshots.** `state_after` /
-  `world_state_after` are what a branch switch restores; a bundle that carried the
-  actions but not the outcomes would import a tree nobody could switch inside.
-  `limits.check_bundle_lists` has to learn about branches too.
-- **Weigh new columns in bytes.** `actions` is already the table that fills the disk.
-  `tests/test_egress.py` has byte ceilings — they will tell you.
+- **The bundle is the one thing here a migration can never reach.** `app/bundle.py` owns
+  both formats and nothing else knows either. Its rule — *carry what was chosen, never
+  what is derived* — is worth borrowing anywhere else state has to leave the database.
+- **`variant_count` and `variant_index` die with the pager.** SP4 left them as a
+  maintained cache of the sibling group's shape because the pager reads both for every
+  row of a page. They are dead the moment the tree view replaces it, and SP8 drops them.
+- **Nothing on the screen has ever seen a second branch.** Forking has no UI, which is
+  why the v1-export gap could be left open through SP5 — SP7 is the subphase that makes
+  a fork reachable, so it is also the one that makes every branch-shaped bug reachable.
 
 And one known cost, not a bug: the two memory marks are a single pair on the adventure,
 so switching branches makes the mark on the branch being left unreadable from the new one
@@ -124,6 +128,44 @@ frontend work lands on the same scroll path that has still never been driven by 
 drive it before rewriting it.
 
 ---
+
+## What happened on 2026-08-18, part three — the tree, SP6
+
+The backup learned the tree. `ai-dnd-adventure-v2` carries branches, the fork point each
+one left its parent at, which attempt at every turn is the story, and what each node left
+behind — that last one because it is what a branch switch puts back, and a bundle that
+imported a tree nobody could switch inside would be a backup of the wrong thing. The v1
+*reader* stays: those files are already on disk. **381 tests green**, 16 of them new in
+`test_bundle_v2.py`. Branch `sp6-bundle-v2`, no migration, no vacuum.
+
+The gap SP5 left is closed — a forked adventure now has an honest export — so the
+ordering constraint that has governed the last two subphases is discharged, and SP7 is
+free.
+
+Three things to carry forward:
+
+- **Carry what was chosen, never what is derived.** The head branch, the fork points, the
+  live flags and the anchors are decisions, and they are in the file. `lineage`, the head
+  depth, the legacy `index` and the variant ordinals are computed from those, so they are
+  rebuilt on import instead. A bundle is a text file anybody can edit, and a derived field
+  shipped beside its source is a chance for the file to contradict itself in a way no read
+  reports. It also turns "is the round trip lossless?" into a testable question: every
+  omitted field is reconstructed, and the tests assert the reconstruction.
+- **Check the shape before creating the row.** A node naming a branch the file does not
+  list is a 400 raised by a pure function, not a half-written adventure. The failure this
+  phase exists to end is a story that goes quiet, and a half-applied import is exactly
+  that.
+- **The tree is free; the outcomes are what cost.** On the 600-action fixture the bundle
+  goes from 587 kB to 911 kB, and *all* of it is `state_after`/`world_state_after` at
+  489 B a node — the coordinates themselves save 57.5 B a node against v1's
+  turn-and-variants shape. Twenty forks add 660 B. 4.3 % of the import body cap at
+  production's longest adventure.
+
+Paid for once, and worth not repeating: a new measuring script imported `app` before
+`tools.stress_session`, which is what redirects `AIDND_DB_PATH` at a throwaway file. It
+failed by *working* — the first run seeded a synthetic user into the local `data.db` and
+printed good numbers; the second tripped over the unique email. **A harness that decides
+where the database lives has to be imported before anything that reads it.**
 
 ## What happened on 2026-08-18, part two — the tree, SP4 and SP5
 

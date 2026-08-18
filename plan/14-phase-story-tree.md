@@ -37,8 +37,10 @@ existed for undo and delete; see the trap note below. Two rows want a footnote:
   stale exactly as before. What *has* changed is that the machinery to fix it now exists
   — an edit could write a sibling and switch to it, which is a retry the player typed —
   so it is a small change whenever it is wanted.
-- **The 1NF violation** is resolved in the database. The `variants` array survives in
-  exactly one place: the v1 export bundle, which SP6 replaces.
+- **The 1NF violation** is resolved. Nothing writes a `variants` array any more, in the
+  database or out of it — SP6 replaced the bundle that was its last producer, and the
+  array survives only in the v1 *reader*, which exists so files already saved still
+  import.
 
 ## Design decisions (settled 2026-08-16)
 
@@ -609,6 +611,88 @@ bundle's linear actions plus `variants` onto one branch with siblings.
 
 **Verify:** v2 round-trip of a branched adventure is lossless; a v1 bundle still imports;
 a bundle claiming more branches than rows is rejected rather than half-applied.
+
+**Done, 2026-08-18** (branch `sp6-bundle-v2`). **381 tests green**, the 365 SP5 finished
+with plus 16 in the new `test_bundle_v2.py`. `app/bundle.py` owns both formats; the two
+endpoints in `routers/adventures.py` are a delegation and the shared plumbing, and the
+`variants` array now exists nowhere but the v1 *reader*.
+
+**The rule the module is built on: a bundle carries what was *chosen*, never what is
+*derived*.** The head branch, the fork points, the live flags and the anchors are
+decisions somebody made, and they are in the file. `lineage`, the head *depth*, `index`
+and the variant ordinals are computed from those and are rebuilt on the way in. That is
+not tidiness — a bundle is a text file anybody can edit, and every derived field shipped
+beside its source is a chance for the file to disagree with itself in a way no read would
+report. It is also the answer to "is the round trip lossless?": everything omitted is
+reconstructed, and the tests assert the reconstruction rather than the bytes.
+
+Six things worth not rediscovering:
+
+- **`depth` cannot be the legacy `index`, and this is where that stops being academic.**
+  They agreed until SP5, and a bundle is the first writer that has to fill `index` for a
+  *forked* story — where two branches both have a node at depth 4. `index`'s one
+  remaining job is handing the next row a number nothing else holds, which is a fact
+  about the adventure rather than about a path, so the import allocates one per turn in
+  bundle order: siblings share it, the way SP4 leaves them, and no two coordinates do.
+- **Validation happens before the adventure row exists.** Everything a hand-edited file
+  can get wrong about the shape of a tree — a node naming a branch that is not listed, a
+  fork with no depth, a branch forking from one listed after it — is a 400 raised by
+  `plan`, which touches no session. The alternative is an adventure holding a story with
+  a hole in it, and this whole phase exists because a story with a hole in it fails by
+  going quiet.
+- **A branch may only fork from one listed before it.** That is how the export writes
+  them, and requiring it buys acyclicity for the price of a comparison — a cycle in the
+  parent chain would be an import that never returns rather than one that fails.
+- **`{}` and absent are different snapshots.** An empty `state_after` means "this node
+  left an empty scoreboard behind"; a missing one means "nobody knows, leave the live
+  state alone" (`attempts.restore_state`). Trimming empty dicts on the way out would have
+  saved eighteen bytes a row and turned an undo that clears a score into one that leaves
+  it standing. Only `worldDelta`, which is display, is dropped when empty.
+- **A file is allowed to be wrong about which attempt is live, and the import corrects it
+  rather than refusing.** "Exactly one sibling in a group is live" is an invariant of the
+  *database*, not of the format; a coordinate with none is a turn no read can see, so the
+  first attempt is made live. That is a different class from a missing branch, which is
+  structure, and is refused.
+- **`limits.MAX_BRANCHES_PER_ADVENTURE` (1000) has no live counterpart.** Forking is a
+  POST that adds one row and has no cap of its own, so this is the one bundle cap that
+  does not mirror something creation enforces. Worth closing if branch management ever
+  makes forking cheap to repeat.
+
+**The verify line above was slightly wrong, and the code does the honest version.** "More
+branches than rows" fails on an adventure with no actions, which legitimately has one
+branch and no rows. It became two rules instead: a cap on the branch list, and *every
+branch a node names must exist*.
+
+Measured with `tools/measure_bundle.py` on the 600-action `--rich` fixture — 600 turns,
+750 nodes, because 150 of them were retried:
+
+| | bytes | vs v1 |
+|---|---|---|
+| v1 shape | 587,475 | — |
+| **v2** | **911,229** | **1.551×** |
+| v2 without the outcomes | 544,318 | 0.927× |
+
+**The tree is free; the outcomes are what cost.** Coordinates *save* 57.5 B a node
+against v1's turn-and-variants shape, and the entire 1.55× is `state_after` /
+`world_state_after` at 489 B a node — which are there because a bundle without them
+imports a tree nobody can switch inside. Twenty forks add 660 B to the same file, **33 B
+a branch**, so the format is as indifferent to fork count as the reads are. The longest
+adventure production holds exports at 4.3 % of `MAX_IMPORT_BODY_BYTES`.
+
+**Two lines of the SP0 baseline changed, not the one it predicted.** The note in
+`test_story_tree_baseline.py` allowed for the `format` assertion; the `variants` array in
+`test_export_keeps_retry_attempts` is the same fact from the other side — a bundle with
+coordinates has no use for a repeating group. Everything else in that file still passes
+unmodified.
+
+**No migration, no vacuum.** SP6 adds no column and rewrites no row.
+
+**And one trap, paid for once.** `tools/measure_bundle.py` imported `app` before
+`tools.stress_session`, which is what points `AIDND_DB_PATH` at a throwaway file —
+`app.database` reads it at module scope. It fails by *working*: the first run seeded a
+synthetic user and adventure into the local `backend/data.db` and printed perfectly good
+numbers, and only the second run tripped over the unique email. Anything importing that
+harness must import it first, and the file now says so where the imports are.
 
 ### SP7 — Frontend: full tree visualisation
 
