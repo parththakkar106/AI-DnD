@@ -266,9 +266,15 @@ class ActionCreate(BaseModel):
 
 
 class TakeCreate(BaseModel):
-    """Another take of a turn the player wrote themselves (SP9)."""
+    """Another take of a turn (SP9).
 
-    text: ActionText
+    `text` is what the player is saying instead, and is theirs to write only
+    when the turn was theirs. An AI turn's other take is generated, so the field
+    is ignored there rather than refused — the client asks the same way for both
+    and the node type decides what happens.
+    """
+
+    text: ActionText = ""
 
 
 class AdventureOut(ORMModel):

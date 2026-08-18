@@ -1489,15 +1489,18 @@ def add_take(
     db: Session = Depends(get_db),
     user: models.User = CurrentUser,
 ):
-    """Play one of the player's own turns again, differently.
+    """Play a turn again, differently — whoever wrote it.
 
-    The gap SP7 left: a retry gives an AI turn another take, and nothing gave
-    one to the player's own message. So the only way to change something you
-    had written was to overwrite it and lose the story it led to.
+    One operation for what used to be two and a half. `retry` gave an AI turn
+    another take, but only the newest one; the player's own message had none at
+    all, so changing something you had typed meant overwriting it and losing the
+    story it led to. Here an AI turn regenerates and a player turn takes the
+    text supplied, and neither cares where in the story it sits.
 
-    This is the same move a retry makes, on the other kind of node. The turn is
-    played again with new text; whatever the story did with the old one stays
-    exactly where it is, on the line it was written on.
+    The tip is the only case needing no branch, and only for an AI turn: nothing
+    was played after it, so its takes are still leaves. A player turn is never
+    at the tip — the reply to it is — so it takes a branch every time it has
+    been answered.
 
     A branch is needed here for the same reason `fork` needs one — the turn
     being retaken already has a story after it, and that story was written as a
@@ -1512,38 +1515,49 @@ def add_take(
     action = db.get(models.Action, action_id)
     if action is None or action.adventure_id != adventure_id:
         raise HTTPException(404, "Action not found")
-    if action.type == "ai":
-        raise HTTPException(
-            400, "Retry gives an AI turn another take; this is for your own."
-        )
-    if action.type not in ("do", "say", "story", "continue"):
+    if action.type not in ("do", "say", "story", "continue", "ai"):
         # The opening is not a turn anybody played, so there is no second way
         # to have played it. Editing the scenario is what changes it.
         raise HTTPException(400, "The opening of a story has no other take.")
     if action.depth is None or not lineage.path_of(db, adventure).contains(action):
         raise HTTPException(400, "That turn is not on the story you are reading.")
     acquire_turn_lock(adventure_id)
+    retry_of = None
     try:
-        # Only when something was played after it. At the tip there is no story
-        # to protect and no branch is owed — the same rule `stand_on` follows.
-        if adventure.head_depth > action.depth:
+        newest = last_action(adventure, db)
+        at_the_tip = newest is not None and newest.id == action.id
+        if at_the_tip and action.type == "ai":
+            # Nothing was played after it, so its takes are still leaves and a
+            # branch would be for nothing. This is exactly `retry`.
+            retry_of = action
+            attempts.roll_back_before(db, adventure, action)
+        else:
+            # The turn has a story after it, written as a continuation of what
+            # is there now. The new take leaves the path just before the turn,
+            # so that story keeps the take it was written for.
             tree.branch_at(db, adventure, action.depth - 1)
-            adventure.updated_at = models.utcnow()
-            db.commit()
-            db.refresh(adventure)
+            attempts.roll_back_before(db, adventure, action)
+        adventure.updated_at = models.utcnow()
+        db.commit()
+        db.refresh(adventure)
     except BaseException:
         _active_turns.discard(adventure_id)
         raise
+    if action.type == "ai":
+        # No player action to write: the one this turn answers is already on
+        # the path, borrowed from the line being left.
+        stream = generate_turn(
+            adventure, db, ScriptPipeline(adventure, db), user, retry_of=retry_of
+        )
+    else:
+        stream = run_player_turn(
+            adventure,
+            db,
+            schemas.ActionCreate(type=action.type, text=payload.text),
+            user,
+        )
     return StreamingResponse(
-        with_turn_lock(
-            adventure_id,
-            run_player_turn(
-                adventure,
-                db,
-                schemas.ActionCreate(type=action.type, text=payload.text),
-                user,
-            ),
-        ),
+        with_turn_lock(adventure_id, stream),
         media_type="text/event-stream",
         headers=SSE_HEADERS,
     )

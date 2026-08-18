@@ -358,12 +358,47 @@ def test_both_takes_of_a_players_turn_are_one_group(client):
     assert _group_size(first.id) == 2, "and reads the same from the other take"
 
 
-def test_an_ai_turn_is_refused_by_the_take_endpoint(client):
+def test_an_ai_turn_at_the_tip_takes_no_branch(client):
+    """Its takes are still leaves. This is `retry`, reached the other way."""
     _play(client)
+    before = _branch_count(client.adv_id)
+
     ai = _ai_rows(client.adv_id)[0]
-    r = _take(client, ai.id, "nope")
-    assert r.status_code == 400
-    assert "Retry" in r.json()["detail"]
+    r = _take(client, ai.id, "")
+    assert r.status_code == 200, r.text
+
+    assert _branch_count(client.adv_id) == before
+    assert len(_ai_rows(client.adv_id)) == 2, "a second take, beside the first"
+
+
+def test_an_ai_turn_the_story_moved_past_takes_a_branch(client):
+    """Retry could never reach here at all — it only ever saw the newest turn."""
+    _play(client)
+    _play(client, "press on")
+    before = _branch_count(client.adv_id)
+    first_ai = _ai_rows(client.adv_id)[0]
+
+    r = _take(client, first_ai.id, "")
+    assert r.status_code == 200, r.text
+
+    assert _branch_count(client.adv_id) == before + 1
+    # The turn the story moved past now has two takes, and the line it was on
+    # keeps the one it was written for.
+    assert _group_size(first_ai.id) == 2
+    assert first_ai.id in {a.id for a in _ai_rows(client.adv_id)}
+
+
+def test_the_old_line_still_has_its_continuation(client):
+    _play(client, "open the door")
+    _play(client, "press on")
+    first_ai = _ai_rows(client.adv_id)[0]
+    _take(client, first_ai.id, "")
+
+    # The new take is what this branch tells; "press on" belonged to the other.
+    blob = "\n".join(_path_texts(client))
+    assert "press on" not in blob
+    kept = "\n".join(a.text for a in _user_rows(client.adv_id))
+    assert "press on" in kept, "still there, on the line it was played on"
 
 
 def test_the_opening_has_no_other_take(client):
