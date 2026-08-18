@@ -333,6 +333,24 @@ class Action(Base):
         ForeignKey("branches.id", ondelete="CASCADE"), nullable=True
     )
     depth: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Phase 14, SP9: the node this one was played after — the take that was
+    # live when it was written, not merely whatever sits at depth - 1 now.
+    #
+    # It exists for one question: which takes belong to the same turn. A
+    # coordinate cannot answer it, because a take that gets forked onto its own
+    # branch leaves the coordinate its siblings are still at and would read
+    # `1/1` next to their `1/3`. A parent does not move when a branch does.
+    #
+    # Read only to group takes — one indexed lookup, never a walk. Paths still
+    # resolve through `lineage`, which is why this column can be added without
+    # touching a single read of the story.
+    #
+    # NULL on a root node, and on every pre-SP9 row the migration could not
+    # place: `attempts.group` falls back to the coordinate there, which is what
+    # those rows were written under.
+    parent_id: Mapped[int | None] = mapped_column(
+        ForeignKey("actions.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     # Phase 14, SP4: whether this node is the one the story tells at its
     # coordinate. Retry no longer rewrites a row — it writes a *sibling* at the
     # same (branch, depth), so a coordinate can hold several attempts and

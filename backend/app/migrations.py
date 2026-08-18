@@ -266,6 +266,16 @@ MIGRATIONS: list[tuple[int, str | dict[str, str]]] = [
     # visible from today. Anchoring them at the tip instead would have emptied
     # them out of every branch forked earlier than they were typed.
     (62, "UPDATE memories SET depth = 0 WHERE depth IS NULL"),
+    # Phase 14, SP9 — the node a node was played after, so a turn's takes can be
+    # grouped by parent instead of by coordinate. A coordinate stops answering
+    # "which takes belong together" the moment one of them is forked onto its
+    # own branch: it leaves its siblings behind and reads 1/1 beside their 1/3.
+    #
+    # Nullable, and left NULL wherever the backfill cannot honestly place a row
+    # (see _backfill_parents). `attempts.group` falls back to the coordinate for
+    # those, which is the rule they were written under.
+    (63, "ALTER TABLE actions ADD COLUMN parent_id INTEGER REFERENCES actions(id) ON DELETE SET NULL"),
+    (64, "CREATE INDEX IF NOT EXISTS ix_actions_parent ON actions (parent_id)"),
 ]
 
 LATEST_VERSION = max((v for v, _ in MIGRATIONS), default=1)
@@ -278,6 +288,7 @@ SNAPSHOT_COMPRESS_VERSION = 43
 TREE_BACKFILL_VERSION = 52
 CURSOR_ANCHOR_VERSION = 56
 SIBLING_SPLIT_VERSION = 60
+PARENT_BACKFILL_VERSION = 64
 
 # An adventure with no actions has no tip. -1 keeps "the next node goes at
 # head_depth + 1" true without a special case (mirrors tree.NO_DEPTH).
@@ -322,6 +333,45 @@ def _backfill_world_delta(conn) -> None:
               AND jsonb_exists(context_snapshot::jsonb, 'world_state')
         """
     conn.execute(text(sql))
+
+
+def _backfill_parents(conn) -> None:
+    """Point every node at the take it was played after.
+
+    One pass, and deliberately only one: the live node one depth back on the
+    same branch. That is the whole of a linear story, which is the whole of
+    every adventure written before SP9 — forking reached the screen in SP7 and
+    the tree was found unusable before anyone forked with it.
+
+    The rows left NULL are the first node of a forked branch, whose parent sits
+    on an ancestor branch and cannot be found without walking `lineage` per row.
+    `attempts.group` falls back to the coordinate for a NULL parent, which is
+    exactly the rule those rows were written under, so the fallback is not a
+    degraded answer for them — it is the original one. Every fork made from SP9
+    on sets `parent_id` at write time and never relies on this.
+
+    Correlated to the row being updated rather than numbering the table, so the
+    planner drives it off ix_actions_branch_depth. That is the lesson of
+    _backfill_cursor_anchors, which numbered every action once per adventure.
+    """
+    conn.execute(
+        text(
+            """
+            UPDATE actions SET parent_id = (
+                SELECT prev.id FROM actions AS prev
+                WHERE prev.adventure_id = actions.adventure_id
+                  AND prev.branch_id = actions.branch_id
+                  AND prev.depth = actions.depth - 1
+                  AND prev.live = TRUE
+                ORDER BY prev.id
+                LIMIT 1
+            )
+            WHERE parent_id IS NULL
+              AND branch_id IS NOT NULL
+              AND depth IS NOT NULL
+            """
+        )
+    )
 
 
 def _backfill_variant_count(conn) -> None:
@@ -890,6 +940,10 @@ def bootstrap(engine: Engine) -> None:
                 if version == SIBLING_SPLIT_VERSION:
                     _backfill_state_after(conn)
                     _split_variants_into_siblings(conn)
+                # After 63 adds the column and 64 indexes it: the UPDATE is
+                # what the index is for, so it runs once both are in place.
+                if version == PARENT_BACKFILL_VERSION:
+                    _backfill_parents(conn)
                 current = version
         _set_version(conn, current)
         _encrypt_plaintext_api_keys(conn)

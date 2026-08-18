@@ -182,6 +182,7 @@ def place_action(
     adventure: models.Adventure,
     action: models.Action,
     branch: models.Branch | None = None,
+    parent: models.Action | None = None,
 ) -> models.Branch:
     """Put `action` on the head branch and move the head to it.
 
@@ -191,15 +192,50 @@ def place_action(
 
     `branch` is the head, already resolved, for a caller placing several nodes
     at once — see `place_new_nodes` for why that is worth a parameter.
+
+    `parent` is the take this node was played after (SP9), and is what groups a
+    turn's takes. Resolved from the path when the caller does not say, which is
+    the honest default: a node written now follows whatever the player is
+    reading now. A caller placing several nodes in one flush should chain it —
+    the second node's parent is the first, and the database has not seen either.
     """
     branch = branch or head_branch(db, adventure)
     action.branch_id = branch.id
     if action.depth is None:
         action.depth = action.index
+    if parent is not None:
+        action.parent_id = parent.id
+    elif action.parent_id is None and action.depth:
+        action.parent_id = _preceding_id(db, adventure, branch, action.depth)
     adventure.head_branch_id = branch.id
     if action.depth is not None and action.depth > adventure.head_depth:
         adventure.head_depth = action.depth
     return branch
+
+
+def _preceding_id(
+    db: Session, adventure: models.Adventure, branch: models.Branch, depth: int
+) -> int | None:
+    """The id of the live node one step back along `branch`'s path.
+
+    Asked of the whole lineage rather than of `branch` alone, because a branch
+    borrows the story before its fork point: the node in front of a forked
+    branch's first turn lives on an ancestor, and that is exactly the parent a
+    pager needs to find its siblings through.
+    """
+    path = lineage.Path(lineage.entries_of(branch))
+    return (
+        db.query(models.Action.id)
+        .filter(
+            models.Action.adventure_id == adventure.id,
+            models.Action.depth == depth - 1,
+            models.Action.live.is_(True),
+            path.clause(),
+        )
+        .order_by(models.Action.id)
+        .limit(1)
+        .scalar()
+    )
 
 
 def place_memory(

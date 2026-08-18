@@ -1047,7 +1047,10 @@ def delete_turn(
     rather than off one of its attempts.
     """
     memorybank.forget_node(db, adventure, node)
-    for attempt in attempts.group(db, node):
+    # Scoped to this node's branch (SP9). The group spans branches now, and a
+    # take that was forked onto its own line is another branch's story — see
+    # `attempts.on_branch`.
+    for attempt in attempts.on_branch(attempts.group(db, node), node):
         db.delete(attempt)
 
 
