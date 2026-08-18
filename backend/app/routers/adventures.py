@@ -46,8 +46,10 @@ ACTION_LIST_COLUMNS = (
     models.Action.variant_index,
     # SP9: the pager's key. Deferred, it would be a lazy load per row — a query
     # behind every message on the page, which is the whole thing `load_only`
-    # is here to stop.
+    # is here to stop. `branch_id` rides along for the same reason: the pager
+    # reads it to tell a local step from a branch switch.
     models.Action.parent_id,
+    models.Action.branch_id,
     models.Action.created_at,
 )
 
@@ -1014,6 +1016,7 @@ def list_variants(
             index=i,
             text=row.text,
             reasoning=row.reasoning,
+            branch_id=row.branch_id,
             created_at=row.created_at.isoformat() if row.created_at else None,
             active=row.live,
         )

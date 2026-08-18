@@ -200,6 +200,11 @@ class ActionOut(ORMModel):
     # pre-SP9 pair and SP8 drops them.
     take_count: int = 1
     take_index: int = 0
+    # Which line this node is on, so the pager can tell the two kinds of step
+    # apart without asking the server first: a take on this branch is a leaf
+    # with nothing under it, and showing it is a local matter; a take on another
+    # branch has a story of its own, and going there is a branch switch.
+    branch_id: int | None = None
     created_at: datetime
 
 
@@ -211,6 +216,9 @@ class VariantOut(BaseModel):
     index: int
     text: str
     reasoning: str | None = None
+    # See ActionOut.branch_id: it decides whether choosing this take is a local
+    # step or a branch switch.
+    branch_id: int | None = None
     created_at: str | None = None
     active: bool = False
 
