@@ -1110,9 +1110,156 @@ def list_branches(
             ),
             own_actions=count,
             is_head=(branch.id == adventure.head_branch_id),
+            name=branch.name,
             created_at=branch.created_at,
         ))
     return out
+
+
+def get_branch_or_404(
+    adventure: models.Adventure, branch_id: int, db: Session
+) -> models.Branch:
+    """One branch of this adventure, or a 404 that does not confirm it exists."""
+    branch = db.get(models.Branch, branch_id)
+    if branch is None or branch.adventure_id != adventure.id:
+        raise HTTPException(404, "Branch not found")
+    return branch
+
+
+@router.patch(
+    "/{adventure_id}/branches/{branch_id}", response_model=schemas.BranchOut
+)
+def rename_branch(
+    adventure_id: int,
+    branch_id: int,
+    payload: schemas.BranchRename,
+    db: Session = Depends(get_db),
+    user: models.User = CurrentUser,
+):
+    """Name a branch, or clear the name to leave it unnamed again.
+
+    A blank string means the same thing as `null` — a name of spaces is not a
+    name anyone chose, and storing one would give the client something to draw
+    that reads as an empty label rather than as a fork depth.
+    """
+    adventure = get_adventure_or_404(adventure_id, db, user)
+    branch = get_branch_or_404(adventure, branch_id, db)
+    name = (payload.name or "").strip()
+    branch.name = name or None
+    adventure.updated_at = models.utcnow()
+    db.commit()
+    db.refresh(branch)
+    tip = (
+        db.query(func.max(models.Action.depth))
+        .filter(
+            models.Action.adventure_id == adventure.id,
+            models.Action.branch_id == branch.id,
+            models.Action.live.is_(True),
+        )
+        .scalar()
+    )
+    return schemas.BranchOut(
+        id=branch.id,
+        parent_branch_id=branch.parent_branch_id,
+        fork_depth=branch.fork_depth,
+        depth=tip if tip is not None else (
+            branch.fork_depth if branch.fork_depth is not None else tree.NO_DEPTH
+        ),
+        own_actions=0,
+        is_head=(branch.id == adventure.head_branch_id),
+        name=branch.name,
+        created_at=branch.created_at,
+    )
+
+
+@router.delete("/{adventure_id}/branches/{branch_id}", status_code=204)
+def delete_branch(
+    adventure_id: int,
+    branch_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = CurrentUser,
+):
+    """Throw away a branch, and everything forked from it.
+
+    Nothing auto-prunes a tree, so this is the only thing standing between a
+    heavily-retried adventure and unbounded growth — which is why it ships with
+    the view that first lets anyone make a fork rather than after it.
+
+    Two branches cannot go. The root, because it holds the turns every other
+    branch borrows and deleting it would take the whole story. And the one
+    being read — or any branch it was forked from, which is the same mistake
+    wearing a disguise: the cascade would take the head out from under the
+    player and leave `head_branch_id` pointing at nothing. Switch first.
+
+    The nodes and memories go with it through `ON DELETE CASCADE`, and the
+    descendants through `branches.parent_branch_id`'s, so the delete is one
+    statement however deep the subtree is.
+    """
+    adventure = get_adventure_or_404(adventure_id, db, user)
+    branch = get_branch_or_404(adventure, branch_id, db)
+    if branch.parent_branch_id is None:
+        raise HTTPException(
+            400, "This is the story's first branch — deleting it would delete "
+                 "the adventure. Delete the adventure itself instead.",
+        )
+    head = db.get(models.Branch, adventure.head_branch_id)
+    # The head's lineage names itself and every branch it borrows from, so one
+    # membership test covers both "you are standing on it" and "you are on
+    # something forked from it".
+    if head is not None and branch.id in {
+        entry_id for entry_id, _ in lineage.entries_of(head)
+    }:
+        raise HTTPException(
+            400, "You are reading this branch, or one forked from it. Switch to "
+                 "another branch first.",
+        )
+    acquire_turn_lock(adventure_id)
+    try:
+        # Collected before the delete, because afterwards there is nothing left
+        # to ask which branches went. A cursor left pointing at a deleted branch
+        # would be harmless on Postgres, where ids are never reused, and a real
+        # bug on SQLite, where the next fork can be handed the id that just went
+        # free — at which point a stale anchor silently resolves onto a branch
+        # it has never seen.
+        doomed = _branch_subtree(db, adventure, branch)
+        for cursor in cursors.ALL:
+            stored_branch, _ = cursor.stored(adventure)
+            if stored_branch in doomed:
+                cursor.clear(adventure)
+        db.delete(branch)
+        adventure.updated_at = models.utcnow()
+        db.commit()
+    finally:
+        _active_turns.discard(adventure_id)
+    # The deleted branch's memories go with it, and their cached vectors fall
+    # out of the catalogue on the next read — no invalidation call needed. See
+    # the note on memorybank's cache.
+
+
+def _branch_subtree(
+    db: Session, adventure: models.Adventure, root: models.Branch
+) -> set[int]:
+    """`root` and every branch descended from it, by parent pointer.
+
+    Walked over the adventure's own branch rows rather than queried per level:
+    an adventure has a handful of branches, and the walk is the same cost as
+    one round trip while a recursive CTE would have to be written twice for the
+    two dialects this codebase keeps parity with.
+    """
+    children: dict[int | None, list[int]] = {}
+    for bid, parent in db.query(models.Branch.id, models.Branch.parent_branch_id).filter(
+        models.Branch.adventure_id == adventure.id
+    ):
+        children.setdefault(parent, []).append(bid)
+    found: set[int] = set()
+    stack = [root.id]
+    while stack:
+        current = stack.pop()
+        if current in found:
+            continue
+        found.add(current)
+        stack.extend(children.get(current, ()))
+    return found
 
 
 @router.post(

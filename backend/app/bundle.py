@@ -54,7 +54,7 @@ from fastapi import HTTPException
 from sqlalchemy import insert, update
 from sqlalchemy.orm import Session, undefer
 
-from . import attempts, models
+from . import attempts, models, schemas
 from .context import cursors, lineage
 
 FORMAT = "ai-dnd-adventure-v2"
@@ -150,9 +150,17 @@ def _exported_branch(branch: models.Branch, local: dict[int, int]) -> dict:
         local.get(branch.parent_branch_id)
         if branch.parent_branch_id is not None else None
     )
-    if parent is None:
-        return dict(_ROOT)
-    return {"parent": parent, "forkDepth": branch.fork_depth}
+    out = (
+        dict(_ROOT) if parent is None
+        else {"parent": parent, "forkDepth": branch.fork_depth}
+    )
+    # A name is something a player chose, so it travels — the same rule that
+    # puts the fork points in the file and leaves `lineage` out. An unnamed
+    # branch omits the key rather than carrying a null, which keeps the file
+    # for a tree nobody has named byte-identical to the one SP6 wrote.
+    if branch.name:
+        out["name"] = branch.name
+    return out
 
 
 def _exported_node(action: models.Action, local: dict[int, int]) -> dict:
@@ -258,8 +266,9 @@ def _planned_branches(bundle: dict) -> list[dict]:
     specs: list[dict] = []
     for i, entry in enumerate(entries):
         parent = entry.get("parent")
+        name = _planned_branch_name(entry, i)
         if parent is None:
-            specs.append(dict(_ROOT))
+            specs.append(dict(_ROOT, **({"name": name} if name else {})))
             continue
         # A branch may only fork from one listed before it. That is how the
         # export writes them — branches are numbered in creation order and a
@@ -279,8 +288,33 @@ def _planned_branches(bundle: dict) -> list[dict]:
                 f"Branch {i} forks from branch {parent} but does not say at "
                 f"what depth.",
             )
-        specs.append({"parent": parent, "forkDepth": fork_depth})
+        specs.append({
+            "parent": parent, "forkDepth": fork_depth,
+            **({"name": name} if name else {}),
+        })
     return specs
+
+
+def _planned_branch_name(entry: dict, i: int) -> str | None:
+    """The name a branch entry carries, or None for one nobody named.
+
+    Checked before the row is created rather than left to the column, for the
+    reason the whole planner exists: a 400 from a pure function beats a half
+    written adventure and a database error from three branches in.
+    """
+    raw = entry.get("name")
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise HTTPException(400, f"Branch {i} has a name that is not text.")
+    name = raw.strip()
+    if len(name) > schemas.BRANCH_NAME_MAX:
+        raise HTTPException(
+            400,
+            f"Branch {i}'s name is longer than {schemas.BRANCH_NAME_MAX} "
+            f"characters.",
+        )
+    return name or None
 
 
 def _planned_nodes(bundle: dict, branches: int) -> list[dict]:
@@ -429,6 +463,7 @@ def _write_branches(
                 parent_branch_id=ids[parent] if parent is not None else None,
                 fork_depth=fork_depth if parent is not None else None,
                 lineage=[],
+                name=spec.get("name"),
                 created_at=models.utcnow(),
             )
         ).inserted_primary_key[0]
