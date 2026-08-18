@@ -251,6 +251,12 @@ MIGRATIONS: list[tuple[int, str | dict[str, str]]] = [
     # handful of rows behind it, which ix_actions_branch_depth already serves,
     # so this is a no-op statement that gives the passes a version to hang on.
     (60, "CREATE INDEX IF NOT EXISTS ix_actions_branch_depth ON actions (branch_id, depth)"),
+    # Phase 14, SP7 — a branch can be named. NULL is "nobody named this one",
+    # which is every branch alive when this runs, so there is no backfill and
+    # nothing to derive. `branches` holds a handful of rows per adventure rather
+    # than one per turn, so unlike SP1's and SP4's this rewrite is a few hundred
+    # rows against a few hundred thousand and needs no VACUUM FULL of its own.
+    (61, "ALTER TABLE branches ADD COLUMN name VARCHAR(80)"),
 ]
 
 LATEST_VERSION = max((v for v, _ in MIGRATIONS), default=1)

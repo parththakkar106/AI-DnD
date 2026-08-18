@@ -22,6 +22,7 @@ MEMORY_TEXT_MAX = 5_000
 # multi-megabyte PNG in a row that gets read on every list request.
 IMAGE_MAX = 400_000
 ICON_MAX = 16           # one emoji/glyph — VARCHAR(16)
+BRANCH_NAME_MAX = 80    # what a player called one line of the story — VARCHAR(80)
 
 Name = Annotated[str, Field(max_length=NAME_MAX)]
 Tags = Annotated[str, Field(max_length=TAGS_MAX)]
@@ -220,7 +221,16 @@ class BranchOut(ORMModel):
     depth: int
     own_actions: int = 0
     is_head: bool = False
+    # NULL for a branch nobody has named. The client draws those from the fork
+    # depth rather than the server inventing one — see the column comment.
+    name: str | None = None
     created_at: datetime
+
+
+class BranchRename(BaseModel):
+    """A name a player chose, or `null` to go back to being unnamed."""
+
+    name: Annotated[str, Field(max_length=BRANCH_NAME_MAX)] | None = None
 
 
 class ActionUpdate(BaseModel):

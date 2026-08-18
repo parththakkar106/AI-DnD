@@ -88,6 +88,17 @@ class Cursor:
         self.anchor(adventure, node.branch_id, lineage.NO_DEPTH
                     if node.depth is None else node.depth)
 
+    def clear(self, adventure: models.Adventure) -> None:
+        """Forget the anchor entirely: nothing is covered.
+
+        For when the ground the anchor stood on is gone — a deleted branch. On
+        Postgres a stale branch id would simply never resolve, but SQLite hands
+        a freed id to the next fork, and an anchor that resolves onto a branch
+        it has never seen would report a stretch of story as already
+        summarized. Clearing costs a re-summarize, which is the safe direction.
+        """
+        self.anchor(adventure, None, NO_DEPTH)
+
     def rewind_to(
         self, adventure: models.Adventure, branch_id: int | None, depth: int
     ) -> None:

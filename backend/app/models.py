@@ -211,6 +211,13 @@ class Branch(Base):
     # beneath it, inclusive. Computed once at fork from the parent's lineage
     # plus one entry, so no read ever reconstructs it.
     lineage: Mapped[list] = mapped_column(JSON, default=list)
+    # What the player called this line of the story, or NULL for one nobody has
+    # named. NULL rather than a generated "branch 4", because a generated name
+    # is derived and this column is for what was chosen — the same rule the v2
+    # bundle is built on. A stored default would also become a lie the moment a
+    # branch before it is deleted and the ordinals shift under it; an unnamed
+    # branch is drawn from its fork depth instead, which nothing can shift.
+    name: Mapped[str | None] = mapped_column(String(80), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
