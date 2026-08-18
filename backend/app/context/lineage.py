@@ -87,7 +87,6 @@ class Path:
         self,
         model=models.Action,
         count: int | None = None,
-        unanchored: bool = False,
     ):
         """The branch clause, over `model` (`Action` or `Memory`).
 
@@ -95,12 +94,12 @@ class Path:
         read. `None` is the whole lineage, which is what anything counting from
         the *oldest* end (a slice, a total) has to use.
 
-        `unanchored` keeps rows with no depth. Only memories ever have one: a
-        hand-written memory summarises no node, so it has a branch but no
-        depth, and a capped `depth <= n` would drop it the moment its branch
-        stopped being the newest entry — a memory vanishing at the first fork
-        after it was typed. An action with no depth is a pre-tree row that no
-        read should see, so actions never pass this.
+        Every row this reads has a depth. Memories used to be the exception —
+        a hand-written one had a branch and no depth, and needed an escape
+        clause here to survive being capped at a fork. SP7 anchors them at the
+        head instead (`tree.place_memory`), which is a better answer to the same
+        problem: the memory is not exempt from the path, it is *on* one. A row
+        with no depth is now a pre-tree leftover that no read should see.
 
         Actions also have to be *live* (SP4). A coordinate can hold several
         attempts at the same turn, and the story tells one of them; the losing
@@ -115,19 +114,16 @@ class Path:
         entries = self.entries if count is None else self.entries[:count]
         if not entries:
             return false()
-        on_path = or_(*[self._entry_clause(model, b, d, unanchored) for b, d in entries])
+        on_path = or_(*[self._entry_clause(model, b, d) for b, d in entries])
         if model is models.Action:
             return and_(on_path, models.Action.live.is_(True))
         return on_path
 
     @staticmethod
-    def _entry_clause(model, branch_id: int, max_depth: int | None, unanchored=False):
+    def _entry_clause(model, branch_id: int, max_depth: int | None):
         if max_depth is None:
             return model.branch_id == branch_id
-        within = model.depth <= max_depth
-        if unanchored:
-            within = or_(within, model.depth.is_(None))
-        return and_(model.branch_id == branch_id, within)
+        return and_(model.branch_id == branch_id, model.depth <= max_depth)
 
     # ------------------------------------------------------------- Python
 

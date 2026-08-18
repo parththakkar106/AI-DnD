@@ -769,29 +769,36 @@ live, redraws the bar, swaps the story to the other take (`hp -5`, not `hp -40`)
 repoints Insights at the other path — "History: 5 of 5 actions", carrying the scratch and
 not the beating.
 
-**The memory drawer says which memories the model can actually see.** Retrieval has been
-path-scoped since SP3, so a memory on a branch this story never travelled is never sent.
-The drawer still lists the whole bank — hiding rows would leave memories impossible to
-find and delete, in a phase whose rule is that nothing is removed automatically — but
-listing them *alike* was its own lie: it told the player the model remembers something it
-cannot see. `MemoryOut.on_path` marks them, and the row is set back and labelled *another
-branch*. The flag is computed from **the predicate retrieval itself uses**
-(`path_of(...).clause(Memory, unanchored=True)`), not a second spelling of it, because two
-spellings drift and the failure would be a badge claiming the opposite of what the model
-gets. Pinning does not override it — the path clause runs before pinning is considered.
+**Every memory is now a memory of a story, not of an adventure — migration 62.** A
+hand-written memory used to carry a NULL depth, described as "belongs to the adventure
+rather than to a path". That reads as harmless and is not: a NULL is a coordinate no fork
+can cap, so a note typed on one line followed the reader onto branches whose events it
+never described. `tree.place_memory` anchors it at the head instead — *the story you were
+reading when you wrote it* — and it then obeys exactly the rule a summarised memory obeys.
 
-**The relationship is asymmetric, and a test now says so.** A fork borrows its ancestors,
-so a memory written on the parent is on the fork's path too; the reverse is never true.
-Worth knowing before anyone "fixes" it into a symmetric check.
+The whole `unanchored` escape clause in `lineage.Path.clause` existed for that one case
+and is **deleted**, not merely unused. Its docstring argued a capped `depth <= fork` would
+drop a typed memory "the moment its branch stopped being the newest entry"; anchoring is
+the better answer to the same worry, because the memory is not exempt from the path, it is
+*on* one.
 
-**One known sharp edge, inherited rather than introduced.** A *hand-written* memory has a
-branch but no depth, and `unanchored=True` keeps it whatever the lineage cap says — so
-one typed on the parent follows you onto a fork whose events it may not describe. That is
-SP3's deliberate choice (`test_a_hand_written_memory_is_not_lost_at_the_first_fork`): the
-alternative is a memory vanishing at the first fork after it was typed. Auto-summarized
-memories carry a depth and *are* capped at the fork, so they behave as expected. If this
-ever bites, the fix is to anchor a hand-written memory at the head depth when it is
-created rather than to change the clause.
+**The drawer shows the path being read, and nothing else.** Same clause as retrieval, so
+the bank you can see is the bank the model can see — one question, one answer. The earlier
+attempt at this shipped an adventure-wide list with an `on_path` flag and an *another
+branch* badge; anchoring makes that redundant, and the field, the badge and its CSS are
+gone. Nothing is stranded by hiding: a memory lives on a branch, switching to that branch
+shows it, and deleting the branch deletes it
+(`test_deleting_a_branch_deletes_the_memories_written_on_it`).
+
+Pinning is unchanged and still path-scoped: it decides *order*, the path decides
+*existence*. A pinned memory on a branch you are not reading is not sent, because the path
+clause runs before pinning is considered.
+
+**Migration 62 anchors existing NULL-depth memories at depth 0 of their branch**, not at
+the tip. 0 is at or before every fork point, so every memory stays visible from exactly
+the paths it is visible from today — the anchor takes nothing out of anybody's bank on
+deploy. Anchoring at the tip would have emptied them out of every branch forked earlier
+than they were typed, on a database with real users on it.
 
 **The scroll path was driven, and it holds.** Three prepends on the 602-action fixture,
 60 actions and ~16,200 px each. The same DOM node stayed at viewport top 792 → 787 — a

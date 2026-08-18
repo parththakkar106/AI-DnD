@@ -166,15 +166,25 @@ That is now four bugs on this frontend found by exercising it rather than by tes
 two of them in paths that had just shipped. The pattern is not subtle any more: **this
 frontend has no test runner, so anything not driven by hand is unverified.**
 
-**The memory drawer now says what the model can see.** Retrieval has been path-scoped
-since SP3, but the drawer listed every memory alike — so on a fork you read "Fell down
-the cellar stairs" and reasonably concluded the AI knew it, when that memory is never
-retrieved on that branch. Rows off the current path are set back and labelled *another
-branch*, still fully editable and deletable. The flag comes from the predicate retrieval
-itself uses, so the badge cannot drift from the behaviour. Note the asymmetry before
-changing it: a fork borrows its ancestors, so a parent's memory *is* on the fork's path;
-the reverse never is. And a hand-written memory has no depth, so it survives the fork cap
-by design — see SP7's entry in `plan/14` for the one case where that surprises.
+**A memory is now attached to a node, always — migration 62.** Hand-written ones used to
+carry a NULL depth ("belongs to the adventure, not to a path"), which is a coordinate no
+fork can cap, so a note typed on one line followed you onto branches whose story it never
+described. They anchor at the head now, and the `unanchored` escape clause in
+`lineage.Path.clause` is deleted rather than left to rot.
+
+**And the drawer shows only the path being read**, filtered by the same clause retrieval
+uses: the bank you can see is the bank the model can see. Nothing is stranded — a memory
+lives on a branch, switching to it shows the memory, and deleting the branch deletes it.
+Pinning decides *order*, the path decides *existence*.
+
+Migration 62 lands existing NULL-depth memories at **depth 0 of their branch**, which is
+at or before every fork point, so nobody's bank loses a row on deploy. The tip would have
+been the tidier-sounding choice and would have emptied them out of every branch forked
+earlier than they were typed.
+
+An earlier pass this session shipped the other design — adventure-wide list, `on_path`
+flag, *another branch* badge. Anchoring made it redundant and it was removed. Worth
+knowing if the phrase turns up in an older commit message.
 
 **The scroll path is finally driven.** 602-action fixture, three prepends of ~16,200 px
 each: the same DOM node held viewport top 792 → 787, and the view stayed 48,174 px from

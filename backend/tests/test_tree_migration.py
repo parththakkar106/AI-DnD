@@ -276,10 +276,12 @@ def test_memories_attach_to_the_node_they_summarised(pre_tree):
         assert depth == source_end, "the memory hangs off the last action it covered"
         assert branch_id is not None
 
-    # A hand-written memory has no node: it gets a branch, but no depth, which
-    # SP3 reads as belonging to the adventure rather than to a path.
+    # A hand-written memory summarised no node, so SP7's migration 62 lands it
+    # at depth 0 of its branch. 0 is at or before every fork point, so it stays
+    # visible from exactly the paths it was visible from before — anchoring
+    # takes nothing out of anybody's existing bank.
     manual = rows("SELECT depth, branch_id FROM memories WHERE source_end IS NULL")
-    assert manual and all(depth is None and branch is not None for depth, branch in manual)
+    assert manual and all(depth == 0 and branch is not None for depth, branch in manual)
 
 
 def test_the_cursors_become_the_nodes_they_named(pre_tree):
@@ -439,7 +441,13 @@ def test_a_blank_adventure_has_a_branch_before_anything_is_played(client):
         db.close()
 
 
-def test_a_hand_written_memory_gets_a_branch_but_no_depth(client):
+def test_a_hand_written_memory_is_anchored_at_the_head(client):
+    """SP7: nothing carries a NULL depth any more.
+
+    On an adventure with no story yet the head is NO_DEPTH (-1), which reads as
+    "before the first node" and so is in range of every branch — right for a
+    note written before anything has happened.
+    """
     adventure_id = client.post("/api/adventures", json={}).json()["id"]
 
     created = client.post(
@@ -450,8 +458,9 @@ def test_a_hand_written_memory_gets_a_branch_but_no_depth(client):
     db = SessionLocal()
     try:
         memory = db.query(models.Memory).filter_by(adventure_id=adventure_id).one()
+        adventure = db.get(models.Adventure, adventure_id)
         assert memory.branch_id is not None
-        assert memory.depth is None
+        assert memory.depth == adventure.head_depth == -1
     finally:
         db.close()
 

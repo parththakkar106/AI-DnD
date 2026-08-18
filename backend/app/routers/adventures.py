@@ -4,7 +4,7 @@ import threading
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from sqlalchemy import func, select
+from sqlalchemy import func
 from sqlalchemy.orm import Session, load_only, undefer
 from sqlalchemy.orm.attributes import set_committed_value
 
@@ -1881,36 +1881,23 @@ def list_memories(
     # model happens to carry. `embedding_blob` is deferred and so would stay
     # out today — this is about the next wide column, not that one.
     #
-    # Adventure-wide, not path-scoped, and that is the split: retrieval reads
-    # the story being played, the drawer manages the bank. Hiding a branch's
-    # memories from the drawer would mean memories nobody can find to delete,
-    # in a phase whose rule is that nothing is ever removed automatically.
-    rows = (
+    # **The bank you can see is the bank the model can see.** Filtered by the
+    # same clause retrieval uses, so the drawer answers one question rather than
+    # two: an adventure-wide list would show memories from branches this story
+    # never went down, which are never retrieved, and a reader has no way to
+    # tell those apart from the ones actually in play. Nothing is stranded by
+    # this — a memory lives on a branch, so switching to that branch shows it,
+    # and deleting the branch takes its memories with it.
+    return (
         db.query(models.Memory)
         .options(load_only(*MEMORY_LIST_COLUMNS))
-        .filter(models.Memory.adventure_id == adventure_id)
+        .filter(
+            models.Memory.adventure_id == adventure_id,
+            lineage.path_of(db, adventure).clause(models.Memory),
+        )
         .order_by(models.Memory.id)
         .all()
     )
-    # ...but listing them alike would be its own lie. A memory on a branch this
-    # story never travelled is never retrieved, so showing it beside one that is
-    # tells the player the model remembers something it cannot see. The ids come
-    # from **the predicate retrieval itself uses**, deliberately: two spellings
-    # of "on this path" would eventually disagree, and the failure would be a
-    # badge that says the opposite of what the model gets.
-    on_path = {
-        row[0] for row in db.execute(
-            select(models.Memory.id).where(
-                models.Memory.adventure_id == adventure_id,
-                lineage.path_of(db, adventure).clause(
-                    models.Memory, unanchored=True
-                ),
-            )
-        )
-    }
-    for row in rows:
-        row.on_path = row.id in on_path
-    return rows
 
 
 @router.post("/{adventure_id}/memories", response_model=schemas.MemoryOut, status_code=201)
