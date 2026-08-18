@@ -50,21 +50,64 @@ ATTEMPT_KEYS = ("world_state", "script", "raw_output")
 def group(db: Session, action: models.Action) -> list[models.Action]:
     """Every attempt at `action`'s turn, oldest first.
 
-    A node with no branch is a pre-tree row that no path contains; it is its
-    own only attempt, and saying so here saves every caller a special case.
+    Keyed on the **parent**, not on the coordinate (SP9). The two agree right up
+    until a take is forked onto its own branch: it keeps its parent but leaves
+    the (branch, depth) its siblings are still at, so a coordinate would report
+    it as the only take of its turn — `1/1` where the player is owed `1/3`.
+
+    The parent also gets the nesting right without being asked. Takes under C1
+    and takes under C2 share a depth and, until one of them forks, a branch;
+    only the parent separates them, which is what makes a pager under C2 read
+    `2/2` instead of counting C1's three as well.
+
+    Two fallbacks, both meaning "this row predates the key being asked about":
+    a node with no branch is a pre-tree row no path contains, and a node with no
+    parent is a pre-SP9 row the backfill could not place. Both are their own
+    only attempt under the rule they were written with.
     """
     if action.branch_id is None or action.depth is None:
         return [action]
+    if action.parent_id is None:
+        # Pre-SP9, and the coordinate is the key those rows were written under.
+        # Root nodes land here too and are genuinely alone: nothing is a take of
+        # the opening of a story.
+        return (
+            db.query(models.Action)
+            .filter(
+                models.Action.adventure_id == action.adventure_id,
+                models.Action.branch_id == action.branch_id,
+                models.Action.depth == action.depth,
+                models.Action.parent_id.is_(None),
+            )
+            .order_by(models.Action.variant_index, models.Action.id)
+            .all()
+        )
     return (
         db.query(models.Action)
         .filter(
             models.Action.adventure_id == action.adventure_id,
-            models.Action.branch_id == action.branch_id,
-            models.Action.depth == action.depth,
+            models.Action.parent_id == action.parent_id,
         )
         .order_by(models.Action.variant_index, models.Action.id)
         .all()
     )
+
+
+def on_branch(rows: list[models.Action], node: models.Action) -> list[models.Action]:
+    """The takes in `rows` that sit on `node`'s own branch.
+
+    `group` answers "which takes are of this turn", and since SP9 that spans
+    branches — a take forked onto its own line is still a take of the same turn,
+    which is the whole point of keying on the parent.
+
+    Deleting is the one caller that must not follow it there. A take on another
+    branch is reachable through that branch and belongs to the story somebody is
+    telling on it; removing it because a turn was undone over here would delete
+    a line nobody asked about. Same parent *and* same branch is the coordinate,
+    which is what "every attempt at this turn" meant before a fork could move
+    one out of it.
+    """
+    return [row for row in rows if row.branch_id == node.branch_id]
 
 
 def live_in(rows: list[models.Action]) -> models.Action | None:
@@ -149,6 +192,11 @@ def add_attempt(
     """
     replacement.branch_id = previous.branch_id
     replacement.depth = previous.depth
+    # Copied, never resolved from the path: a take belongs to the turn it is a
+    # take *of*, and that is what `group` keys on. Resolving it here would ask
+    # what is live one depth back, which is the same node right now and stops
+    # being once this turn is forked away from.
+    replacement.parent_id = previous.parent_id
     replacement.live = True
     # The end of the group, not one past `previous` — which is only the same
     # thing when `previous` is the newest take. Switch a three-take turn back to

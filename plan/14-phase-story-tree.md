@@ -842,6 +842,66 @@ once SP7's tree view has replaced the pager.
 
 **Verify:** full suite; egress ceilings; a measured before/after size, aggregates only.
 
+### SP9 — Takes, not chips: one pager, and a fork that makes a new take
+
+**Why this exists.** SP7 was driven by hand and the tree was unusable. Three things were
+wrong, and only the third is a bug:
+
+* **A chip did two different things.** At the tip it switched; above the tip it only
+  *previewed*, and taking it needed a second button. One control, two meanings, and the
+  meaning depended on where the player was standing.
+* **Nothing could fork but an AI turn that already had a second take.**
+  `POST /actions/{id}/fork` answers 400 when the turn has one take, so a player's own
+  message had no way to become anything else and "branch from here" did not exist.
+* **Retry only worked on the newest action.** Mid-story there was no retry at all.
+
+**The model, in the player's words.** Every action can gain another *take*. On an AI node
+that means regenerate; on the player's own it means type something else. Stepping between
+takes is free — `3/3` to `1/3` is navigation, and the story below simply empties, because
+that take has no children yet. **A branch is created when you write below a take that is
+not the live one**, never before.
+
+That collapses SP5's fork and SP4's retry into one operation and deletes the
+tip-versus-past distinction from the UI entirely. It survives only in the implementation,
+where it decides whether a write needs a branch at all.
+
+**Takes are grouped by parent, not by coordinate.** This is the load-bearing change.
+`attempts.group()` filters `branch_id == … AND depth == …`, and the player's own example
+breaks it:
+
+```
+B ── C   C1   C2              <- three takes, one parent (B)
+          │    └── D1' D2'    <- two takes, parent C2
+          └── D1 D2 D3        <- three takes, parent C1
+```
+
+Standing on the C2 path at that depth must read `2/2`, not `5`. Coordinate grouping gets
+that right by accident — writing under a non-live take forks, so the two sets land on
+different branches. It gets `C` wrong: once C is forked onto its own branch it is alone
+at its coordinate and reads `1/1`, losing C1 and C2 from a pager that must still say
+`1/3`.
+
+**Decision: add `actions.parent_id`.** The alternative — making a branch's fork point a
+*node* instead of a depth, so a promoted take never moves — was rejected. `lineage` exists
+precisely so a read is an OR-clause per branch rather than a walk up parent pointers, and
+re-pointing the fork at a node changes path resolution itself, which drags in `cursors`,
+memory depths and both bundle formats. `parent_id` is read only to group a turn's takes:
+one indexed lookup, never a walk, and nothing about how a path resolves changes. Per SP2's
+sizing note an integer beside `depth` is cheap, and the backfill rewrites a heap measured
+at 1.7 MB on 2026-08-18.
+
+**`variant_count` / `variant_index` are reprieved, not revived.** SP8 was going to drop
+both; the pager needs the group's shape again. It needs it *per parent*, which is not what
+either column caches, so SP8 still drops them and SP9 computes the shape from `parent_id`.
+
+**Verify:** the SP0 baseline passes unmodified — a linear story has one take per parent,
+and none of this is reachable without a second one. Plus: `2/2` under one take while its
+sibling holds `3/3`; a pager that still reads `1/3` after its take has been forked onto its
+own branch; a write below a non-live take forks exactly once; a fork on a player's own
+message generates a reply.
+
+**Owed:** a migration adding one column, and a `VACUUM FULL actions;` after it.
+
 ## Standing constraints
 
 - **No production data is read at any point in this phase.** Migrations, the e2e
