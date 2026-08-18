@@ -78,11 +78,24 @@ needed; nothing requires reading a row of anyone's story.
 
 ## Pick up here
 
-**`plan/14-phase-story-tree.md`, SP9 — drive the new pager by hand.** SP7 shipped, PR #6
-merged, and the tree went live on 2026-08-18. It was then driven by hand and **found
-unusable**, which is what SP9 exists to fix; SP9's code is written and green (**426
-tests**) on branch `sp7b-take-pager`, **not merged and not deployed**. What it still needs
-is the thing that found the problem in the first place: a person clicking it.
+**`plan/14-phase-story-tree.md`, SP9 — merge it.** SP7 shipped, PR #6 merged, and the tree
+went live on 2026-08-18. It was then driven by hand and **found unusable**, which is what
+SP9 exists to fix. SP9 is written, green (**433 tests**) and **driven by hand** on branch
+`sp7b-take-pager`; it is **not merged and not deployed**.
+
+**Driving it found two bugs the suite could not have.** The pager did not appear until the
+page was reloaded — a retry's reply is the second take of its turn, and the SSE stream
+builds its own `ActionOut`, so it was the one payload that never got the annotation. And
+retaking a player turn gave `> You > You ...`, because the editor is seeded with the stored
+text, which is already formatted. Both fixed, both with regression tests. **Neither was
+reachable from any test that existed, and the frontend still has no test runner** — which
+is the standing reason this project keeps finding UI bugs by hand.
+
+**State was checked against the running app, not just asserted.** On the HP-script demo, a
+path crossing *three* branches carried exactly the damage of the nine AI nodes on it and
+none of the 66 points sitting on takes those branches never told. `test_take_state.py`
+pins the same guarantee with a script that adds ten gold a turn; three of its five tests
+fail if `roll_back_before` is removed.
 
 **What SP7 got wrong, in one line: a chip meant two different things.** At the tip it
 switched; further back it only previewed, and taking that line needed a second button. The
