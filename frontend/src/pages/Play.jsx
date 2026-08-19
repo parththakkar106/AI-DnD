@@ -3,6 +3,8 @@ import { createPortal } from 'react-dom'
 import { useNavigate, useParams } from 'react-router-dom'
 import { api } from '../api'
 import { AutoTextarea, Field, StoryCardRow, downloadJSON, npcInitials, pickJSONFile, useToast } from '../components'
+import { BranchMap } from '../BranchMap'
+import { branchLabel, headLineage, orderBranches } from '../branches'
 
 const MODES = ['do', 'say', 'story']
 const PLAYER_TYPES = ['do', 'say', 'story']
@@ -1035,41 +1037,6 @@ function TakePager({
   )
 }
 
-// What an unnamed branch is called.
-//
-// Derived, never stored: a generated name in the column would go stale the
-// moment a branch before it is deleted. A fork depth is a coordinate, so it
-// says the same thing whatever else is thrown away.
-function branchLabel(branch) {
-  if (branch.name) return branch.name
-  if (branch.parent_branch_id === null) return 'The first telling'
-  return `Fork at moment ${branch.fork_depth + 1}`
-}
-
-// Parents before children, each child under the branch it left.
-function orderBranches(branches) {
-  const kids = new Map()
-  for (const b of branches) {
-    const key = b.parent_branch_id
-    if (!kids.has(key)) kids.set(key, [])
-    kids.get(key).push(b)
-  }
-  const out = []
-  const walk = (parentId, indent) => {
-    for (const b of kids.get(parentId) || []) {
-      out.push({ branch: b, indent })
-      walk(b.id, indent + 1)
-    }
-  }
-  // Anything whose parent is missing would otherwise never be walked. That
-  // cannot happen through the API, but a list that silently drops a branch is
-  // the one bug this panel exists to make impossible to have.
-  walk(null, 0)
-  const seen = new Set(out.map((row) => row.branch.id))
-  for (const b of branches) if (!seen.has(b.id)) out.push({ branch: b, indent: 0 })
-  return out
-}
-
 // Every line the story has taken, and the three things you can do to one.
 //
 // Drawn from a single request: `fork_depth` says where a branch leaves its
@@ -1085,6 +1052,7 @@ function BranchPanel({ advId, refreshKey, onSwitched, onTreeChanged, onError }) 
   const [busyId, setBusyId] = useState(null)
   const [renaming, setRenaming] = useState(null)   // { id, text }
   const [confirming, setConfirming] = useState(null)
+  const [mapOpen, setMapOpen] = useState(false)
   const [tick, setTick] = useState(0)
 
   useEffect(() => {
@@ -1096,6 +1064,8 @@ function BranchPanel({ advId, refreshKey, onSwitched, onTreeChanged, onError }) 
     return () => { cancelled = true }
   }, [advId, refreshKey, tick])
 
+  // Answers whether it worked. Both callers keep an editor open on a refusal —
+  // a rename the server turned down must not take the typed name with it.
   async function run(branchId, work) {
     setBusyId(branchId)
     try {
@@ -1105,30 +1075,37 @@ function BranchPanel({ advId, refreshKey, onSwitched, onTreeChanged, onError }) 
       // screen would hear about that — no turn is played, and the story on the
       // current path does not change by a single action.
       onTreeChanged()
+      return true
     } catch (err) {
       onError(err.message)
+      return false
     } finally {
       setBusyId(null)
     }
   }
 
+  // One copy of each operation. The list below and the map overlay both go
+  // through these, so a rule cannot hold in one view and not the other, and a
+  // failure is reported one way wherever it was asked for.
   const switchTo = (b) => run(b.id, async () => onSwitched(await api.switchBranch(advId, b.id)))
+  const renameTo = (b, name) => run(b.id, () => api.renameBranch(advId, b.id, name))
+  const removeBranch = (b) => run(b.id, () => api.deleteBranch(advId, b.id))
 
-  const saveName = (b) => run(b.id, async () => {
-    await api.renameBranch(advId, b.id, renaming.text)
-    setRenaming(null)
-  })
-
-  const remove = (b) => run(b.id, async () => {
-    await api.deleteBranch(advId, b.id)
-    setConfirming(null)
-  })
+  const saveName = async (b) => { if (await renameTo(b, renaming.text)) setRenaming(null) }
+  const remove = async (b) => { if (await removeBranch(b)) setConfirming(null) }
 
   if (failed) return <div className="panel-empty">Couldn’t read the branches — {failed}</div>
   if (!branches) return <div className="panel-empty">Reading the tree…</div>
 
+  const lineage = headLineage(branches)
+
   return (
     <div className="branch-panel">
+      {/* The list says which lines exist; the map says where they parted and
+          how much story each one is, which is the part a list cannot draw. */}
+      <button type="button" className="branch-map-open" onClick={() => setMapOpen(true)}>
+        ⌗ See the tree
+      </button>
       {branches.length === 1 && (
         <p className="branch-intro">
           One thread so far. Retry a turn, then take an attempt the story moved
@@ -1140,6 +1117,10 @@ function BranchPanel({ advId, refreshKey, onSwitched, onTreeChanged, onError }) 
           const isRenaming = renaming?.id === branch.id
           const isConfirming = confirming === branch.id
           const busy = busyId === branch.id
+          // The server refuses to delete the line being read or any line it
+          // was forked from. The button said nothing about that and answered
+          // with a toast; it now says so before it is pressed.
+          const loadBearing = lineage.has(branch.id)
           return (
             <div key={branch.id} className={`branch-row ${branch.is_head ? 'here' : ''}`}
               style={{ marginLeft: indent * 12 }}>
@@ -1197,7 +1178,10 @@ function BranchPanel({ advId, refreshKey, onSwitched, onTreeChanged, onError }) 
                   {/* The root holds the turns every other branch borrows, and
                       the server refuses it — so it is not offered. */}
                   {branch.parent_branch_id !== null && (
-                    <button type="button" className="danger" disabled={busy}
+                    <button type="button" className="danger" disabled={busy || loadBearing}
+                      title={loadBearing
+                        ? 'The line you are reading is built on this one. Switch away first.'
+                        : undefined}
                       onClick={() => setConfirming(branch.id)}>Delete</button>
                   )}
                 </div>
@@ -1206,6 +1190,17 @@ function BranchPanel({ advId, refreshKey, onSwitched, onTreeChanged, onError }) 
           )
         })}
       </div>
+
+      {mapOpen && (
+        <BranchMap
+          branches={branches}
+          busyId={busyId}
+          onSwitch={switchTo}
+          onRename={renameTo}
+          onDelete={removeBranch}
+          onClose={() => setMapOpen(false)}
+        />
+      )}
     </div>
   )
 }

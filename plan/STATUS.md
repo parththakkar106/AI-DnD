@@ -176,7 +176,9 @@ Three things to carry forward:
 - **The spatial node map was deliberately not built.** SP7 shipped a rail instead, on the
   grounds that a per-node map is a second windowing problem at 600 nodes. It is a
   standalone feature whenever it is wanted, and it needs no new endpoint — the rail and a
-  map both draw from `GET /branches`.
+  map both draw from `GET /branches`. **A branch-level map was built on 2026-08-20** (see
+  below); the per-node version is still not, and the windowing argument still stands
+  against it.
 
 And one known cost, not a bug: the two memory marks are a single pair on the adventure,
 so switching branches makes the mark on the branch being left unreadable from the new one
@@ -192,6 +194,52 @@ during SP7 — three prepends, 5 px of drift, no throw-to-the-end. What is still
 an automated version; see SP7's entry in `plan/14`.
 
 ---
+
+## What happened on 2026-08-20 — the branch map
+
+The Branches panel gained a **⌗ See the tree** button opening a full-screen map: one
+horizontal lane per branch, running from the moment it left its parent to the moment it
+ends, joined to the parent by an elbow at the fork. Clicking a lane selects it; the
+footer switches, renames or deletes it. Not merged, not deployed. **440 backend tests
+pass, unchanged — this is frontend-only.**
+
+**It is a branch map, not the node map SP7 refused, and that is the whole reason it was
+cheap.** Lanes are bounded by branch count, not by node count, so the 600-node windowing
+problem never appears: it draws from the same single `GET /branches` the rail already
+made, and reads nothing else.
+
+New: `frontend/src/branches.js` (the tree maths — `branchLabel`, `orderBranches`,
+`headLineage`, `layoutTree`, `momentTicks`) and `frontend/src/BranchMap.jsx`. `Play.jsx`
+lost its private copies of the first two; the panel and the map now label and order a
+branch through the same functions, so a branch cannot be called two things by the two
+views. The three operations stayed in `BranchPanel` and are passed down, and `run` now
+answers whether it worked so neither view clears a half-typed name on a refusal.
+
+`tools/tree_fixture.py` is the counterpart to `tools/branch_fixture.py`: four branches at
+three different fork depths, one forked off a fork. **It is the whole of the map's
+coverage** — the frontend still has no test runner — and it exists to be looked at.
+
+Three things found by driving it, none of which a test could have seen:
+
+- **`clientWidth` is not `contentRect.width`.** Seeding the measured width from
+  `clientWidth` counts the canvas padding the ResizeObserver leaves out, so the first
+  paint drew an svg 24 px wider than its box. And the observer's *initial* observation
+  did not arrive at all here, so dropping the seed and keeping only the observer left the
+  map never drawing. Both halves are needed, and the seed has to subtract the padding.
+- **Only the name was being clipped.** The meta line under it was not, so a lane that
+  forks late ran its text off the right edge. Both are clipped now, and a lane starting in
+  the right third hangs its labels back over the fork instead — its row is its own band,
+  so there is nothing to the left to collide with.
+- **The delete rule was in the server and in the map, but not in the list.** The panel
+  offered Delete on a branch the head was forked from and answered with a toast from the
+  server's 400. `headLineage` is the client's copy of that rule and both views now use it.
+  The server stays the authority.
+
+Also worth recording: **the 390 px iframe trick in the older notes no longer works.** The
+app serves `frame-ancestors 'none'`, so an in-page iframe has no reachable
+`contentDocument`. Narrow widths were checked by constraining `.branch-map` and measuring
+`scrollWidth` against `clientWidth` instead, which tests the reflow path that actually
+matters.
 
 ## What happened on 2026-08-18, part five — the review, and PR #6
 
