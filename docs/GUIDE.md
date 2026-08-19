@@ -36,13 +36,16 @@ An AI Dungeon clone. You write a scenario, then play an open-ended text adventur
 language model narrates the world. You type "I open the door", the model writes what
 happens next, and it remembers what came before.
 
-Three things make it more than a chat wrapper:
+Four things make it more than a chat wrapper:
 
 1. **A context engine.** The model has a limited input window. The app decides, every
    single turn, which pieces of the story get to be in the prompt and which get dropped.
 2. **A world-state engine.** The scenario declares stats (`hp`, `trust`, `day`). The model
    proposes changes to them each turn; a Python engine decides what actually sticks.
-3. **A scripting sandbox.** Real AI Dungeon JavaScript scripts import and run, inside an
+3. **A story tree.** The story is not a list. Any turn can hold more than one take, and
+   writing below one that isn't the live one starts a branch that borrows every turn above
+   the fork rather than copying it.
+4. **A scripting sandbox.** Real AI Dungeon JavaScript scripts import and run, inside an
    embedded QuickJS interpreter.
 
 Runs locally against Ollama for free, or hosted against any OpenAI-compatible endpoint.
@@ -91,14 +94,13 @@ player input
   → onInput script hook          (user JS may rewrite or block it)
   → store the player action
   → retrieve memories            (embed recent story, cosine-rank the bank)
-  → snapshot script + world state (so undo/retry can roll back)
   → build_context()              (the budget allocator)
   → onModelContext script hook   (user JS may rewrite the whole prompt)
   → snapshot the exact prompt    (for the Insights panel)
   → provider.generate()          (streamed, token by token)
   → onOutput script hook
   → extract the fenced state block, referee the delta, strip it from the prose
-  → save the action
+  → save the action, stamping on it the script + world state it leaves behind
   → fire-and-forget: summarize + embed in the background
 ```
 
@@ -110,10 +112,14 @@ each context component, its token cost, and why it was included. It's also what 
 prompt bugs findable. The cost is storage (~74 KB per turn), which turns into a real
 performance problem later — see [2.5](#25-the-189x-egress-fix).
 
-**Snapshots happen before the model call, not after.** `state_before` and
-`world_state_before` are stapled onto the action *before* the hooks and the delta run.
-That's the entire mechanism behind undo and retry actually rewinding rather than just
-deleting text.
+**Every node records the state it leaves behind.** `state_after` and `world_state_after`
+are stapled onto the action once its hooks and its delta have run, so a node carries the
+scoreboard and the RPG stats as they stood when that turn finished. Rewinding to *before*
+a turn is then a read of the node in front of it, which is the same move as switching to
+another branch — one mechanism, and it is the whole reason undo, retry and branch
+switching all put the numbers back rather than only rewriting text. (These were `*_before`
+pictures originally; a tree wants the *after*, because a branch's tip is what a reader
+standing on it should see.)
 
 ---
 
@@ -394,11 +400,19 @@ back into the prompt.
 
 ### The decisions inside it
 
-**Only *settled* actions get summarized.** The newest action is always held back one turn.
-Reason: only the last action can be retried. If a memory summarized the newest action and
-the player then retried it, the memory would describe narration that no longer exists — and
-because its cursor has already advanced, it would never be regenerated. Holding one action
-back costs a turn of latency and makes that state unreachable.
+**A memory hangs off the node whose block it ends on.** Not off the adventure, and not off
+a *position* in a list of actions — off a `(branch_id, depth)` coordinate. That is what
+makes "which memories described this turn?" an indexed lookup rather than a scan for rows
+whose covered range has fallen off the end of the story, and it is what makes memories
+inherit correctly across a fork: the ones above the fork point already sit on ancestors
+both lines read.
+
+It is also the repair. When a turn's text is replaced or removed — a retry, an undo, a
+deleted action — `forget_node` withdraws the memory hanging off that coordinate *and*
+rewinds both marks to just before the stretch it covered, so the ground is summarized again
+from what the story now says. An earlier version instead held the newest action back a turn
+so it could never be summarized before it stopped being retryable; that is no longer needed,
+because the repair exists whether or not the invalidation happens at the tip.
 
 **Cursors only advance on success.** Every AI call in this module is best-effort. If
 summarization fails, the function returns and the cursor is unchanged, so the same block is
@@ -536,10 +550,12 @@ ugly fast.
 User
  ├─ Scenario   (the template)      ── stat_schema, prompt, memory, author's note
  │    └─ StoryCard, Script
- └─ Adventure  (the playthrough)   ── world_state, script_state, cursors
-      ├─ Action  (one story entry) ── text, context_snapshot, variants, state_before
+ └─ Adventure  (the playthrough)   ── world_state, script_state, head_branch_id/head_depth
+      ├─ Branch  (one line of it)  ── parent_branch_id, fork_depth, lineage, name
+      ├─ Action  (one node)        ── branch_id, depth, parent_id, live,
+      │                               text, context_snapshot, state_after
       ├─ StoryCard  (its own copy)
-      ├─ Memory     (text, embedding, source_start/end, use_count)
+      ├─ Memory     (text, embedding, branch_id, depth, use_count)
       └─ AdventureScript
 ```
 
@@ -551,37 +567,225 @@ for when you *do* want that, which diffs the two and shows you what would change
 
 Same reasoning as instantiating a class: shared definition, independent state.
 
-## 2.2 Two coordinate systems, and the bug class they create
+## 2.2 The story is a tree
 
-The subtlest thing in the codebase.
+The largest structural change the project has had, and the one with the most reasoning
+behind it.
 
-There are two ways to identify an action:
+### The problem
 
-- **`Action.index`** — a stable number stored on the row. Gaps appear when actions are
-  deleted.
-- **Position** — where an action sits in the filtered, index-ordered list of *story*
-  actions (non-empty text only). Shifts whenever anything before it is deleted.
+The story used to be a list, and a mutable one. Retry rewrote the last entry in place;
+undo and delete removed entries from the middle. Everything derived from the story —
+the memories, the running summary, the two marks saying how far each had got — was
+indexed by *position in that list*, and a position means something different after
+anything in front of it is deleted.
 
-The memory cursors (`memory_cursor`, `summary_cursor`) are **positions**.
-`Memory.source_start` / `source_end` are **`Action.index` values**.
+That single fact produced a family of bugs that all looked different:
 
-The two spaces are identical until the first deletion, and diverge forever after. Mixing
-them means summarization silently skips or duplicates blocks — no crash, no error, just a
-memory describing the wrong turns.
+- Deleting a middle action slid a never-summarized action down into the "already
+  covered" range, so a *recent* action silently never became a memory.
+- Discarding a memory left its actions behind the mark, describing nothing.
+- Retry rewrote an action's text after the mark had passed it, so its memory described
+  narration that was no longer in the story.
+- The retried row was still attached to the adventure while its replacement was being
+  written, so the model was shown the attempt it was meant to replace and wrote a
+  *continuation* of it. That exclusion had to be threaded through four separate readers.
+- Attempts lived in a JSON array on the row with a mirrored copy of the live one in the
+  ordinary columns, which is a repeating group and a denormalisation in one.
 
-Three things hold it together:
+Each was fixed where it was found. The pattern only becomes visible when you line them
+up: **they are all the same bug, and it is that the story is a list nobody may reorder.**
 
-1. `history.position_of_index()` is the explicit translation between the spaces, and every
-   crossing goes through it.
-2. `note_action_removed()` is called *before* a delete: if the removed action sat before a
-   cursor, the cursor decrements, so an unsummarized action can't slide into the
-   "already covered" range and be skipped forever.
-3. One definition of "story action", written twice — `_STORY_TEXT` in SQL and
-   `is_story_text()` in Python — with a comment on both saying to keep them in step. The
-   SQL version folds newlines and tabs into spaces before `trim()`, because SQLite's and
-   Postgres' single-argument `trim()` only strips spaces while Python's `.strip()` also
-   drops newlines. An action of nothing but a newline would otherwise count as story text
-   in one and not the other, and every cursor after it would be off by one.
+### The shape
+
+Make the story a tree, and none of them are reachable.
+
+Every action is a **node** with a `branch_id` and a `depth`. A **branch** is one line
+through the tree; it holds the nodes played on it and *borrows* everything before its
+fork point from its ancestors. Nothing is ever copied and — apart from an explicit
+delete — nothing is ever removed.
+
+```
+branches(id, adventure_id, parent_branch_id, fork_depth, lineage, name)
+actions(id, adventure_id, branch_id, depth, parent_id, live, text, …, state_after)
+memories(…, branch_id, depth)
+adventures(…, head_branch_id, head_depth)
+```
+
+`depth` is a position along *a* path, not a global turn number: `A4` and `B4` are two
+alternatives, not two turns. Reading branch C, whose tip is at depth 7 and which left B
+at 5, which left A at 3:
+
+```sql
+SELECT * FROM actions
+WHERE (branch_id = 'C')
+   OR (branch_id = 'B' AND depth <= 5)
+   OR (branch_id = 'A' AND depth <= 3)
+ORDER BY depth DESC LIMIT 32
+```
+
+→ `A0 A1 A2 A3 B4 B5 C6 C7`.
+
+**Why `branch_id` + `depth` rather than parent pointers alone.** Parent pointers are the
+obvious way to store a tree and the wrong way to read one: reading a story would be N
+round trips up a chain, which throws away the windowed history work (§1.2) that made a
+turn's read cost flat. Depth replaces the old `index` as the ordering key, so the reads
+keep the shape they already had.
+
+### The lineage, and why fork count doesn't cost anything
+
+The OR-clause above is not reconstructed per read. It is stored on the branch row as
+`lineage` — `[(C, ∞), (B, 5), (A, 3)]` — computed once when the fork happens, from the
+parent's lineage plus one entry. `context/lineage.py` is the only module that knows how
+to turn it into a query, which is deliberate: one forgotten clause shows the wrong story
+and reports nothing.
+
+Two properties of the shape do the real work:
+
+- **The ranges are disjoint and descending.** A branch's own nodes always sit deeper than
+  its fork point, and each ancestor is capped at the fork depth of the branch beneath it.
+  So ordering the whole clause by `depth DESC` reads entry 0's nodes, then entry 1's,
+  then entry 2's — which means a tail read can use the newest few entries and stop.
+- **Clause count is bounded by the context window, not by fork count.** A 200-fork story
+  whose newest branch is 40 turns long reads with *one* clause, because the window is
+  covered before the second entry is reached.
+
+A branch stores no story of its own, so a fork costs an id, a parent, a fork depth and a
+cached ancestry. Measured on a 40-turn story forked twenty times against the same story
+flat: a page load of **31,652 B against 31,433 B — 1.007×**, or about **103 bytes per
+branch**. No migration, no vacuum, no copy.
+
+### What a player actually does
+
+None of the above is what the screen shows. In the player's words:
+
+> Any turn can gain another **take**. On an AI turn that means regenerate; on your own
+> message it means type something else. Stepping between takes with `‹ 2/4 ›` is free —
+> the story below simply empties, because that take has no children yet. **A branch is
+> created when you write below a take that is not the live one**, never before.
+
+That rule collapses two operations into one and deletes a distinction from the UI. The
+first version of this screen had a chip that *switched* at the tip and only *previewed*
+above it, with a second button to take that line — one control whose meaning depended on
+where the reader was standing. The rule above replaced it with a pager that only ever
+steps, a fork button on every turn, and no tip-versus-past distinction at all. The
+distinction survives in the implementation, where it decides whether a write needs a
+branch: at the tip the attempts are still leaves nobody has built on, so taking one is a
+switch and no branch is created.
+
+### Takes are grouped by parent, not by coordinate
+
+The load-bearing detail, and the one that is not obvious.
+
+The natural way to find "the other takes of this turn" is by coordinate — same branch,
+same depth. It is wrong in both directions:
+
+```
+B ── C   C1   C2              <- three takes, one parent (B)
+          │    └── D1' D2'    <- two takes, parent C2
+          └── D1 D2 D3        <- three takes, parent C1
+```
+
+Standing on the C2 path at that depth must read `2/2`, not `5`. Coordinate grouping gets
+that one right by accident, because writing under a non-live take forks and the two sets
+land on different branches. It gets `C` wrong: once C has been forked onto a branch of
+its own it is alone at its coordinate and reads `1/1`, having lost C1 and C2 from a pager
+that must still say `1/3`.
+
+So a node carries `parent_id`, read for nothing but this. The alternative — making a
+branch's fork point a *node* rather than a depth, so a promoted take never moves — was
+rejected: the whole point of `lineage` is that a read is an OR-clause per branch instead
+of a walk up parent pointers, and re-pointing the fork at a node changes path resolution
+itself, dragging in the cursors, memory depths and both bundle formats. `parent_id` is
+one indexed lookup, never a walk, and nothing about how a path resolves changes.
+
+### Cursors become anchors
+
+The two marks — how far the memory bank has got, how far the summary has got — used to
+be counts. A count is a position in a list, and every rule about sliding them, rewinding
+them and translating between positions and `Action.index` existed to patch up the fact
+that the list moves.
+
+A cursor is now an **anchor**: `(branch_id, depth)`, the node up to and including which
+the work is done. Deleting an action does not move it, because a depth is a coordinate
+along a path rather than a slot in a list. "What is not covered yet" becomes a question
+about the story instead of about a list index, and it answers correctly whatever has been
+deleted in front of it. The branch half is what makes it survive forking: a depth alone
+is ambiguous once two branches both have a node 41.
+
+`position_of_index`, `note_action_removed`, `settled_story_actions` and the cursor-rewind
+machinery were **deleted**, not left unused. So was the one-turn memory holdback that
+existed because a retry could rewrite an action the mark had already passed.
+
+### Derived work attaches to the node that produced it
+
+Generalise the rule and a lot falls out: *anything derived hangs off the node that
+produced it*. A memory covering depths 37–42 hangs off that branch's node 42 and is
+invisible to any path that does not run through it. Shared ancestors are therefore shared
+automatically, so **a fork needs nothing recreated** — the memories above the fork point
+are already on the ancestors both lines read.
+
+The subtle case is the memory sitting *at* the forked coordinate. The first cut moved it
+onto the new branch and re-anchored the marks naming it. Both are wrong for the same
+reason: that memory describes whichever attempt was live at that coordinate, which is the
+one staying on the parent. The right answer needs no code — the lineage caps the parent
+one depth short of the fork, so the memory is simply out of range from the new branch,
+invisible to both the retrieval clause and the anchor read. The new line summarizes that
+ground again, from the text it actually tells.
+
+Hand-written memories obey the same rule. One used to carry a NULL depth, described as
+"belongs to the adventure rather than to a path" — which sounds harmless and is not: a
+NULL is a coordinate no fork can cap, so a note typed on one line followed the reader onto
+branches whose events it never described. They are anchored at the head instead: *the
+story you were reading when you wrote it*.
+
+### Deleting, and why the branch UI was a hard dependency
+
+Nothing is ever auto-pruned. That is the guarantee the whole design rests on, and it is
+also why branch management could not be a nice-to-have: without a way to delete a line,
+storage grows without limit.
+
+The delete rule has two halves and the second is easy to miss. Refusing to delete the
+line being read is obvious. The other half is refusing any line it was **forked from** —
+`parent_branch_id` cascades, so deleting an ancestor takes the head with it and leaves
+`head_branch_id` pointing at a row that is gone. One membership test against the head's
+own lineage covers both, because a lineage already names itself and every branch it
+borrows from. The server is the authority; the client computes the same set only so a
+button can say so before it is pressed.
+
+### The migration, and what it deliberately did not do
+
+There is no feature flag. **A linear story is a tree with one branch**, so the
+intermediate states were not half-migrated — they were the same product with a superset
+schema underneath, which made "existing adventures are unaffected" a literal, testable
+pass condition at every step. A flag would have bought two live code paths through the
+context builder, the memory bank, undo and retry at once.
+
+The legacy columns (`index`, `variants`, `variant_index`, the two `*_before` snapshots)
+were kept unread for a release rather than dropped with the migration that stopped using
+them, so that a redeploy of the previous build is still a way out. Dropping columns is the
+one step that isn't.
+
+One operational note that generalises: on Postgres, a migration that rewrites every row of
+`actions` roughly doubles the table and only `VACUUM FULL` gives it back — 79 MB reclaimed
+in 5.5 s on one occasion. But bloat scales with the **heap**, and `context_snapshot` is 94%
+of this table and lives out of line, so a migration touching only small columns reuses the
+existing TOAST pointer and costs a tenth of that. Read the sizes from `sum(octet_length())`
+per column, not from `n_live_tup`, which is a stale estimate in exactly the direction that
+makes bloat look smaller.
+
+### What this is honest about
+
+- **The two marks are one pair on the adventure**, not one per branch. Switching branches
+  makes the mark on the line being left unreadable from the new one, and that ground is
+  summarized again. It answers "nothing covered", which is the safe direction — redo the
+  work, never skip it — but switching back and forth costs AI calls. Per-branch cursors
+  are the fix if it ever matters.
+- **Story cards stay adventure-wide.** A card invented on branch B shows on branch A.
+  Event-sourcing card changes onto nodes was considered and rejected.
+- **Editing an already-summarized action still leaves its memory stale.** The machinery to
+  fix it now exists — an edit could write a sibling take and switch to it, which is a retry
+  the player typed — but it does not do that yet.
 
 ## 2.3 Undo and retry that actually rewind
 
@@ -589,31 +793,39 @@ Most implementations of undo delete the last message. That's wrong here, because
 mutates three things: the text, the scripting scoreboard (`script_state`), and the RPG
 stats (`world_state`).
 
-**The mechanism:** every action carries `state_before` and `world_state_before` — deep
-copies taken before the turn's hooks ran. Undo restores from them. Retry rolls back to
-them, then regenerates.
+**The mechanism:** every node carries `state_after` and `world_state_after` — deep copies
+of what the adventure looked like once that turn had played. Rewinding to before a turn is
+a read of the node in front of it, so undo, retry and a branch switch are the same
+restore. The cooldown clock comes along for free: it lives inside the world state, in
+`_meta.last_changed`, so each line of the story carries its own without anything having to
+know there is one.
 
-**Retry keeps every attempt.** Instead of deleting and replacing, the row survives and each
-attempt is appended to `Action.variants`; `variant_index` names the live one. The UI shows
-`‹ 2/3 ›` and you can page back to a discarded take. A variant stores only what differs
-between attempts — the narration, its reasoning trace, and the state it produced — never
-the assembled prompt, which is identical across attempts of the same turn and is by far the
-biggest thing in the snapshot.
+**Nothing a retry replaces is thrown away.** The old attempt stays as another **take** of
+that turn — a sibling node at the same coordinate, `live` false — and the pager steps
+between them. Which is to say retry is not a special case: it is the tree, with the branch
+not yet created. See [2.2](#22-the-story-is-a-tree).
 
 Three details that are easy to get wrong:
 
-**The row being retried is excluded from its own context.** It's still attached to the
-adventure (it holds the variant history), so without `exclude_action_id` the model would be
-shown the attempt it's replacing as established story and would write a continuation of it
-instead of a replacement.
+**The turn being retried is excluded from its own context.** Its takes are still attached
+to the adventure, so without `exclude_action_id` the model would be shown the attempt it is
+replacing as established story and would write a continuation of it. The exclusion had
+leaked into four readers, not one: history replay, story-card trigger matching, in-scene
+NPC detection, and the memory-bank similarity query. The invariant is worth stating flatly:
+*anything reading the story during generation takes the exclusion.*
 
-**A retry reuses the turn's index**, not the next one. Cooldowns are measured in action
-indexes, so using `next_index()` would advance the clock the cooldown rules run on and a
-retry would quietly unlock stats that should still be on cooldown.
+**A retry reuses the turn's depth**, not the next one. Cooldowns are measured along the
+path, so allocating a new depth would advance the clock the cooldown rules run on and a
+retry would quietly unlock stats that should still be waiting.
+
+**`delete_turn` used to mean "every take at this coordinate".** Once a take can be forked
+onto a branch of its own, the group spans branches, and undo reached across and deleted a
+take belonging to a line nobody asked about. Anything that reads a take group and then
+*writes* has to say whether it means the turn or the coordinate.
 
 **If the regeneration fails, the rollback is reversed.** `generate_turn` wraps the
 generator in a `try/finally`: if it ends without saving — a provider error, an empty reply,
-a script `stop`, or the browser hanging up — the previous variant is put back in charge.
+a script `stop`, or the browser hanging up — the previous take is put back in charge.
 Otherwise the state on the server would drift from the text still on the user's screen.
 
 ## 2.4 The turn lock
@@ -674,15 +886,16 @@ entity select in a subquery, so the emitted SQL names every column — including
 ones. No bytes come back either way, but the database still has to read them, and a guard
 that greps SQL cannot tell the two apart.
 
-There's a companion denormalization for the same reason: `variants` is deferred, so
-`variant_count` exists as its own column to answer "how many attempts?" without fetching
-them. `set_variants()` is the only function allowed to write `variants`, precisely so the
-two can't drift and the pager can't lie about how many takes a turn has.
+There's a companion denormalization for the same reason: the pager has to know how many
+takes a turn has without fetching any of them, so `variant_index` and `variant_count` are
+cached on the row and refreshed by one function (`attempts.renumber`), precisely so they
+can't drift and the pager can't lie. `variant_count` is 0 rather than 1 for a turn nobody
+retried, because the question it answers is "is there anything to page through?"
 
 ## 2.6 Migrations, hand-rolled
 
 No Alembic. An append-only list of `(version, SQL)` pairs, with the current version stored
-in SQLite's `PRAGMA user_version` or a one-row table on Postgres. 37 versions so far.
+in SQLite's `PRAGMA user_version` or a one-row table on Postgres. 64 versions so far.
 
 - A **fresh** database is created by `Base.metadata.create_all()` (always current) and
   stamped at the latest version — it never replays history.
@@ -877,9 +1090,10 @@ text appears to type itself.
 | Database egress per adventure load | 38.5 MB → **0.20 MB** (~189x) |
 | Prompt snapshot size | ~74 KB/turn, 94% of the database |
 | Turn read cost at turn 200 | 839 KB → **129 KB**, flat after ~turn 50 |
+| Cost of a branch | ~**103 B**; 20 forks load at **1.007×** the same story flat |
 | Length-hint phrasing | 174 → 246 words phrased as a budget; **170** phrased as a ceiling (n=5) |
-| Backend tests | 151, LLM mocked, real QuickJS engine |
-| Schema versions | 37 |
+| Backend tests | 440, LLM mocked, real QuickJS engine |
+| Schema versions | 64 |
 | Sandbox limits | 16 MB, 2 s CPU, fresh context per run |
 | Context defaults | author's note at depth 3, cards capped at 40% of elastic budget |
 | Memory cadence | memory / 6 turns, summary / 15 turns, top-5 retrieval |
@@ -906,6 +1120,13 @@ nobody has to discover them the hard way.
   restart. At real load it belongs in a queue.
 - **The demo key depends on a free-tier provider's daily cap**, which the app can only
   detect after the fact by string-matching the 429 body.
+- **The two memory marks are one pair on the adventure, not one per branch.** Switching
+  lines makes the mark on the line being left unreadable from the new one, so that ground is
+  summarized again. It fails in the safe direction — redo, never skip — but switching back
+  and forth costs AI calls. Per-branch cursors are the fix if it matters.
+- **Story cards are adventure-wide**, so a card invented on one branch shows on all of them.
+- **Editing an already-summarized turn leaves its memory stale.** Replacing a turn withdraws
+  what was derived from it; editing one in place does not.
 
 ## Cleanup backlog
 
@@ -919,9 +1140,10 @@ The largest ones:
   content. Passing structure through the hook would be better but would break AI Dungeon
   compatibility, which is the point of the feature.
 - The import endpoints hand-coerce raw dicts instead of using Pydantic bundle schemas.
-- `Action` has no `UniqueConstraint('adventure_id', 'index')`; index allocation is ad-hoc
-  per writer, and a database constraint would make the turn-lock race impossible rather
-  than merely fixed.
+- The legacy pre-tree columns (`index`, `variants`, `variant_index`, and the two `*_before`
+  snapshots) are still on `actions`, unread, kept for one release so redeploying the previous
+  build remains a way out. Dropping them is a migration that rewrites every row, so it owes a
+  `VACUUM FULL actions;` after it.
 
 ---
 

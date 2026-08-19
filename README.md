@@ -25,13 +25,23 @@ model are all runtime settings, and OpenRouter's free-tier models make the whole
 ![The play screen, with the world-state rail open](docs/images/play-world-state.jpg)
 
 *The play screen. The left rail is live world state — the AI proposes changes each turn and a
-Python engine decides what actually sticks. The chip under the narration reports what changed.*
+Python engine decides what actually sticks. The chip under the narration reports what changed.
+The `‹ 2/2 ›` under a turn steps between the takes it has; writing below one that isn't the
+live one is what starts a new branch.*
 
 ## Features
 
 - **The full play loop** — Do / Say / Story / Continue actions, streamed AI responses (SSE),
   retry, undo, and edit. Reasoning models supported: "thinking" streams into a collapsible 💭
   panel with its own token budget.
+- **A branching story tree** — the story is a tree, not a list. Any turn can hold more than one
+  **take**; `‹ 2/4 ›` steps between them, and stepping is free — the story below simply empties,
+  and the server is told nothing. **Writing below a take that isn't the live one is what makes a
+  branch.** Branches borrow their ancestors' turns instead of copying them, so a fork costs about
+  100 bytes and a 20-fork story loads within 1% of the same story flat; switching restores that
+  line's world state, script state and cooldown clocks. A branch panel switches, renames and
+  deletes; **⌗ See the tree** draws every line against the story's own clock
+  (`backend/app/tree.py`, `backend/app/context/lineage.py`).
 - **An RPG world-state engine** — a scenario can declare stats, flags, milestones and a named
   cast; the adventure carries their live values. The design is **the AI proposes deltas and a
   Python engine referees them**: it clamps to range, enforces per-turn caps and cooldowns, keeps
@@ -53,10 +63,13 @@ Python engine decides what actually sticks. The chip under the narration reports
   pulls old-but-relevant facts back into context, with similarity scores visible in Insights
   (`backend/app/memorybank.py`).
 - **Undo and retry that actually rewind** — undo and retry roll back the world state and script
-  state to a per-action snapshot, not just the text, and prune the memories that covered the
-  removed turns. Retries are kept as browsable variants (`‹ 2/3 ›`) rather than thrown away.
+  state to a per-node snapshot, not just the text, and prune the memories that covered the
+  removed turns. Nothing a retry replaces is thrown away: the old attempt stays as another take
+  of that turn, and is one keystroke and one click from being a branch of its own.
 - **Import/export** — AI Dungeon-compatible formats for scripts and scenarios; JSON for
-  everything.
+  everything. An adventure exports as `ai-dnd-adventure-v2`, which carries the whole tree —
+  every branch, every take, and the fork points, because those were chosen rather than computed.
+  Files saved in the old single-line format still import.
 - **Optional accounts for hosted deployments** — by default the app is single-user with zero
   auth friction; set `AIDND_MULTI_USER=1` and visitors play instantly as guests (signed
   session cookie), can register (email + password) at any point to keep their data, and each
@@ -72,6 +85,8 @@ Python engine decides what actually sticks. The chip under the narration reports
 | **Insights** — the exact prompt for the next turn, broken into components with token counts and the trigger word that pulled each story card in. | **Authoring** — stats with ranges, per-turn caps, cooldowns and word-labelled bands; NPCs the AI addresses by id. |
 | ![Script editor](docs/images/script-editor.jpg) | ![Home](docs/images/home.jpg) |
 | **Scripting** — the three AI Dungeon hooks with shared persistent `state`, run in a quickjs sandbox. | **Home** — continue a story in progress or start from a scenario. |
+| ![The branch map](docs/images/branch-map.jpg) | ![The branches panel](docs/images/branches-panel.jpg) |
+| **The tree** — one lane per line, from the moment it left its parent to the moment it ends. The horizontal axis is the story's own clock, so a short branch reads as short. | **Branches** — every line the story has taken, and the three things you can do to one. A line the one you're reading was forked from can't be deleted, and says so. |
 
 ## Quick start
 
@@ -122,7 +137,7 @@ player input
   → onInput script modifier
   → assemble context:  [narrator prompt] + [world state + stat guide] + [AI instructions]
                        + [plot essentials] + [story summary] + [retrieved memories]
-                       + [triggered story cards] + [story history, token-budgeted]
+                       + [triggered story cards] + [history along this branch, token-budgeted]
                        + [author's note] + [player action]
   → onModelContext script modifier
   → snapshot context (Insights)
@@ -137,14 +152,17 @@ player input
 ```
 frontend/   React + Vite SPA  ──HTTP/SSE──►  backend/  FastAPI
                                               ├─ routers/      auth, scenarios, adventures, story cards, scripts, chat, settings, debug
-                                              ├─ models.py     SQLAlchemy: User, Scenario, Adventure, Action, StoryCard, Script, Settings, Memory
-                                              ├─ migrations.py hand-rolled, versioned via PRAGMA user_version (37 and counting)
+                                              ├─ models.py     SQLAlchemy: User, Scenario, Adventure, Branch, Action, StoryCard, Script, Settings, Memory
+                                              ├─ migrations.py hand-rolled, versioned via PRAGMA user_version (64 and counting)
                                               ├─ auth.py       guest/registered users, sessions, shared demo key
                                               ├─ security.py   password hashing, cookie signing, API-key encryption
-                                              ├─ context/      prompt assembly under a token budget + windowed history queries
+                                              ├─ tree.py       forking, promotion, and where a node is placed
+                                              ├─ attempts.py   the takes of one turn, grouped by parent
+                                              ├─ context/      prompt assembly under a token budget + lineage/history windowing
                                               ├─ worldstate/   the stat engine: clamps, cooldowns, bands, milestones
                                               ├─ scripting/    quickjs sandbox + AI Dungeon API surface
                                               ├─ memorybank.py auto-summarization + embedding retrieval
+                                              ├─ bundle.py     the export/import formats, v2 (tree) and a v1 reader
                                               ├─ providers/    OpenAI-compatible adapter, streaming
                                               └─ data.db       SQLite (path overridable via AIDND_DB_PATH)
 ```
@@ -154,7 +172,7 @@ development Vite proxies `/api` to FastAPI.
 
 ## Tests
 
-151 backend tests — unit plus full HTTP integration through the real quickjs scripting engine,
+440 backend tests — unit plus full HTTP integration through the real quickjs scripting engine,
 with the LLM provider mocked. CI runs them on every push, alongside the frontend lint/build and
 a Docker image build.
 
@@ -178,6 +196,11 @@ the most interesting engineering in the repo:
   — 839 KB of reads at turn 200. `backend/app/context/history.py` now serves tails and slices
   from SQL and measures what it fetched; the same turn costs 129 KB and stops growing at around
   turn 50.
+- **Branching that doesn't cost anything to read.** A branch stores no turns — it stores where it
+  left its parent, and borrows everything above that. A 40-turn story forked twenty times loads in
+  31,652 B against 31,433 B for the same story flat: **1.007×**, or about 103 B per branch. Reads
+  stay cheap because the lineage is windowed like the history is, so the number of SQL clauses is
+  bounded by the context window rather than by the number of forks.
 
 ## Deploy (Render)
 
@@ -199,9 +222,10 @@ is worth.
 
 ## Repo notes
 
-- `plan/` — the phased implementation plan this was built from, kept as a build log. All twelve
-  phases are complete; the later files (11, 12) double as design notes for the state-revert and
-  world-state work.
+- `plan/` — the phased implementation plan this was built from, kept as a build log. All fourteen
+  phases are complete; the later files (11, 12, 14) double as design notes for the state-revert,
+  world-state and story-tree work. [`plan/STATUS.md`](plan/STATUS.md) is the running thread —
+  what shipped, what was measured, and what is owed next.
 - [`docs/GUIDE.md`](docs/GUIDE.md) — design notes: how each subsystem works and why it was built
   that way, with the measurements behind the decisions. Also rendered as a
   [reading page](https://parththakkar106.github.io/AI-DnD/guide.html).

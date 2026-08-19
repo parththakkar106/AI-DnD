@@ -137,7 +137,10 @@ compatibility — documented in `engine.py`'s prelude instead. The cleanup backl
 - **E4** `backend/app/context/builder.py:48` — Section.tokens uncached, whole context tokenized 2-3×/turn; cache counts, sum sections.
 - **E5** `frontend/src/pages/Play.jsx:490` — keydown effect has no dep array → listener re-registered every render.
 - **E6** `backend/app/memorybank.py:182` — catch-up summarization awaits blocks sequentially; gather independent blocks.
-- **A1** `backend/app/models.py:145` — no UniqueConstraint('adventure_id','index'); index allocation is ad-hoc per writer. (Related to bug #2.)
+- **A1** ~~no UniqueConstraint('adventure_id','index'); index allocation is ad-hoc per writer.~~
+  **Overtaken by phase 14 (2026-08).** `index` is a legacy column that nothing reads: ordering is
+  `(branch_id, depth)` now, allocated in one place (`tree.place_action`). The column is kept unread
+  for one release and then dropped, so a constraint on it would be a constraint on a corpse.
 - **A2** `backend/app/providers/openai_compatible.py:45` — CHAT_CONTINUE_HINT appended below the budgeting layer; assemble prompts in context builder.
 - **A3** `backend/app/routers/adventures.py:390` — import endpoints hand-coerce raw dicts; use a Pydantic bundle schema.
 - **A4** `backend/app/routers/adventures.py:207` — onModelContext flattens (system, story) and ships everything as user content if modified; pass structure through the hook.

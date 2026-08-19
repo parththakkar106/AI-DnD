@@ -138,15 +138,26 @@
     <figure class="hero-shot">
       <img src="images/play-world-state.jpg" alt="The play screen with the world-state rail open, showing HP, mana, an NPC's trust and a raised alarm flag">
       <figcaption>The left rail is live world state. The model proposes what changed this turn; the engine decides
-        what sticks, and the chip under the narration reports the result.</figcaption>
+        what sticks, and the chip under the narration reports the result. The <code>&lsaquo; 2/2 &rsaquo;</code>
+        under a turn steps between the takes it has.</figcaption>
     </figure>
   </header>
 
   <section>
     <h2>What makes it more than a chat wrapper</h2>
-    <p class="lede">Three things a plain "talk to a model" app doesn't do.</p>
+    <p class="lede">Four things a plain "talk to a model" app doesn't do.</p>
 
     <div class="grid">
+      <div class="card">
+        <h3>The story is a tree</h3>
+        <p>Any turn can hold more than one <em>take</em>. Stepping between them is free — the story below simply
+          empties, and the server is told nothing. Writing below a take that isn't the live one is what makes a
+          branch, and a branch stores no turns of its own: it records where it left its parent and borrows
+          everything above that. Twenty forks cost 1.007× the page load of the same story flat. Switch lines and
+          the world state, the script scoreboard and the cooldown clocks all come back to what that line left.</p>
+        <img src="images/branch-map.jpg" alt="The branch map: one horizontal lane per line of the story, each joined to its parent by an elbow at the moment it forked">
+      </div>
+
       <div class="card">
         <h3>The AI proposes, Python referees</h3>
         <p>A scenario declares stats, flags, milestones and a named cast. Each turn the model appends the changes
@@ -192,7 +203,7 @@
   → onInput script modifier
   → assemble context:  [narrator prompt] + [world state + stat guide] + [AI instructions]
                        + [plot essentials] + [story summary] + [retrieved memories]
-                       + [triggered story cards] + [story history, token-budgeted]
+                       + [triggered story cards] + [history along this branch, token-budgeted]
                        + [author's note] + [player action]
   → onModelContext script modifier
   → snapshot context (Insights)
@@ -219,8 +230,8 @@
 
     <div class="stats">
       <div class="stat"><div class="n">189×</div><div class="l">less database egress per adventure load</div></div>
-      <div class="stat"><div class="n">151</div><div class="l">backend tests, run by CI on every push</div></div>
-      <div class="stat"><div class="n">37</div><div class="l">schema migrations, applied in order on boot</div></div>
+      <div class="stat"><div class="n">440</div><div class="l">backend tests, run by CI on every push</div></div>
+      <div class="stat"><div class="n">64</div><div class="l">schema migrations, applied in order on boot</div></div>
       <div class="stat"><div class="n">$0</div><div class="l">to run it locally against Ollama</div></div>
     </div>
 
@@ -232,6 +243,11 @@
       <li><strong>Turn cost, made flat.</strong> Assembling a turn walked the whole story, so it grew with story
         length — 839 KB of reads by turn 200. History is now served as tails and slices from SQL: the same turn
         costs 129 KB and stops growing at around turn 50.</li>
+      <li><strong>Branching that costs 103 bytes.</strong> A branch stores where it left its parent and borrows
+        every turn above that, so nothing is copied on a fork. A 40-turn story forked twenty times loads in
+        31,652 B against 31,433 B for the same story flat — 1.007×. Reads stay cheap because the ancestry is
+        windowed the way the history is: the number of SQL clauses is bounded by the context window, not by how
+        many times the story has forked.</li>
       <li><strong>A shared demo key that can't be drained.</strong> The hosted demo funds a model for visitors, so
         model selection is pinned server-side with a structural backstop that raises if any code path tries to
         resolve a model outside the allowed set — plus a daily per-visitor turn cap.</li>

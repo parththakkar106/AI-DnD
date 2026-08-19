@@ -3,7 +3,7 @@
 Read this first when picking the project back up. Updated at the end of a working
 session; the per-phase plan files hold the detail, this holds the thread.
 
-**Last updated: 2026-08-18.**
+**Last updated: 2026-08-20.**
 
 ---
 
@@ -200,7 +200,8 @@ an automated version; see SP7's entry in `plan/14`.
 The Branches panel gained a **⌗ See the tree** button opening a full-screen map: one
 horizontal lane per branch, running from the moment it left its parent to the moment it
 ends, joined to the parent by an elbow at the fork. Clicking a lane selects it; the
-footer switches, renames or deletes it. Not merged, not deployed. **440 backend tests
+footer switches, renames or deletes it. **Merged to `main` and pushed on 2026-08-20**
+(`c8e081e`), so it is on its way to Render with the rest of the branch. **440 backend tests
 pass, unchanged — this is frontend-only.**
 
 **It is a branch map, not the node map SP7 refused, and that is the whole reason it was
@@ -240,6 +241,43 @@ app serves `frame-ancestors 'none'`, so an in-page iframe has no reachable
 `contentDocument`. Narrow widths were checked by constraining `.branch-map` and measuring
 `scrollWidth` against `clientWidth` instead, which tests the reflow path that actually
 matters.
+
+## What happened on 2026-08-20, part two — the published docs caught up
+
+Everything the project publishes had drifted a full phase behind the code. The README, the
+project page (`docs/index.html`) and the engineering guide (`docs/GUIDE.md` + its
+hand-written `docs/guide.html`) all described a **linear** story: 151 tests, 37 migrations,
+no tree, no takes, no branches. On branch `docs-story-tree`.
+
+**The numbers that were wrong:** 151 → **440** tests, 37 → **64** migrations, "all twelve
+phases" → fourteen. Those appear in four places between the README, the project page's stat
+tiles, and the guide's results table.
+
+**What was actively misleading, not merely stale.** The guide's §2.2 was *Two coordinate
+systems, and the bug class they create*, and it explained the codebase through
+`position_of_index`, `note_action_removed` and `settled_story_actions` — **all three deleted
+in SP3**. §2.3 explained retry through `Action.variants` and `state_before`. A reader
+following either would have gone looking for machinery that isn't there. §2.2 is now *The
+story is a tree*, written at the same depth as §1.2 and §1.3: the seven bugs that were all
+one bug, the lineage clause and its two properties, why takes group by `parent_id`, cursors
+becoming anchors, and what the design is honest about. §2.3 is rewritten around
+`state_after` and takes.
+
+**Three screenshots**, shot on a new `backend/tools/shots_fixture.py` — the Bandit Camp demo
+scenario driven through eight scripted turns, three discarded takes forked onto branches,
+one of them off a branch so the map has to nest. It exists for the same reason
+`tree_fixture.py` does: the shots have to be reproducible, and there is still no frontend
+test runner. `play-world-state.jpg` was reshot (it predated the whole tree UI);
+`branch-map.jpg` and `branches-panel.jpg` are new.
+
+Worth not rediscovering: **`docs/guide.html` is hand-written, not generated from the
+Markdown.** Every guide edit is two edits, and the HTML has its own vocabulary
+(`.trap`/`.tag` callouts, `.stats`/`.stat`/`.v`/`.k` tiles) that has to be matched by hand.
+The two files were checked for tag balance with `html.parser` and both pages were rendered
+over a local `http.server` before committing — `file://` URLs are blocked from the browser
+tooling, which is worth knowing before trying it again.
+
+---
 
 ## What happened on 2026-08-18, part five — the review, and PR #6
 
