@@ -37,6 +37,21 @@ WORDS_PER_TOKEN = 0.75
 # overshoot land in the slack instead of in the state block.
 LENGTH_BUFFER = 0.90
 MIN_LENGTH_HINT_WORDS = 40  # below this the hint is noise; a tiny cap speaks for itself
+# A ceiling alone is a one-sided instruction, and models read it very differently:
+# a verbose one is held back by it, while a terse one has nothing to act on except
+# the "write only as much as the moment needs" clause and collapses to two
+# paragraphs. Stating a floor as well turns the guidance into a band, so the same
+# prompt lands in the same place regardless of which way the model leans. Set as a
+# share of the ceiling so the floor can never approach it.
+LENGTH_FLOOR_SHARE = 0.35
+# Below this a floor is meaningless — at a tight cap a short turn is the correct
+# turn — and the tight-cap wording is the one measured to keep the state block
+# alive, so it is left exactly as it was.
+MIN_LENGTH_FLOOR_WORDS = 60
+# The floor exists to stop a collapse to two paragraphs, not to demand an essay:
+# at a 2400-token cap the share alone would ask for 555 words *minimum*. Past this
+# point a reader wanting more length can say so in the author's note.
+MAX_LENGTH_FLOOR_WORDS = 300
 
 
 @functools.lru_cache(maxsize=1)
@@ -87,9 +102,23 @@ def length_hint(max_output_tokens: int, *, has_ws: bool) -> str:
     # pushed turns toward the very wall it exists to keep them away from. Naming
     # the number as a limit, plus saying a typical turn is far shorter, left the
     # average at 170 while still rescuing the state block at tight caps.
+    floor = min(int(words * LENGTH_FLOOR_SHARE), MAX_LENGTH_FLOOR_WORDS)
+    if floor < MIN_LENGTH_FLOOR_WORDS:
+        return (
+            f"[Hard limit: this turn must not exceed {words} words. Write only as "
+            f"much as the moment needs — a typical turn is much shorter.{tail}]"
+        )
+    # Both numbers are bounds, and deliberately asymmetric ones: "must not exceed"
+    # for the wall the endpoint enforces, "should not stop short of" for the floor.
+    # Neither is a target, which is what the measurement above says matters. The
+    # "prefer the lower end" clause does the job the old "a typical turn is much
+    # shorter" line did — holding a verbose model off the wall — but now with a
+    # number under it, so a terse model reading the same clause lands on the floor
+    # instead of at forty words.
     return (
-        f"[Hard limit: this turn must not exceed {words} words. Write only as "
-        f"much as the moment needs — a typical turn is much shorter.{tail}]"
+        f"[Hard limit: this turn must not exceed {words} words, and it should not "
+        f"stop short of about {floor}. Prefer the lower end of that range unless "
+        f"the scene genuinely needs more.{tail}]"
     )
 
 

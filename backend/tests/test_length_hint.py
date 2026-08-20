@@ -114,8 +114,44 @@ def test_hint_is_phrased_as_a_ceiling_not_a_budget():
     it exists to avoid. The limit framing must survive future prompt edits."""
     hint = builder.length_hint(800, has_ws=True)
     assert "must not exceed" in hint
-    assert "much shorter" in hint, "without this the number still reads as a target"
     assert "under about" not in hint
+    assert "lower end" in hint, "without this the number still reads as a target"
+
+
+def test_hint_states_a_floor_as_well_as_a_ceiling():
+    """A ceiling alone is one-sided: a terse model has nothing to act on but the
+    "only as much as the moment needs" clause and collapses to two paragraphs.
+    The floor is what makes the same prompt land in the same place across models
+    that lean opposite ways."""
+    hint = builder.length_hint(800, has_ws=True)
+    assert "506" in hint and "177" in hint
+    assert "should not stop short of" in hint
+    # Asymmetric on purpose: the wall is a wall, the floor is a floor, and neither
+    # is phrased as a number to hit.
+    assert hint.index("must not exceed") < hint.index("should not stop short of")
+
+
+def test_floor_stays_well_under_the_ceiling():
+    for cap in (400, 800, 1500, 2400):
+        hint = builder.length_hint(cap, has_ws=True)
+        ceiling, floor = (int(n) for n in re.findall(r"(\d+)", hint)[:2])
+        assert floor < ceiling * 0.5
+
+
+def test_floor_is_dropped_when_the_cap_is_too_tight_for_one():
+    """At a tight cap a short turn is the correct turn, and the tight-cap wording
+    is the one measured to keep the state block alive (0/6 truncations at cap 250
+    against 2/6 unhinted) — so it is left exactly as it was."""
+    hint = builder.length_hint(250, has_ws=True)
+    assert "should not stop short of" not in hint
+    assert "much shorter" in hint
+
+
+def test_floor_does_not_grow_without_bound():
+    """A big cap means "long turns are allowed", not "every turn must be an essay":
+    the share alone would demand 555 words minimum at cap 2400."""
+    hint = builder.length_hint(2400, has_ws=True)
+    assert str(builder.MAX_LENGTH_FLOOR_WORDS) in hint
 
 
 def test_no_hint_when_the_cap_is_too_small_to_phrase():
