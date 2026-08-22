@@ -3,7 +3,7 @@
 Read this first when picking the project back up. Updated at the end of a working
 session; the per-phase plan files hold the detail, this holds the thread.
 
-**Last updated: 2026-08-21.**
+**Last updated: 2026-08-22.**
 
 ---
 
@@ -201,12 +201,17 @@ The hosted demo can now answer whether anyone is using it. `/analytics` is a das
 visitors, pages, referrers, countries, devices, which shared scenarios get played, turns and
 demo-key spend, API and turn errors, and a funnel from *visited* to *played a turn* to
 *signed up*. **Built, green (497 tests), driven by hand against a synthetic 90-day fixture.
-Not committed, not deployed.**
+Committed and pushed to `main` on 2026-08-22 as `041f9e2`, so Render is deploying it.**
+
+**The one thing left to do is not in the repo.** `AIDND_ANALYTICS_EMAILS` is `sync: false`,
+so the blueprint cannot fill it: until it is set in the Render dashboard the dashboard is
+invisible to everybody, including the person who built it. Collection runs regardless — only
+the view is gated — so the counters are filling in the meantime and nothing is lost by
+setting it late.
 
 **It is gated on its own allowlist, `AIDND_ANALYTICS_EMAILS`** — not `AIDND_POWER_USERS`.
 An unmetered tester is not automatically someone who sees the traffic numbers. The route
-404s and the nav link is absent for everyone else, same treatment as AI Chat. Set the var in
-the Render dashboard or the page is invisible to everybody, including you.
+404s and the nav link is absent for everyone else, same treatment as AI Chat.
 
 **The counters are anonymous; the access log beside them is not, on purpose.** A visitor in
 `analytics_daily`/`analytics_visitor_days` is `HMAC(secret, "visitor:<user id>")` truncated
