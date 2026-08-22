@@ -1161,8 +1161,15 @@ button:disabled { opacity: 0.45; cursor: default; transform: none; box-shadow: n
   background: var(--bg-input);
   color: var(--text-dim);
   font-variant-numeric: tabular-nums;
-  white-space: nowrap;
+  /* A chip must never be wider than the column it sits in: an NPC stat like
+     "bandit leader aggression +10" overruns a phone, and the chip row is
+     inside the story text, which has nothing to scroll. The label may break
+     mid-word as a last resort; the value is glued to it by its own nowrap so
+     the sign and number never end up on separate lines. */
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
+.chg-val { white-space: nowrap; }
 .chg-up { color: var(--player, #4caf82); border-color: color-mix(in srgb, var(--player, #4caf82) 40%, var(--border)); }
 .chg-down { color: var(--danger, #e5484d); border-color: color-mix(in srgb, var(--danger, #e5484d) 40%, var(--border)); }
 .chg-flag { color: var(--accent-bright); }
@@ -2345,7 +2352,7 @@ button.primary.compact { padding: 3px 12px; font-size: 0.76rem; margin-left: aut
 /* Wider than the reading pages: this one is a grid of small figures, not
    prose, and 960px puts two charts and eight tiles into a column. */
 .an-page { max-width: 1180px; }
-.an-ranges { display: flex; gap: 6px; }
+.an-ranges { display: flex; flex-wrap: wrap; gap: 6px; }
 
 /* Four across, not auto-fit: there are eight tiles, and letting them flow
    leaves a single orphan on the second row at most widths. */

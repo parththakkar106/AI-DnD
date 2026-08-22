@@ -1213,7 +1213,7 @@ function StateChangeChips({ changes }) {
     <div className="turn-changes">
       {changes.map((c, i) => {
         if (c.kind === 'flag') {
-          return <span key={i} className="chg chg-flag">{nice(c.label)}: {c.on ? 'on' : 'off'}</span>
+          return <span key={i} className="chg chg-flag">{nice(c.label)}: <span className="chg-val">{c.on ? 'on' : 'off'}</span></span>
         }
         if (c.kind === 'milestone') {
           return <span key={i} className="chg chg-ms">✓ {nice(c.label)}</span>
@@ -1221,7 +1221,11 @@ function StateChangeChips({ changes }) {
         const d = c.delta
         const dir = typeof d === 'number' ? (d > 0 ? 'up' : d < 0 ? 'down' : 'flat') : 'flat'
         const txt = typeof d === 'number' ? (d > 0 ? `+${d}` : `${d}`) : `→ ${c.value}`
-        return <span key={i} className={`chg chg-stat chg-${dir}`}>{nice(c.label)} {txt}</span>
+        return (
+          <span key={i} className={`chg chg-stat chg-${dir}`}>
+            {nice(c.label)} <span className="chg-val">{txt}</span>
+          </span>
+        )
       })}
     </div>
   )
