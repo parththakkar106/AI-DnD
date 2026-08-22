@@ -3,7 +3,7 @@ per-account login throttle added to close it.
 
 Background: uvicorn's --forwarded-allow-ips "*" trusted the LEFTMOST
 X-Forwarded-For entry, which the client controls, so rotating the header
-handed out a fresh rate-limit bucket per request. _client_ip now reads the
+handed out a fresh rate-limit bucket per request. client_ip now reads the
 hop the trusted edge appends (rightmost), and login has an email-keyed throttle
 that no IP trick can dilute.
 
@@ -31,22 +31,22 @@ class _Req:
         self.client = None if peer is None else type("C", (), {"host": peer})()
 
 
-# ---------- _client_ip: the spoof-resistant hop ----------
+# ---------- client_ip: the spoof-resistant hop ----------
 
 def test_client_ip_takes_appended_rightmost_hop(monkeypatch):
     monkeypatch.setattr(limits, "TRUSTED_PROXY_HOPS", 1)
     # Attacker prepends a fake IP; the edge appends the real one on the right.
     req = _Req("203.0.113.9, 198.51.100.77")
-    assert limits._client_ip(req) == "198.51.100.77"
+    assert limits.client_ip(req) == "198.51.100.77"
 
 
 def test_client_ip_ignores_spoofed_leftmost(monkeypatch):
     monkeypatch.setattr(limits, "TRUSTED_PROXY_HOPS", 1)
     # Whatever the client stuffs to the left, the keyed IP stays the real hop —
     # so rotating it no longer mints a new bucket.
-    a = limits._client_ip(_Req("1.1.1.1, 198.51.100.77"))
-    b = limits._client_ip(_Req("2.2.2.2, 198.51.100.77"))
-    c = limits._client_ip(_Req("evil, junk, 198.51.100.77"))
+    a = limits.client_ip(_Req("1.1.1.1, 198.51.100.77"))
+    b = limits.client_ip(_Req("2.2.2.2, 198.51.100.77"))
+    c = limits.client_ip(_Req("evil, junk, 198.51.100.77"))
     assert a == b == c == "198.51.100.77"
 
 
@@ -54,12 +54,12 @@ def test_client_ip_honours_extra_trusted_hops(monkeypatch):
     monkeypatch.setattr(limits, "TRUSTED_PROXY_HOPS", 2)
     # Two trusted hops: real client is second from the right.
     req = _Req("9.9.9.9, 203.0.113.5, 198.51.100.77")
-    assert limits._client_ip(req) == "203.0.113.5"
+    assert limits.client_ip(req) == "203.0.113.5"
 
 
 def test_client_ip_falls_back_to_socket_peer():
-    assert limits._client_ip(_Req(None, peer="172.16.0.4")) == "172.16.0.4"
-    assert limits._client_ip(_Req(None, peer=None)) == "unknown"
+    assert limits.client_ip(_Req(None, peer="172.16.0.4")) == "172.16.0.4"
+    assert limits.client_ip(_Req(None, peer=None)) == "unknown"
 
 
 # ---------- per-account login throttle ----------

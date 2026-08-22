@@ -66,6 +66,16 @@ POWER_USERS = {
     if e.strip()
 }
 
+# Who can see the visit analytics. Deliberately its own list rather than
+# POWER_USERS: a trusted tester gets unmetered turns and the AI Chat page,
+# which is not a reason to hand them the site's traffic numbers. Empty (the
+# default) means nobody sees the dashboard in a hosted deployment.
+ANALYTICS_EMAILS = {
+    e.strip().lower()
+    for e in os.environ.get("AIDND_ANALYTICS_EMAILS", "").split(",")
+    if e.strip()
+}
+
 DEMO_CAP_MESSAGE = (
     f"You've used all {DEMO_TURNS_PER_DAY} free demo turns for today. "
     "Add your own API key in Settings to keep playing (it resets tomorrow)."
@@ -146,6 +156,15 @@ def is_power_user(user: models.User) -> bool:
     if not MULTI_USER:
         return True
     return bool(user.email) and user.email.lower() in POWER_USERS
+
+
+def is_owner(user: models.User) -> bool:
+    """May this user see the visit analytics? Local installs always can — it is
+    the operator's own machine and their own visits, same reasoning as the
+    provider debug log; hosted deployments check AIDND_ANALYTICS_EMAILS."""
+    if not MULTI_USER:
+        return True
+    return bool(user.email) and user.email.lower() in ANALYTICS_EMAILS
 
 
 def demo_turns_left(user: models.User) -> int:

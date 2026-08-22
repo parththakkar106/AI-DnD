@@ -13,6 +13,13 @@
   --accent-glow: rgba(212, 169, 78, 0.25);
   --danger: #d06565;
   --player: #9fc7d1;
+  /* Chart hues (analytics dashboard). Deeper and more saturated than --accent
+     and --player, which are tuned for text and borders and turn muddy once
+     they are a 10px bar: these are checked against --bg-panel for lightness,
+     chroma, contrast and colour-blind separation as a set. */
+  --chart-1: #b58a30;
+  --chart-2: #3d8ac4;
+  --chart-3: #a8608f;
   --font-display: 'Cinzel', Georgia, serif;
   --font-story: 'Crimson Pro', Georgia, 'Times New Roman', serif;
   --font-ui: 'Inter', 'Segoe UI', system-ui, sans-serif;
@@ -2333,6 +2340,293 @@ button.primary.compact { padding: 3px 12px; font-size: 0.76rem; margin-left: aut
   .card.tome:hover { transform: none; }
 }
 
+/* ---------- Visit analytics (owner dashboard) ---------- */
+
+/* Wider than the reading pages: this one is a grid of small figures, not
+   prose, and 960px puts two charts and eight tiles into a column. */
+.an-page { max-width: 1180px; }
+.an-ranges { display: flex; gap: 6px; }
+
+/* Four across, not auto-fit: there are eight tiles, and letting them flow
+   leaves a single orphan on the second row at most widths. */
+.an-tiles {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+@media (max-width: 900px) {
+  .an-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.an-tile {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+}
+.an-tile-value {
+  font-family: var(--font-display);
+  font-size: 1.7rem;
+  line-height: 1.1;
+  color: var(--accent-bright);
+}
+.an-tile-label { font-size: 0.82rem; color: var(--text); margin-top: 4px; }
+.an-tile-hint { font-size: 0.72rem; color: var(--text-dim); margin-top: 2px; }
+
+.an-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.an-card {
+  position: relative;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px 18px 14px;
+  margin-bottom: 16px;
+}
+.an-grid .an-card { margin-bottom: 0; }
+.an-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.an-card-head h2 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+}
+.an-note { font-size: 0.72rem; color: var(--text-dim); }
+.an-empty { color: var(--text-dim); font-style: italic; padding: 18px 0; text-align: center; }
+
+.an-legend { display: flex; gap: 12px; font-size: 0.72rem; color: var(--text-dim); }
+.an-legend-item { display: inline-flex; align-items: center; gap: 5px; }
+.an-swatch { width: 9px; height: 9px; border-radius: 2px; display: inline-block; flex: none; }
+
+/* ----- Day columns ----- */
+
+.an-plot { position: relative; height: 170px; margin-top: 12px; }
+.an-gridline {
+  position: absolute;
+  left: 0;
+  right: 0;
+  border-top: 1px dashed var(--border);
+  pointer-events: none;
+}
+.an-gridline span {
+  position: absolute;
+  right: 0;
+  top: -0.62em;
+  font-size: 0.68rem;
+  color: var(--text-dim);
+  background: var(--bg-panel);
+  padding: 0 4px;
+  /* The dashed rule belongs behind the bars; its value does not. Columns are
+     positioned, so without this the tallest bar swallows the label. */
+  z-index: 3;
+}
+.an-columns { display: flex; align-items: flex-end; gap: 2px; height: 100%; }
+.an-column {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+  border-radius: 4px 4px 0 0;
+  outline: none;
+}
+.an-column.hot { background: rgba(212, 169, 78, 0.07); }
+.an-stack {
+  width: 100%;
+  /* Capped so a 7-day range draws bars and not slabs; the column around it
+     stays full width, so the hover target does not shrink with the mark. */
+  max-width: 44px;
+  margin: 0 auto;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  /* A 2px gap of surface between stacked segments: the boundary reads as a
+     boundary without a border, which would eat a thin bar entirely. */
+  gap: 2px;
+}
+.an-bar { width: 100%; transition: filter 0.15s; }
+.an-stack > .an-bar:first-child { border-radius: 4px 4px 0 0; }
+.an-column.hot .an-bar { filter: brightness(1.2); }
+.an-tip {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 10px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-bright);
+  border-radius: 8px;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.55);
+  font-size: 0.74rem;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 4;
+}
+.an-tip strong { font-weight: 600; color: var(--accent-bright); }
+.an-tip span { display: inline-flex; align-items: center; gap: 6px; color: var(--text-dim); }
+
+.an-axis { display: flex; gap: 2px; margin-top: 7px; }
+.an-axis span {
+  flex: 1 1 0;
+  min-width: 0;
+  font-size: 0.68rem;
+  color: var(--text-dim);
+  text-align: center;
+  white-space: nowrap;
+}
+.an-axis span:first-child { text-align: left; }
+.an-axis span:last-child { text-align: right; }
+
+.an-overlay-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-dim);
+  font-style: italic;
+  font-size: 0.85rem;
+  pointer-events: none;
+}
+
+/* ----- Funnel ----- */
+
+.an-funnel { display: flex; flex-direction: column; gap: 10px; }
+.an-funnel-row {
+  display: grid;
+  grid-template-columns: 168px 1fr 96px;
+  align-items: center;
+  gap: 12px;
+}
+.an-funnel-label { font-size: 0.84rem; }
+.an-funnel-track { height: 14px; background: var(--bg-input); border-radius: 7px; overflow: hidden; }
+.an-funnel-bar {
+  height: 100%;
+  min-width: 2px;
+  background: var(--chart-1);
+  border-radius: 7px;
+  transition: width 0.4s ease;
+}
+.an-funnel-value {
+  text-align: right;
+  font-size: 0.86rem;
+  display: flex;
+  justify-content: flex-end;
+  align-items: baseline;
+  gap: 8px;
+}
+.an-funnel-share { font-size: 0.72rem; color: var(--text-dim); }
+
+/* ----- Ranked lists ----- */
+
+.an-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.an-list li {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  font-size: 0.84rem;
+}
+/* The bar sits behind the row rather than beside it, so a long label keeps the
+   full width and the magnitude is still visible at a glance. */
+.an-list-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  background: rgba(181, 138, 48, 0.2);
+  border-radius: 6px;
+}
+.an-list-label {
+  position: relative;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.an-list-value { position: relative; color: var(--text-dim); flex: none; }
+
+/* ----- Tabs, and the access log table ----- */
+
+.an-tabs { display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid var(--border); }
+.an-tabs button {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  padding: 8px 14px;
+  color: var(--text-dim);
+  font-family: var(--font-display);
+  font-size: 0.82rem;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+}
+.an-tabs button:hover { color: var(--text); }
+.an-tabs button.active { color: var(--accent-bright); border-bottom-color: var(--accent); }
+
+.an-log-head { flex-wrap: wrap; row-gap: 10px; }
+.an-log-search { max-width: 260px; }
+
+/* The table is the one thing here with a minimum width — six columns of real
+   data don't compress. It scrolls inside its own box so the page never does. */
+.an-table-scroll { overflow-x: auto; }
+.an-table { width: 100%; min-width: 620px; border-collapse: collapse; font-size: 0.82rem; }
+.an-table th {
+  text-align: left;
+  font-weight: 500;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  padding: 0 10px 8px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.an-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.an-table tr:last-child td { border-bottom: none; }
+.an-table tbody tr:hover { background: rgba(212, 169, 78, 0.05); }
+/* A failed attempt is the row you are scanning for; it gets the only colour in
+   the table, on a border rather than the text, which stays readable. */
+.an-table tr.failed td:first-child { box-shadow: inset 2px 0 var(--danger); }
+.an-table tr.failed td:nth-child(3) { color: var(--danger); }
+.an-cell-dim { color: var(--text-dim); }
+.an-cell-mono { font-family: ui-monospace, 'Cascadia Code', Consolas, monospace; }
+.an-tag {
+  margin-left: 8px;
+  padding: 1px 6px;
+  border: 1px solid var(--border-bright);
+  border-radius: 10px;
+  font-size: 0.66rem;
+  color: var(--text-dim);
+}
+.an-more { display: flex; justify-content: center; padding-top: 14px; }
+
+.an-footnote {
+  color: var(--text-dim);
+  font-size: 0.74rem;
+  line-height: 1.6;
+  margin: 22px 0 0;
+  max-width: 70ch;
+}
+
 /* ============================================================
    Mobile / narrow screens (≤ 720px)
    The desktop Play screen is a horizontal row of up to four columns
@@ -2536,4 +2830,19 @@ button.primary.compact { padding: 3px 12px; font-size: 0.76rem; margin-left: aut
   .branch-map-canvas { padding: 4px 6px 8px; }
   .branch-map-detail { padding: 12px 16px 16px; }
   .branch-map-hint { padding: 0 16px 10px; }
+
+  /* ---------- Analytics dashboard ---------- */
+  .an-page .page-header { flex-direction: column; align-items: flex-start; gap: 10px; }
+  .an-tiles { gap: 8px; }
+  .an-tile { padding: 10px 12px; }
+  .an-tile-value { font-size: 1.35rem; }
+  .an-grid { grid-template-columns: 1fr; }
+  .an-plot { height: 140px; }
+  .an-tabs button { padding: 8px 10px; font-size: 0.78rem; }
+  .an-log-search { max-width: none; width: 100%; }
+  /* Three columns don't fit; the label goes above its own bar instead. */
+  .an-funnel-row { grid-template-columns: 1fr auto; gap: 4px 10px; }
+  .an-funnel-track { grid-column: 1; }
+  .an-funnel-label { grid-column: 1 / -1; }
+  .an-funnel-value { grid-column: 2; }
 }

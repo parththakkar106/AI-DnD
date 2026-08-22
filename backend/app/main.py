@@ -7,12 +7,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import cleanup
+from . import analytics, cleanup
 from .auth import MULTI_USER
 from .database import engine
 from .limits import BodySizeLimitMiddleware
 from .migrations import bootstrap
-from .routers import adventures, auth, chat, debug, scenarios, scripts, settings, story_cards
+from .routers import (
+    adventures, analytics as analytics_router, auth, chat, debug, scenarios, scripts,
+    settings, story_cards,
+)
 from .seed import seed_public_scenarios
 
 bootstrap(engine)
@@ -32,10 +35,15 @@ async def lifespan(_app: FastAPI):
     # trigger on Render's free tier, where the service sleeps after ~15
     # minutes and a long-running timer rarely gets to fire.
     sweeper = cleanup.start_sweeper()
+    # Visit counters are buffered in memory and written in batches; this is
+    # what turns them into rows, and stop_flusher writes out the last batch so
+    # a deploy doesn't drop it.
+    flusher = analytics.start_flusher()
     try:
         yield
     finally:
         await cleanup.stop_sweeper(sweeper)
+        await analytics.stop_flusher(flusher)
 
 
 # The interactive API docs stay local-only: in multi-user mode they just hand
@@ -95,6 +103,39 @@ class SecurityHeadersMiddleware:
         await self.app(scope, receive, send_with_headers)
 
 
+class ApiErrorMiddleware:
+    """Counts failed API responses for the analytics dashboard.
+
+    Here rather than in an exception handler because it sees what the client
+    actually got: a 429 from a rate limiter, a 404 from routing, a 500 from a
+    handler that never returned, all the same way. Pure ASGI for the same
+    reason as the headers above — an SSE turn must not be buffered on its way
+    out. Only /api is watched; a 404 on the SPA mount is a page load, not a
+    fault.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or not scope.get("path", "").startswith("/api"):
+            return await self.app(scope, receive, send)
+
+        async def send_counting(message):
+            if message["type"] == "http.response.start" and message["status"] >= 400:
+                # The router has already put the matched route on the scope by
+                # the time a response starts, so the label can name the
+                # endpoint rather than the caller's path.
+                analytics.record(
+                    analytics.M_ERROR,
+                    analytics.api_route_label(scope, message["status"]),
+                )
+            await send(message)
+
+        await self.app(scope, receive, send_counting)
+
+
+app.add_middleware(ApiErrorMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 
 app.include_router(auth.router)
@@ -105,6 +146,7 @@ app.include_router(scripts.router)
 app.include_router(settings.router)
 app.include_router(chat.router)
 app.include_router(debug.router)
+app.include_router(analytics_router.router)
 
 
 @app.get("/api/health")

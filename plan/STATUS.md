@@ -3,7 +3,7 @@
 Read this first when picking the project back up. Updated at the end of a working
 session; the per-phase plan files hold the detail, this holds the thread.
 
-**Last updated: 2026-08-20.**
+**Last updated: 2026-08-21.**
 
 ---
 
@@ -192,6 +192,74 @@ it back. SP8's migration rewrites every row.
 **The scroll gap is closed.** It was driven by hand on the 602-action `--keep` fixture
 during SP7 — three prepends, 5 px of drift, no throw-to-the-end. What is still missing is
 an automated version; see SP7's entry in `plan/14`.
+
+---
+
+## What happened on 2026-08-21 — visit analytics
+
+The hosted demo can now answer whether anyone is using it. `/analytics` is a dashboard —
+visitors, pages, referrers, countries, devices, which shared scenarios get played, turns and
+demo-key spend, API and turn errors, and a funnel from *visited* to *played a turn* to
+*signed up*. **Built, green (497 tests), driven by hand against a synthetic 90-day fixture.
+Not committed, not deployed.**
+
+**It is gated on its own allowlist, `AIDND_ANALYTICS_EMAILS`** — not `AIDND_POWER_USERS`.
+An unmetered tester is not automatically someone who sees the traffic numbers. The route
+404s and the nav link is absent for everyone else, same treatment as AI Chat. Set the var in
+the Render dashboard or the page is invisible to everybody, including you.
+
+**The counters are anonymous; the access log beside them is not, on purpose.** A visitor in
+`analytics_daily`/`analytics_visitor_days` is `HMAC(secret, "visitor:<user id>")` truncated
+to 32 chars — one-way, so those two tables cannot be joined back to `users`, and keyed, so no
+client can compute one. Story content never reaches that module. The operator's own visits
+are not counted there (multi-user only — excluding them locally would leave the page
+permanently empty on the machine it is developed on).
+
+**`accesslog.py` is the identifying half, added the same week.** `access_events` records
+sessions, sign-ins, registrations and failed attempts with address, email (or `Guest #n`),
+country and device, read on an "Access log" tab of the same page and behind the same owner
+gate. It is a separate module and a separate table so the anonymity of the counters stays a
+property of the code rather than a convention. Three things it leans on: the address comes
+from `limits.client_ip` — now public, and the only place that decides which hop to trust, so
+a spoofed `X-Forwarded-For` cannot forge a row; `user_id` carries **no foreign key** and
+`who`/`is_guest` are snapshots, so a row outlives the guest cleanup that deletes the account;
+and session rows are thinned to one per day per address, since `/auth/me` runs on every page
+load. Nothing is purged — that was the deliberate choice. The published docs describe the
+analytics generally and do not enumerate this.
+
+**A visit is a write and never a read.** Counts accumulate in a process-local dict and flush
+every 60s as UPSERTs into `analytics_daily` — a generic `(day, metric, label) -> hits`
+counter — plus one row per visitor per day in `analytics_visitor_days` for the funnel flags.
+Every dashboard query is a `GROUP BY` returning tens of rows however much traffic sits
+behind it. Deliberate, given §2.5: adding a feature that reads rows per request would have
+undone the egress work.
+
+**No migration was needed.** Both tables are new, and `bootstrap()` calls `create_all` on
+existing databases too — the same route `branches` took in Phase 14. Nothing was appended to
+`MIGRATIONS`, so `LATEST_VERSION` is still 64.
+
+Three things worth remembering out of building it:
+
+- **The funnel counts people, not clicks.** A player who starts six adventures is one person
+  who started an adventure. That is the entire reason the per-visitor-day table exists; its
+  flags only ever turn on, and `is_new` is settled by the first write of a visitor's first
+  day and never updated after.
+- **A failed turn is an HTTP 200 with a bad ending.** The status-code middleware cannot see
+  one, so a demo whose model started refusing every request would look perfectly healthy.
+  `turn_error` is counted in a new `turn_error()` helper that all five SSE error paths in
+  `_generate_turn` now go through.
+- **The tests run on SQLite; production is Neon.** A flush that raises is caught and logged,
+  so a dialect mistake in the UPSERTs would have been invisible until the dashboard quietly
+  stayed empty. `test_the_upserts_compile_for_postgres` compiles both statements against the
+  Postgres dialect without connecting to one.
+
+**Still not verified: the narrow-screen layout.** The CSS follows the existing `max-width:
+720px` block (single-column grids, funnel label above its bar) but `resize_window` is
+ignored on a maximized Chrome, and the app sends `frame-ancestors 'none'` so it cannot be
+checked in a sized iframe either. Desktop was driven by hand at 1568px.
+
+**`docs/guide.html` is now behind `docs/GUIDE.md`,** which gained §3.6. Nothing in the repo
+regenerates it.
 
 ---
 

@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { NavLink, Outlet } from 'react-router-dom'
+import { useEffect, useRef, useState } from 'react'
+import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { api } from './api'
 import { AuthModal, ToastHost } from './components'
 import Embers from './Embers.jsx'
@@ -9,10 +9,27 @@ export default function App() {
   const [me, setMe] = useState(null)
   const [authMode, setAuthMode] = useState(null) // 'register' | 'login' | null
   const [navOpen, setNavOpen] = useState(false) // mobile hamburger menu
+  const location = useLocation()
+  const lastPath = useRef(null)
 
   useEffect(() => {
     api.getMe().then(setMe).catch(() => {})
   }, [])
+
+  // One pageview per route the reader actually lands on. Guarded on the path
+  // rather than fired on every render: StrictMode runs effects twice in dev,
+  // and a re-render for unrelated state is not a new page.
+  useEffect(() => {
+    if (lastPath.current === location.pathname) return
+    const first = lastPath.current === null
+    lastPath.current = location.pathname
+    // document.referrer survives client-side navigation, so it is only honest
+    // on the first view — after that this was our own page, not a referral.
+    api.trackPageview(location.pathname, {
+      referrer: first ? document.referrer : '',
+      first,
+    })
+  }, [location.pathname])
 
   const onAuthed = (newMe, mode) => {
     setAuthMode(null)
@@ -62,6 +79,12 @@ export default function App() {
           {me?.power_user && (
             <NavLink to="/chat" className={({ isActive }) => `navlink${isActive ? ' active' : ''}`}>
               AI Chat
+            </NavLink>
+          )}
+          {/* Owner only: the site's own traffic, on its own allowlist. */}
+          {me?.analytics && (
+            <NavLink to="/analytics" className={({ isActive }) => `navlink${isActive ? ' active' : ''}`}>
+              Visitors
             </NavLink>
           )}
           {me?.multi_user && (

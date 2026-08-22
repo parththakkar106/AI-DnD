@@ -51,6 +51,13 @@ services:
       - key: AIDND_POWER_USERS
         sync: false
 
+      # Comma-separated emails allowed to see the Visitors dashboard
+      # (/analytics). Separate from AIDND_POWER_USERS on purpose — an unmetered
+      # tester is not automatically someone who sees the traffic. Leave unset
+      # and the page is invisible to everyone. Set it in the dashboard.
+      - key: AIDND_ANALYTICS_EMAILS
+        sync: false
+
       # Guest retention: one account is minted per first-time visitor, so idle
       # ones are collected (with their adventures) to keep the free-tier
       # Postgres from filling with abandoned demo data. Registered accounts are

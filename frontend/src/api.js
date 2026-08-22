@@ -61,6 +61,28 @@ async function streamSSE(path, payload, onEvent, signal, isRetry = false) {
 }
 
 export const api = {
+  // Analytics. The beacon is deliberately not a `request()`: it must never
+  // retry, never bootstrap a session, and never surface an error — a counter
+  // that can interrupt the app it is counting is worse than no counter.
+  trackPageview: (path, { referrer = '', first = false } = {}) => {
+    try {
+      fetch('/api/analytics/collect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path, referrer, first }),
+        keepalive: true,
+      }).catch(() => {})
+    } catch { /* no beacon, no problem */ }
+  },
+  getAnalytics: (days) => request(`/analytics/summary?days=${days}`),
+  getAccessLog: ({ beforeId, kind, q, limit = 50 } = {}) => {
+    const params = new URLSearchParams({ limit })
+    if (beforeId != null) params.set('before_id', beforeId)
+    if (kind) params.set('kind', kind)
+    if (q) params.set('q', q)
+    return request(`/analytics/access?${params}`)
+  },
+
   // Auth (Phase 8 — no-ops in local mode beyond getMe)
   getMe: () => request('/auth/me'),
   register: (email, password) =>

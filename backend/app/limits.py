@@ -32,6 +32,10 @@ RATE_LIMITS: dict[str, tuple[int, int]] = {
     "import": (30, 60),           # large writes
     "auth": (10, 300),            # register/login attempts, per IP
     "guest": (30, 300),           # new guest users, per IP (each is a DB row)
+    # Pageview beacons. Generous — a real reader clicking around a SPA fires a
+    # handful a minute — but low enough that nobody can inflate the traffic
+    # numbers faster than they could by actually reloading the page.
+    "analytics": (120, 60),
 }
 
 _windows: dict[tuple[str, str], deque] = defaultdict(deque)
@@ -49,11 +53,15 @@ _windows_guard = threading.Lock()
 TRUSTED_PROXY_HOPS = max(1, int(os.environ.get("AIDND_TRUSTED_PROXY_HOPS", "1") or 1))
 
 
-def _client_ip(request: Request) -> str:
-    """The real client IP for rate-limit keying, resistant to a spoofed
-    X-Forwarded-For. Takes the hop the trusted edge appended (rightmost minus
-    any extra trusted hops); falls back to the socket peer when no forwarded
-    header is present (local/dev, or a direct connection)."""
+def client_ip(request: Request) -> str:
+    """The real client IP, resistant to a spoofed X-Forwarded-For. Takes the
+    hop the trusted edge appended (rightmost minus any extra trusted hops);
+    falls back to the socket peer when no forwarded header is present
+    (local/dev, or a direct connection).
+
+    Public because the access log needs the same answer, and two functions that
+    both decide "which address is the caller's" is how one of them ends up
+    trusting a header it shouldn't."""
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
         parts = [p.strip() for p in forwarded.split(",") if p.strip()]
@@ -68,7 +76,7 @@ def rate_limit(scope: str, request: Request, user: models.User | None = None) ->
     if not auth.MULTI_USER:
         return
     limit, window_seconds = RATE_LIMITS[scope]
-    key = (scope, f"u{user.id}" if user else f"ip{_client_ip(request)}")
+    key = (scope, f"u{user.id}" if user else f"ip{client_ip(request)}")
     now = time.time()
     with _windows_guard:
         window = _windows[key]

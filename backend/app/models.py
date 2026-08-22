@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import (
     JSON, Boolean, Column, DateTime, Float, ForeignKey, Index, Integer, LargeBinary,
-    String, Table, Text, event,
+    String, Table, Text, UniqueConstraint, event,
 )
 from sqlalchemy.orm import Mapped, Session, mapped_column, relationship
 
@@ -573,6 +573,93 @@ class Settings(Base):
         from . import security  # local import: models is imported before security
 
         return security.decrypt_secret(self.api_key)
+
+
+# ---------- Visit analytics (see analytics.py) ----------
+# Two deliberately dumb tables. Neither can hold anything a player wrote, and
+# neither can be joined back to a `users` row: the visitor column is an HMAC,
+# with no foreign key, so guest cleanup deleting an account leaves the history
+# it contributed to intact and anonymous.
+
+
+class AnalyticsDaily(Base):
+    """One counter: how many times `label` happened within `metric` on `day`.
+
+    A generic (metric, label, hits) triple rather than a column per statistic,
+    so measuring something new later costs a constant instead of a migration.
+    Written only by UPSERT, from a buffer — see analytics.flush.
+    """
+
+    __tablename__ = "analytics_daily"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    day: Mapped[str] = mapped_column(String(10), index=True)  # YYYY-MM-DD, UTC
+    metric: Mapped[str] = mapped_column(String(32))
+    label: Mapped[str] = mapped_column(String(80), default="")
+    hits: Mapped[int] = mapped_column(Integer, default=0)
+
+    # The upsert target: one row per bucket per day, created or incremented.
+    __table_args__ = (
+        UniqueConstraint("day", "metric", "label", name="uq_analytics_daily_bucket"),
+    )
+
+
+class AnalyticsVisitorDay(Base):
+    """One visitor, one day, and which funnel steps they reached on it.
+
+    Exists so the funnel counts people rather than clicks — a player who starts
+    six adventures is one person who started an adventure. `is_new` is set when
+    the visitor has no earlier row, which is also why the visitor column is
+    indexed on its own.
+    """
+
+    __tablename__ = "analytics_visitor_days"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    day: Mapped[str] = mapped_column(String(10))
+    # HMAC of the user id under the app secret; not reversible, not a key.
+    visitor: Mapped[str] = mapped_column(String(32))
+    is_new: Mapped[bool] = mapped_column(Boolean, default=False)
+    opened: Mapped[bool] = mapped_column(Boolean, default=False)
+    created: Mapped[bool] = mapped_column(Boolean, default=False)
+    played: Mapped[bool] = mapped_column(Boolean, default=False)
+    signed_up: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    __table_args__ = (
+        UniqueConstraint("day", "visitor", name="uq_analytics_visitor_day"),
+        Index("ix_analytics_visitor", "visitor"),
+    )
+
+
+class AccessEvent(Base):
+    """One sign-in, registration, failed attempt, or session first-seen.
+
+    The counterpart to the two tables above, and deliberately not mixed in with
+    them: this one identifies people on purpose — address, email, device — so
+    keeping it in its own table (and its own module) means the anonymity of the
+    counters stays a property of the code rather than of a convention.
+
+    `user_id` is a plain integer with no foreign key. An access log that
+    disappeared when the account did would not be an access log, and guest
+    cleanup deletes accounts on a schedule; `who` and `is_guest` are snapshots
+    for the same reason, so a row still reads correctly afterwards.
+    """
+
+    __tablename__ = "access_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    # session | login | register | login_failed
+    kind: Mapped[str] = mapped_column(String(16))
+    user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Email for a registered account, "Guest #12" otherwise; for a failed
+    # sign-in, the address that was tried — which is the point of the row.
+    who: Mapped[str] = mapped_column(String(320), default="")
+    is_guest: Mapped[bool] = mapped_column(Boolean, default=False)
+    ip: Mapped[str] = mapped_column(String(45), default="")   # 45 = max IPv6
+    country: Mapped[str] = mapped_column(String(16), default="")
+    device: Mapped[str] = mapped_column(String(16), default="")
+    user_agent: Mapped[str] = mapped_column(String(200), default="")
 
 
 # Phase 14 — the floor under `tree.place_action`.

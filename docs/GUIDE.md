@@ -23,6 +23,7 @@ what makes it a service rather than a demo. Part 4 is the web plumbing, kept sho
   - [1.8 Why there is no agent framework](#18-why-there-is-no-agent-framework)
 - [Part 2 — Data and correctness](#part-2--data-and-correctness)
 - [Part 3 — Production concerns](#part-3--production-concerns)
+  - [3.6 Counting visits](#36-counting-visits)
 - [Part 4 — The web plumbing, briefly](#part-4--the-web-plumbing-briefly)
 - [Part 5 — Measured results and known limitations](#part-5--measured-results-and-known-limitations)
 
@@ -1047,6 +1048,43 @@ Two things worth knowing about the free tier:
 
 CI runs the backend tests, the frontend lint and build, and a Docker image build on every
 push.
+
+## 3.6 Counting visits
+
+A hosted demo raises a question a local app never does: is anyone using it, and do they get
+anywhere? The answer is an owner-only dashboard at `/analytics`, gated on
+`AIDND_ANALYTICS_EMAILS` — a list kept separate from `AIDND_POWER_USERS`, since an unmetered
+tester is not automatically someone who should see the traffic.
+
+**Why it isn't a third-party script.** The CSP allows `script-src 'self'`, so a tracker would
+mean loosening it; adblockers eat the popular ones, which silently biases exactly the
+technical audience this project is shown to; and none of them can see the measurement that
+matters here — a *turn*. The interesting funnel step is not a pageview.
+
+**Egress is the budget.** After the 189x fix (§2.5) it would be perverse to add a feature
+that reads rows per request. So counts accumulate in a process-local dict and flush every 60
+seconds as UPSERTs: **a visit is a write and never a read**. Storage is a generic
+`(day, metric, label) -> hits` counter plus one row per visitor per day for the funnel flags.
+Every dashboard query is a `GROUP BY` that returns tens of rows regardless of the traffic
+behind it, so a month costs a few kilobytes to read back. The cost of the buffer is that a
+hard restart can lose up to a minute; the flusher also runs on shutdown, and on a tier that
+sleeps when idle the buffer it sleeps on is empty anyway.
+
+**The numbers are the server's, not the browser's.** The client reports one fact — which page
+was viewed — and even that is normalized to a route (`/play/12` → `/play/:id`) against a
+whitelist, so the page list cannot be polluted by anything a stranger posts. Everything that
+means something — a turn, an adventure, a sign-up — is recorded by the code that performs it.
+That also fixes a blind spot: a failed turn is an HTTP 200 with a bad ending, so a
+status-code tally cannot see it, and a demo whose model has started refusing looks perfectly
+healthy from outside. `turn_error` is counted where the SSE error is written.
+
+The funnel counts **people, not clicks** — a player who starts six adventures is one person
+who started an adventure — which is the entire reason the per-visitor-day table exists.
+
+One smaller decision worth naming: error buckets are labelled by the matched *route template*,
+never the requested path. That gives one bucket per endpoint instead of one per adventure id,
+and — the reason it isn't merely tidier — an unmatched path is entirely attacker-chosen, so
+labelling by it would let anyone mint rows.
 
 ---
 

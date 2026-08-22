@@ -3,7 +3,7 @@ import re
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 
-from .. import auth, cleanup, limits, models, schemas, security
+from .. import accesslog, analytics, auth, cleanup, limits, models, schemas, security
 from ..database import get_db
 from .settings import get_settings
 
@@ -34,6 +34,8 @@ def me_payload(user: models.User, db: Session) -> dict:
         "is_guest": user.is_guest,
         # Trusted testers: unmetered demo turns, plus the AI Chat scratchpad.
         "power_user": auth.is_power_user(user),
+        # Separate allowlist: shows the visit-analytics page and its nav link.
+        "analytics": auth.is_owner(user),
         # How long an idle guest is kept before cleanup deletes it (None when
         # the policy is off). Served rather than hardcoded in the UI so the
         # number a guest is shown is the number actually enforced.
@@ -65,6 +67,9 @@ def me(request: Request, response: Response, db: Session = Depends(get_db)):
             db.add(user)
             db.commit()
             _set_session_cookie(response, user.id)
+    # This endpoint is the SPA's bootstrap call, so it is where a session first
+    # shows itself; accesslog thins the rows down to one per day per address.
+    accesslog.note_session(db, user, request)
     return me_payload(user, db)
 
 
@@ -93,6 +98,8 @@ def register(
     user.password_hash = security.hash_password(payload.password)
     user.is_guest = False
     db.commit()
+    analytics.record_event(analytics.EV_SIGNUP, user)
+    accesslog.record(db, accesslog.REGISTER, request, user=user)
     return me_payload(user, db)
 
 
@@ -119,9 +126,15 @@ def login(
         or not security.verify_password(payload.password, user.password_hash)
     ):
         limits.note_login_failure(email)
+        # Logged with the address that was tried, not the account that owns it:
+        # a guessing run against an address that has no account is exactly the
+        # thing worth being able to see.
+        accesslog.record(db, accesslog.LOGIN_FAILED, request, who=email)
         raise HTTPException(401, "Incorrect email or password.")
     limits.note_login_success(email)
     _set_session_cookie(response, user.id)
+    analytics.record_event(analytics.EV_LOGIN, user)
+    accesslog.record(db, accesslog.LOGIN, request, user=user)
     return me_payload(user, db)
 
 

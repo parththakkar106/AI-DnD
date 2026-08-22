@@ -3,7 +3,7 @@ from fastapi.responses import Response
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from .. import auth, images, limits, models, schemas
+from .. import analytics, auth, images, limits, models, schemas
 from ..database import get_db
 
 router = APIRouter(prefix="/api/scenarios", tags=["scenarios"])
@@ -53,7 +53,13 @@ def get_scenario(
     db: Session = Depends(get_db),
     user: models.User = Depends(auth.get_current_user),
 ):
-    return get_scenario_or_404(scenario_id, db, user)
+    scenario = get_scenario_or_404(scenario_id, db, user)
+    # Funnel step. Only for shared scenarios: opening one is the first sign a
+    # visitor is interested, whereas someone editing their own is already past
+    # this point — and their titles are theirs, not a statistic.
+    if scenario.is_public:
+        analytics.record_event(analytics.EV_SCENARIO_OPEN, user)
+    return scenario
 
 
 @router.get("/{scenario_id}/image")

@@ -9,8 +9,8 @@ from sqlalchemy.orm import Session, load_only, undefer
 from sqlalchemy.orm.attributes import set_committed_value
 
 from .. import (
-    attempts, auth, bundle, images, limits, memorybank, models, schemas, tree,
-    worldstate,
+    analytics, attempts, auth, bundle, images, limits, memorybank, models, schemas,
+    tree, worldstate,
 )
 from ..context import build_context, cursors
 from ..context import history as context_history
@@ -411,6 +411,12 @@ def create_adventure(
 
     db.commit()
     db.refresh(adventure)
+    analytics.record_event(analytics.EV_ADVENTURE, user)
+    # Which of the shared scenarios people actually pick — the one piece of
+    # content this module ever names, and only ever a seeded/public one. A
+    # player's own scenario titles are theirs.
+    if scenario is not None and scenario.is_public:
+        analytics.record(analytics.M_SCENARIO, scenario.title)
     return adventure
 
 
@@ -589,6 +595,15 @@ def sse(obj: dict) -> str:
     return f"data: {json.dumps(obj)}\n\n"
 
 
+def turn_error(detail: str, **extra) -> str:
+    """An SSE error for a turn that could not be produced, counted on the way
+    out. Worth its own event: a failed turn is an HTTP 200 with a bad ending,
+    so the middleware's status-code tally cannot see it — a demo whose model
+    has started refusing every request looks perfectly healthy from outside."""
+    analytics.record(analytics.M_EVENT, analytics.EV_TURN_ERROR)
+    return sse({"type": "error", "detail": detail, **extra})
+
+
 # no-cache defeats any intermediary caching; X-Accel-Buffering makes
 # nginx-style reverse proxies (hosted deploys) flush each event immediately
 # instead of buffering the stream.
@@ -745,7 +760,7 @@ async def _generate_turn(
                 chunks.append(chunk)
                 yield sse({"type": "chunk", "text": chunk})
     except ProviderError as exc:
-        yield sse({"type": "error", "detail": str(exc)})
+        yield turn_error(str(exc))
         return
 
     text = "".join(chunks).strip()
@@ -763,13 +778,13 @@ async def _generate_turn(
             )
         else:
             detail = "The AI returned an empty response."
-        yield sse({"type": "error", "detail": detail})
+        yield turn_error(detail)
         return
 
     # onOutput
     text, _ = pipeline.run("output", text)
     if not text.strip():
-        yield sse({"type": "error", "detail": "A script's output modifier returned empty text."})
+        yield turn_error("A script's output modifier returned empty text.")
         return
     snapshot["script"] = snapshot["script"] | pipeline.report()
 
@@ -785,7 +800,7 @@ async def _generate_turn(
     if worldstate.has_schema(stat_schema):
         text, delta = worldstate.extract_delta(text)
         if not text.strip():
-            yield sse({"type": "error", "detail": "The AI returned only a state update and no story text."})
+            yield turn_error("The AI returned only a state update and no story text.")
             return
         new_world_state, ws_report = worldstate.apply_delta(
             adventure.world_state, stat_schema, delta, ai_depth
@@ -832,6 +847,12 @@ async def _generate_turn(
         # in the endpoint); failed provider calls above don't reach here.
         auth.count_demo_turn(user)
     db.commit()
+    # Counted here, past every way the turn could still have failed, so the
+    # number means "stories advanced" rather than "requests attempted". The
+    # demo tally is those same turns seen as spend on the server-funded key.
+    analytics.record_event(analytics.EV_TURN, user)
+    if cfg.using_demo:
+        analytics.record(analytics.M_EVENT, analytics.EV_DEMO_TURN)
     db.refresh(ai_action)
     yield _SAVED
     yield sse({"type": "done", "action": action_json(ai_action, db), "script": pipeline.report()})
@@ -876,8 +897,8 @@ async def run_player_turn(
         )
         modified, stop = pipeline.run("input", formatted)
         if not modified.strip():
-            yield sse({"type": "error", "detail": "A script's input modifier returned empty text.",
-                       "script": pipeline.report()})
+            yield turn_error("A script's input modifier returned empty text.",
+                             script=pipeline.report())
             return
         player_action = models.Action(
             adventure_id=adventure.id,
@@ -1800,6 +1821,10 @@ def import_adventure(
 
     db.commit()
     db.refresh(adventure)
+    # Not a funnel step: importing a bundle is something a returning player
+    # does, not a sign a first-time visitor got anywhere. Counted anyway,
+    # because it is the clearest evidence anyone is using the export format.
+    analytics.record_event(analytics.EV_IMPORT, user)
     return adventure
 
 

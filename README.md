@@ -151,7 +151,7 @@ player input
 
 ```
 frontend/   React + Vite SPA  ──HTTP/SSE──►  backend/  FastAPI
-                                              ├─ routers/      auth, scenarios, adventures, story cards, scripts, chat, settings, debug
+                                              ├─ routers/      auth, scenarios, adventures, story cards, scripts, chat, settings, analytics, debug
                                               ├─ models.py     SQLAlchemy: User, Scenario, Adventure, Branch, Action, StoryCard, Script, Settings, Memory
                                               ├─ migrations.py hand-rolled, versioned via PRAGMA user_version (64 and counting)
                                               ├─ auth.py       guest/registered users, sessions, shared demo key
@@ -162,6 +162,7 @@ frontend/   React + Vite SPA  ──HTTP/SSE──►  backend/  FastAPI
                                               ├─ worldstate/   the stat engine: clamps, cooldowns, bands, milestones
                                               ├─ scripting/    quickjs sandbox + AI Dungeon API surface
                                               ├─ memorybank.py auto-summarization + embedding retrieval
+                                              ├─ analytics.py  buffered visit counters + the owner's dashboard query
                                               ├─ bundle.py     the export/import formats, v2 (tree) and a v1 reader
                                               ├─ providers/    OpenAI-compatible adapter, streaming
                                               └─ data.db       SQLite (path overridable via AIDND_DB_PATH)
@@ -172,7 +173,7 @@ development Vite proxies `/api` to FastAPI.
 
 ## Tests
 
-440 backend tests — unit plus full HTTP integration through the real quickjs scripting engine,
+497 backend tests — unit plus full HTTP integration through the real quickjs scripting engine,
 with the LLM provider mocked. CI runs them on every push, alongside the frontend lint/build and
 a Docker image build.
 
@@ -202,6 +203,21 @@ the most interesting engineering in the repo:
   stay cheap because the lineage is windowed like the history is, so the number of SQL clauses is
   bounded by the context window rather than by the number of forks.
 
+## Visit analytics
+
+The hosted demo keeps its own analytics: an owner-only dashboard at `/analytics` showing
+traffic, which shared scenarios get played, turns and demo-key spend, errors, and a funnel
+from *visited* to *played a turn* to *signed up*. It is visible only to the emails listed in
+`AIDND_ANALYTICS_EMAILS`, and the route 404s for everyone else.
+
+Built into the app rather than bolted on with a third-party script, for reasons specific to
+this one: the CSP allows `script-src 'self'`, adblockers eat the popular trackers, and none
+of them can see the measurement that actually matters here — a turn. Counts are aggregated
+in memory and flushed as UPSERTs, so a visit is a write and never a read, and every dashboard
+query is a `GROUP BY` returning tens of rows however much traffic sits behind it. That last
+part is not incidental; see the egress note above for what reading rows per request costs on
+this stack.
+
 ## Deploy (Render)
 
 The repo ships a [`render.yaml`](render.yaml) blueprint: one Docker web service that
@@ -211,7 +227,8 @@ serves the SPA and API same-origin, backed by external [Neon](https://neon.tech)
 1. Create a **Neon** project and copy its pooled connection string.
 2. In Render: **New → Blueprint**, point it at this repo. Render reads `render.yaml`.
 3. Fill the secrets it prompts for (`sync: false` vars): `AIDND_DATABASE_URL` (the Neon
-   string) and, to offer a no-signup demo, `AIDND_DEMO_API_KEY` / `AIDND_DEMO_MODELS`.
+   string); to offer a no-signup demo, `AIDND_DEMO_API_KEY` / `AIDND_DEMO_MODELS`; and to
+   see the Visitors dashboard, `AIDND_ANALYTICS_EMAILS` (your own account's email).
    `AIDND_SECRET_KEY` is generated automatically and kept stable across deploys.
 4. Deploy. Pushes to `main` auto-deploy thereafter. Health check: `/api/health`.
 

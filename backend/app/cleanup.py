@@ -42,7 +42,7 @@ from sqlalchemy import delete, func
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from . import auth, models
+from . import analytics, auth, models
 from .database import SessionLocal
 
 logger = logging.getLogger(__name__)
@@ -70,6 +70,13 @@ def enabled() -> bool:
     """Guests only exist in multi-user mode, so local runs skip the sweep
     rather than pointing a DELETE at a database that has nothing to collect."""
     return auth.MULTI_USER and RETENTION_DAYS > 0
+
+
+def anything_to_sweep() -> bool:
+    """Whether the periodic task is worth starting at all. The two jobs it runs
+    are independent: a deployment can keep every guest forever and still want
+    its analytics rows aged out, and vice versa."""
+    return enabled() or analytics.RETENTION_DAYS > 0
 
 
 def delete_stale_guests(db: Session, *, now: datetime | None = None) -> int:
@@ -105,12 +112,19 @@ def delete_stale_guests(db: Session, *, now: datetime | None = None) -> int:
 
 def sweep() -> int:
     """One pass, with its own session. Never raises: a failed cleanup must not
-    be able to take the app down (same rule as seeding)."""
-    if not enabled():
+    be able to take the app down (same rule as seeding). Returns the guest
+    count, which is the number worth logging about."""
+    if not anything_to_sweep():
         return 0
     db = SessionLocal()
     try:
-        removed = delete_stale_guests(db)
+        # Ages out the per-visitor analytics rows, on its own terms: it is not
+        # about guests, and it must still happen on a deployment that has
+        # chosen to keep every account it ever minted.
+        aged = analytics.purge_old_visitor_days(db)
+        if aged:
+            logger.info("Aged out %d analytics visitor-day row(s).", aged)
+        removed = delete_stale_guests(db) if enabled() else 0
         if removed:
             logger.info(
                 "Cleaned up %d guest account(s) idle for %d+ days.",
@@ -135,16 +149,18 @@ async def _sweep_loop() -> None:
 
 
 def start_sweeper() -> asyncio.Task | None:
-    """Kick off the periodic sweep; None when the policy is off."""
+    """Kick off the periodic sweep; None when there is nothing to sweep."""
     if not enabled():
         logger.info("Guest cleanup disabled (multi_user=%s, retention_days=%d).",
                     auth.MULTI_USER, RETENTION_DAYS)
+    else:
+        logger.info(
+            "Guest cleanup on: deleting guests idle %d+ days, every %d hour(s).",
+            RETENTION_DAYS,
+            SWEEP_INTERVAL_SECONDS // 3600,
+        )
+    if not anything_to_sweep():
         return None
-    logger.info(
-        "Guest cleanup on: deleting guests idle %d+ days, every %d hour(s).",
-        RETENTION_DAYS,
-        SWEEP_INTERVAL_SECONDS // 3600,
-    )
     return asyncio.create_task(_sweep_loop())
 
 
