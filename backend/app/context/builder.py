@@ -9,6 +9,12 @@
     [Story history]          newest actions that fit the remaining token budget
     [Author's Note]          injected AUTHORS_NOTE_DEPTH actions before the end of history
     [Latest player action]   (+ script frontMemory right after it, Phase 4)
+
+Which components are present is AI Dungeon's design, above. The *order* they
+are laid out in is not: everything fixed is emitted first and everything that
+moves after the history, because prompt caching bills on a shared prefix and
+one mutable section high up re-prices the whole prompt under it. See the two
+"static block" / "live sections" comments in `build_context`.
 """
 
 import functools
@@ -190,24 +196,26 @@ def build_context(
     `exclude_action_id` omits one action from the story (see history.py)."""
     script_mem = _script_memory(adventure)
 
-    # ----- Always-included components -----
+    # ----- The static block: byte-for-byte the same prompt every turn -----
+    # The ordering here is a billing decision, not a stylistic one. Prompt
+    # caching matches a *prefix*: an endpoint reuses the prompt up to the first
+    # byte that differs from last time and no further. So one mutable section
+    # near the top re-prices everything below it, and what is below it is the
+    # story history, which is the bulk of the prompt. Anything that changes
+    # turn to turn therefore goes *after* the history, in the live sections —
+    # which is also where recency serves it best, the same reasoning that
+    # already puts EMIT_REMINDER last.
     system_sections: list[Section] = [Section("narrator", settings.narrator_prompt.strip())]
 
-    # RPG world state (Phase 12): current stats/milestones + how to report changes.
+    # RPG world state (Phase 12): how to report changes. The live values are a
+    # live section below; the schema-derived guide and the emit rule are fixed
+    # for as long as the scenario is.
     stat_schema = adventure.scenario.stat_schema if adventure.scenario else None
     has_ws = worldstate.has_schema(stat_schema)
     if has_ws:
         guide = worldstate.render_reference(stat_schema)
         if guide:
             system_sections.append(Section("world_state_guide", guide))
-        block = worldstate.render_state_section(
-            adventure.world_state, stat_schema,
-            _visible_npcs(
-                history.tail(adventure, NPC_WINDOW, exclude_action_id), stat_schema
-            ),
-        )
-        if block:
-            system_sections.append(Section("world_state", block))
         system_sections.append(Section("world_state_rule", worldstate.EMIT_RULE))
 
     if isinstance(script_mem.get("context"), str) and script_mem["context"].strip():
@@ -218,13 +226,33 @@ def build_context(
         system_sections.append(
             Section("plot_essentials", f"Plot essentials:\n{adventure.memory.strip()}")
         )
-    if adventure.story_summary.strip():
-        system_sections.append(
-            Section("story_summary", f"Story summary:\n{adventure.story_summary.strip()}")
-        )
+
+    # ----- Live sections: everything that moves, built here, placed after the
+    # history further down. Ordered least-volatile first, so a turn that
+    # changes only the fastest-moving one keeps the others cached too: the
+    # summary is rewritten every few turns, lore turns over with the scene, the
+    # retrieved memories change on most turns, the stat values on nearly all.
+    # `world_lore` joins them below — it is the history window that triggers
+    # the cards, so it cannot be known yet.
+    summary_section = (
+        Section("story_summary", f"Story summary:\n{adventure.story_summary.strip()}")
+        if adventure.story_summary.strip()
+        else None
+    )
+    memories_section = None
     if memory_bank and memory_bank.get("used"):
-        lines = "\n".join(f"- {m['text']}" for m in memory_bank["used"])
-        system_sections.append(Section("used_memories", f"Memories:\n{lines}"))
+        lines_text = "\n".join(f"- {m['text']}" for m in memory_bank["used"])
+        memories_section = Section("used_memories", f"Memories:\n{lines_text}")
+    world_state_section = None
+    if has_ws:
+        block = worldstate.render_state_section(
+            adventure.world_state, stat_schema,
+            _visible_npcs(
+                history.tail(adventure, NPC_WINDOW, exclude_action_id), stat_schema
+            ),
+        )
+        if block:
+            world_state_section = Section("world_state", block)
 
     authors_note_text = adventure.authors_note.strip()
     if isinstance(script_mem.get("authorsNote"), str) and script_mem["authorsNote"].strip():
@@ -237,8 +265,16 @@ def build_context(
 
     length_note = length_hint(settings.max_output_tokens, has_ws=has_ws)
 
+    # The live sections moved below the history but they are still in the
+    # prompt, so they are still reserved against the budget. (`world_lore` is
+    # not: it is budgeted out of `available` further down, as it always was.)
     reserved = (
         sum(s.tokens for s in system_sections)
+        + sum(
+            s.tokens
+            for s in (summary_section, memories_section, world_state_section)
+            if s is not None
+        )
         + count_tokens(authors_note)
         + count_tokens(front_memory)
         + count_tokens(length_note)
@@ -273,8 +309,9 @@ def build_context(
             {"id": match["id"], "name": match["name"], "keyword": match["keyword"],
              "included": included}
         )
-    if lore_lines:
-        system_sections.append(Section("world_lore", "\n".join(lore_lines)))
+    lore_section = (
+        Section("world_lore", "\n".join(lore_lines)) if lore_lines else None
+    )
 
     # ----- Story history: newest first until the remaining budget is spent -----
     history_budget = available - used
@@ -316,6 +353,12 @@ def build_context(
         note_sections.append(Section("recent_history", SEPARATOR.join(after)))
     else:
         note_sections.append(Section("history", SEPARATOR.join(texts)))
+    # The live sections, least volatile first (see where they are built). They
+    # sit below the history so the history caches, and above the tail so the
+    # three sections that are last for a reason stay last.
+    for live in (summary_section, lore_section, memories_section, world_state_section):
+        if live is not None:
+            note_sections.append(live)
     if front_memory:
         note_sections.append(Section("front_memory", front_memory))
     # Sits just above the emit reminder, which keeps the strongest recency slot:

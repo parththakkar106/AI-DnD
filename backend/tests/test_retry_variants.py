@@ -37,6 +37,7 @@ modifier(text);
 
 class ScriptedProvider:
     """Streams the next canned reply each call, so successive retries differ."""
+    last_usage = None
     replies: list = []
     calls = 0
     prompts: list = []  # every assembled (system, story) pair, for context assertions

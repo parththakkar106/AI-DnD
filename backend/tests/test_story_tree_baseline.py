@@ -53,6 +53,7 @@ OPENING = "You enter a cave."
 
 class ScriptedProvider:
     """Streams the next canned reply each call, so successive turns differ."""
+    last_usage = None
 
     replies: list = []
     calls = 0

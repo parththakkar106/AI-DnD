@@ -40,9 +40,11 @@ from .context import lineage
 
 # The slices of a context snapshot that belong to one attempt rather than to
 # the turn: the world-state delta it proposed and what the referee did with it,
-# the script report, and the model's literal reply. Everything else in a
+# the script report, the model's literal reply, and the endpoint's token
+# accounting — each attempt is its own API call, and a retry is precisely the
+# call expected to read the prompt back out of cache. Everything else in a
 # snapshot is the prompt, which is assembled once per turn.
-ATTEMPT_KEYS = ("world_state", "script", "raw_output")
+ATTEMPT_KEYS = ("world_state", "script", "raw_output", "usage")
 
 
 # ------------------------------------------------------------------ reading

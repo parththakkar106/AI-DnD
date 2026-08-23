@@ -10,6 +10,26 @@ from .base import PromptParts, Provider, ProviderError
 # continuing prose instead of replying conversationally.
 CHAT_CONTINUE_HINT = "\n\n[Continue the story directly. Output only story text.]"
 
+# OpenRouter serves one model from whichever upstream is available, and every
+# upstream holds its own prompt cache — so a request that lands somewhere new
+# starts cold however stable the prompt is. Naming a preferred upstream makes
+# routing deterministic, which is what lets a cache be hit at all.
+#
+# `allow_fallbacks` is deliberately left at its default of true: this is a
+# preference, not a restriction. If the named upstream is down the request
+# still goes through somewhere else and merely misses the cache, which is the
+# behaviour we had anyway.
+#
+# A whitelist rather than a derivation from the model slug. The vendor half of
+# a slug is *usually* the provider slug ("deepseek/..." -> "deepseek", verified
+# against /api/v1/providers) but not reliably: Google's models are served by
+# "google-ai-studio" and "google-vertex", and there is no "google". Look a
+# vendor up on the model's Providers tab before adding it here — a slug that
+# does not exist is a routing preference that silently does nothing at best.
+_OPENROUTER_HOST = "openrouter.ai"
+_PREFERRED_UPSTREAM = {"deepseek": "deepseek"}
+
+
 # Completion endpoints have no roles, so a plain chat has to be flattened into
 # one labelled transcript that trails off on "Assistant:" for the model to continue.
 _ROLE_LABELS = {"system": "System", "user": "User", "assistant": "Assistant"}
@@ -42,6 +62,12 @@ class OpenAICompatibleProvider(Provider):
         # reject unknown fields); negative = explicitly ask the endpoint to
         # turn reasoning off.
         self.reasoning_max_tokens = reasoning_max_tokens
+        # Token accounting from the last call, when the endpoint reported any:
+        # prompt/completion counts plus, on OpenRouter, `prompt_tokens_details.
+        # cached_tokens` — the number of prompt tokens read from cache instead
+        # of billed in full. Written by every request method, so a caller reads
+        # it after the call it made; one provider is built per request.
+        self.last_usage: dict | None = None
 
     def _headers(self) -> dict:
         headers = {"Content-Type": "application/json"}
@@ -66,6 +92,29 @@ class OpenAICompatibleProvider(Provider):
             body["reasoning"] = {"max_tokens": self.reasoning_max_tokens}
             body["max_tokens"] += self.reasoning_max_tokens
 
+    def _apply_provider_routing(self, body: dict) -> None:
+        """Prefer one upstream on OpenRouter, so the prompt cache is warm.
+
+        Silent no-op everywhere else: `provider` is an OpenRouter extension and
+        Ollama and friends reject fields they do not know — the same trap the
+        `reasoning` param above is written around."""
+        if _OPENROUTER_HOST not in self.base_url:
+            return
+        upstream = _PREFERRED_UPSTREAM.get(self.model.split("/", 1)[0].lower())
+        if upstream:
+            body["provider"] = {"order": [upstream]}
+
+    def _record_usage(self, payload: dict) -> None:
+        """Record the endpoint's own token accounting, if it reported any.
+
+        OpenRouter always reports usage now (`usage: {include: true}` and
+        `stream_options` are deprecated no-ops), and in a stream it rides on a
+        final chunk that carries no choices — which is why this is read
+        separately from the text extraction rather than beside it."""
+        usage = payload.get("usage")
+        if isinstance(usage, dict) and usage:
+            self.last_usage = usage
+
     def _request(self, parts: PromptParts, temperature: float, max_tokens: int) -> tuple[str, dict]:
         if self.api_mode == "completion":
             url = f"{self.base_url}/completions"
@@ -89,6 +138,7 @@ class OpenAICompatibleProvider(Provider):
                 "stream": True,
             }
         self._apply_reasoning_budget(body)
+        self._apply_provider_routing(body)
         return url, body
 
     @staticmethod
@@ -162,6 +212,7 @@ class OpenAICompatibleProvider(Provider):
                 "stream": True,
             }
         self._apply_reasoning_budget(body)
+        self._apply_provider_routing(body)
         async for event in self._stream(url, body):
             yield event
 
@@ -193,12 +244,15 @@ class OpenAICompatibleProvider(Provider):
                         saw_sse = True
                         data = line[5:].strip()
                         if data == "[DONE]":
-                            debuglog.finish_entry(log, response="".join(received))
+                            debuglog.finish_entry(
+                                log, response="".join(received), usage=self.last_usage
+                            )
                             return
                         try:
                             payload = json.loads(data)
                         except ValueError:
                             continue
+                        self._record_usage(payload)
                         reasoning = self._extract_reasoning(payload)
                         if reasoning:
                             yield "reasoning", reasoning
@@ -215,6 +269,7 @@ class OpenAICompatibleProvider(Provider):
                                 "AI endpoint returned neither an SSE stream nor JSON: "
                                 + body_text[:200]
                             )
+                        self._record_usage(payload)
                         reasoning = self._extract_reasoning(payload)
                         if reasoning:
                             yield "reasoning", reasoning
@@ -227,7 +282,7 @@ class OpenAICompatibleProvider(Provider):
                                 "AI endpoint returned a response with no text: "
                                 + body_text[:200]
                             )
-            debuglog.finish_entry(log, response="".join(received))
+            debuglog.finish_entry(log, response="".join(received), usage=self.last_usage)
         except httpx.ConnectError as exc:
             error = f"Could not connect to {self.base_url} — is the AI server running?"
             debuglog.finish_entry(log, response="".join(received), error=error)
@@ -272,6 +327,7 @@ class OpenAICompatibleProvider(Provider):
                 "stream": False,
             }
         self._apply_reasoning_budget(body)
+        self._apply_provider_routing(body)
 
         log = debuglog.start_entry(url, self.model, body)
         try:
@@ -285,11 +341,13 @@ class OpenAICompatibleProvider(Provider):
             debuglog.finish_entry(log, error=error)
             raise ProviderError(error)
         try:
-            text = self._extract_chunk(resp.json())
+            payload = resp.json()
         except ValueError as exc:
             debuglog.finish_entry(log, error="Invalid JSON response")
             raise ProviderError("AI endpoint returned invalid JSON.") from exc
-        debuglog.finish_entry(log, response=text)
+        self._record_usage(payload)
+        text = self._extract_chunk(payload)
+        debuglog.finish_entry(log, response=text, usage=self.last_usage)
         return text.strip()
 
     async def embed(self, texts: list[str]) -> list[list[float]]:

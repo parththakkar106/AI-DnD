@@ -40,14 +40,26 @@ def start_entry(url: str, model: str, body: dict) -> dict:
         "request": _clip_obj(body),
         "status": "pending",
         "response": "",
+        "usage": None,
         "error": None,
     }
     _entries.appendleft(entry)
     return entry
 
 
-def finish_entry(entry: dict, *, response: str = "", error: str | None = None) -> None:
+def finish_entry(
+    entry: dict,
+    *,
+    response: str = "",
+    error: str | None = None,
+    usage: dict | None = None,
+) -> None:
+    """`usage` is the endpoint's own token accounting when it reported any.
+    On OpenRouter it carries `prompt_tokens_details.cached_tokens`, which is
+    the only direct read on whether the prompt prefix is actually being
+    cached — a number worth seeing beside the request that produced it."""
     entry["response"] = _clip(response)
+    entry["usage"] = usage
     entry["error"] = error
     entry["status"] = "error" if error else "ok"
 

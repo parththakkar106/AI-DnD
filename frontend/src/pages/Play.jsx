@@ -1298,6 +1298,26 @@ function ScriptReport({ script }) {
   )
 }
 
+// What the endpoint charged for the turn, and how much of the prompt it read
+// back out of its cache instead of billing in full. Only shown on a past turn:
+// the "next turn" view has not been sent anywhere yet, so it has no usage. A
+// cached read costs a tenth of a fresh one, which is the whole reason the
+// prompt is laid out static-first — so this is the number that says whether
+// that layout is working.
+function CacheReport({ usage }) {
+  if (!usage) return null
+  const prompt = usage.prompt_tokens || 0
+  const cached = usage.prompt_tokens_details?.cached_tokens || 0
+  if (!prompt) return null
+  const pct = Math.round((cached / prompt) * 100)
+  return (
+    <div className="insights-history">
+      Prompt cache: {cached} of {prompt} prompt tokens read from cache ({pct}%)
+      {usage.cost != null && ` · cost $${Number(usage.cost).toFixed(5)}`}
+    </div>
+  )
+}
+
 const LEGEND_VISIBLE = 6 // enough to cover what actually moves the budget
 
 // Where the prompt's tokens actually went: one stacked bar scaled to the
@@ -1435,6 +1455,7 @@ function InsightsPanel({ advId, inspectActionId, onClearInspect, refreshKey }) {
           {history.total > history.included && ' (older history trimmed)'}
           {history.oldest_truncated && ' — oldest entry cut mid-text'}
         </div>
+        <CacheReport usage={report.usage} />
         {cards.length > 0 && (
           <div className="insights-cards">
             {cards.map((c, i) => (

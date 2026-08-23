@@ -809,6 +809,10 @@ async def _generate_turn(
         snapshot["world_state"] = {"delta": delta, "report": ws_report, "state": new_world_state}
 
     snapshot["raw_output"] = raw_output
+    # What the endpoint says the call cost, including how much of the prompt it
+    # read from cache rather than billed in full. Recorded per attempt, beside
+    # the prompt it priced.
+    snapshot["usage"] = provider.last_usage
 
     reasoning = "".join(reasoning_chunks).strip() or None
     ai_action = models.Action(

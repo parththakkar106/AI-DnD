@@ -45,6 +45,7 @@ AI_REPLY = (
 
 
 class FakeProvider:
+    last_usage = None
     def __init__(self, *a, **k):
         pass
 

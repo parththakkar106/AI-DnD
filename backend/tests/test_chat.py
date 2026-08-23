@@ -28,6 +28,7 @@ class FakeProvider:
     """Records what it was constructed with, then streams a fixed reply. Stands
     in for the real egress point, so asserting on last_key/last_model is
     asserting on exactly what would have gone over the wire."""
+    last_usage = None
     last_model = None
     last_key = None
     last_endpoint = None

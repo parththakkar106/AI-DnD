@@ -36,6 +36,7 @@ modifier(text);
 
 class FakeProvider:
     """Stand-in for OpenAICompatibleProvider: streams one fixed line, no network."""
+    last_usage = None
     def __init__(self, *a, **k):
         pass
 

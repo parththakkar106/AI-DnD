@@ -51,6 +51,7 @@ modifier(text);
 
 
 class ScriptedProvider:
+    last_usage = None
     replies: list = []
     calls = 0
     prompts: list = []
