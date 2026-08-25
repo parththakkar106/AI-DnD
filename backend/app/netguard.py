@@ -1,14 +1,15 @@
 """SSRF guard for the one place the server makes an outbound request to a
 user-supplied address: the BYOK `endpoint_url` (connection test + turns/chat).
 
-Without this, a hosted user could point endpoint_url at an internal service or
-the cloud metadata endpoint (169.254.169.254) and have the server fetch it —
-the connection test even echoes part of the response back. We refuse any URL
-that resolves to a non-public address.
+Without this guard, a hosted user could point `endpoint_url` at an internal
+service or at the cloud metadata endpoint, 169.254.169.254, and have the server
+fetch it. The connection test even returns part of the response. The guard
+therefore refuses any URL that resolves to a non-public address.
 
-No-op in local mode: a local install talking to http://localhost:11434 (Ollama)
-is the normal, intended case — the guard only applies to the hosted, multi-user
-deployment where the endpoint comes from an untrusted visitor.
+The guard does nothing in local mode. A local install talking to
+http://localhost:11434, which is Ollama, is the intended case. The guard applies
+only to a hosted, multi-user deployment, where the endpoint comes from an
+untrusted visitor.
 """
 
 import ipaddress

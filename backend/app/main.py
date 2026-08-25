@@ -106,12 +106,12 @@ class SecurityHeadersMiddleware:
 class ApiErrorMiddleware:
     """Counts failed API responses for the analytics dashboard.
 
-    Here rather than in an exception handler because it sees what the client
-    actually got: a 429 from a rate limiter, a 404 from routing, a 500 from a
-    handler that never returned, all the same way. Pure ASGI for the same
-    reason as the headers above — an SSE turn must not be buffered on its way
-    out. Only /api is watched; a 404 on the SPA mount is a page load, not a
-    fault.
+    This is middleware rather than an exception handler, because it observes
+    what the client received. A 429 from a rate limiter, a 404 from routing, and
+    a 500 from a handler that never returned all reach it the same way. It is
+    pure ASGI for the same reason as the headers above: an SSE turn must not be
+    buffered on its way out. It watches `/api` only, because a 404 on the SPA
+    mount is a page load rather than a fault.
     """
 
     def __init__(self, app):

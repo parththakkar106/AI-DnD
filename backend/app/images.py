@@ -22,9 +22,9 @@ DATA_URI_RE = re.compile(
 def public_url(scenario_id: int, image: str, version: object) -> str:
     """The URL a client should load for this scenario's art ("" if none).
 
-    `version` (any object with a stable repr — normally the row's updated_at)
-    becomes a cache-buster, letting the image response be marked immutable
-    while still refreshing the moment the author swaps the picture.
+    `version` is any object with a stable repr, and is normally the row's
+    `updated_at`. It becomes a cache-buster, so the image response can be marked
+    immutable and still refresh as soon as the author replaces the picture.
     """
     if not image:
         return ""
@@ -40,9 +40,9 @@ def public_url(scenario_id: int, image: str, version: object) -> str:
 def sanitize(value: object, max_length: int) -> str:
     """Coerce an untrusted `image` value from an import bundle to a safe one.
 
-    Anything that isn't a supported data URI or an https URL — or that is too
-    large to store — becomes "", so a hostile or merely foreign bundle can't
-    smuggle in a `javascript:` URI or blow past the column cap.
+    A value that is not a supported data URI or an https URL, or that is too
+    large to store, becomes "". A hostile or merely unfamiliar bundle therefore
+    cannot pass in a `javascript:` URI or exceed the column cap.
     """
     if not isinstance(value, str) or not value or len(value) > max_length:
         return ""
@@ -62,5 +62,6 @@ def decode(image: str) -> tuple[bytes, str] | None:
         payload = re.sub(r"\s+", "", match.group(2))
         return base64.b64decode(payload, validate=True), match.group(1).lower()
     except (binascii.Error, ValueError):
-        # Truncated or hand-edited base64 — treat as "no image" rather than 500.
+        # The base64 is truncated or hand-edited. Treat it as no image rather
+        # than return a 500.
         return None

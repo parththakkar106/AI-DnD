@@ -54,10 +54,13 @@ def finish_entry(
     error: str | None = None,
     usage: dict | None = None,
 ) -> None:
-    """`usage` is the endpoint's own token accounting when it reported any.
-    On OpenRouter it carries `prompt_tokens_details.cached_tokens`, which is
-    the only direct read on whether the prompt prefix is actually being
-    cached — a number worth seeing beside the request that produced it."""
+    """Finishes a log entry.
+
+    `usage` is the endpoint's own token accounting, when it reported any. On
+    OpenRouter it carries `prompt_tokens_details.cached_tokens`, which is the
+    only direct measure of whether the prompt prefix is being cached, and it is
+    worth seeing next to the request that produced it.
+    """
     entry["response"] = _clip(response)
     entry["usage"] = usage
     entry["error"] = error

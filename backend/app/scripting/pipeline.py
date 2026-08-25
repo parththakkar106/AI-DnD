@@ -24,19 +24,20 @@ class ScriptPipeline:
         return msg if isinstance(msg, str) and msg.strip() else None
 
     def _history(self) -> list[dict]:
-        # The path, not `adventure.actions` — that collection is every branch's
-        # actions, and this is the documented history API a user script reads.
-        # Handing a script the siblings of the turn it is running on would be
-        # the same bug as building a prompt from them, only user-visible.
+        # Read the path rather than `adventure.actions`. That collection holds
+        # every branch's actions, and this is the documented history API a user
+        # script reads. Giving a script the siblings of the turn it is running on
+        # would be the same bug as building a prompt from them, and visible to
+        # the user.
         #
-        # `story_actions` also drops blank-text rows, which `adventure.actions`
-        # kept, so this array is shorter than it used to be for an adventure
-        # that has any — and `info.actionCount` counts the same way. That is
-        # deliberate: a row with no text is this app's bookkeeping, it has no
-        # counterpart in the AI Dungeon history a ported script was written
-        # against, and the prompt has never included one. A script keyed on
-        # "every N actions" will land on different turns than it did before
-        # phase 14; there is no reading of this that is compatible with both.
+        # `story_actions` also drops rows with blank text, which
+        # `adventure.actions` kept, so this array is shorter than it was for an
+        # adventure that has any such rows. `info.actionCount` counts the same
+        # way. That is intended. A row with no text is this app's bookkeeping, it
+        # has no counterpart in the AI Dungeon history a ported script was
+        # written against, and the prompt has never included one. A script keyed
+        # on every N actions lands on different turns than it did before phase
+        # 14, and no reading of this is compatible with both.
         return [
             {"text": a.text, "rawText": a.text, "type": a.type}
             for a in context_history.story_actions(self.adventure)
