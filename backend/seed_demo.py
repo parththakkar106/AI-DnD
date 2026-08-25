@@ -19,7 +19,8 @@ migrations.bootstrap(engine)
 DEMO_PREFIX = "[Demo]"
 
 # ---------------------------------------------------------------------------
-# Sample scripts — AI Dungeon contract: define modifier(text), call it last.
+# Sample scripts. The AI Dungeon contract is to define `modifier(text)` and call
+# it last.
 # ---------------------------------------------------------------------------
 
 DICE_ROLLER = dict(
@@ -227,7 +228,7 @@ try:
     scripts = [models.Script(**s) for s in SCRIPTS]
     db.add_all(scripts)
 
-    # Scenario with cards and scripts attached — public starter content.
+    # A scenario with cards and scripts attached, as public starter content.
     scenario = models.Scenario(**SCENARIO, is_public=True)
     scenario.scripts = scripts
     db.add(scenario)

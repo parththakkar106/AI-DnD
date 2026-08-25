@@ -4,7 +4,8 @@ Query *counts* are easy to see and have never been the problem here. Both
 egress blowouts this project has had were one query fetching a column nobody
 read: `context_snapshot` on every action, then every memory's embedding on
 every turn. Counting statements would have shown nothing wrong in either case,
-and at development scale — ten rows, no embeddings — so would a stopwatch.
+and at development scale, meaning ten rows and no embeddings, so would a
+stopwatch.
 
 So this meter measures bytes, and it measures them at the only place the truth
 is available: the DBAPI cursor, after the driver has decoded a row and before
@@ -20,9 +21,9 @@ Usage:
     print(meter.render())
 
 `attach()` wraps the pool's connection factory, so it reuses the engine the app
-already configured rather than rebuilding one beside it — nothing about
-connect args, pre-ping or the SQLite foreign-key pragma has to be repeated
-here, and drift between the metered engine and the real one is impossible.
+already configured rather than building a second one. Nothing about connect
+args, pre-ping, or the SQLite foreign-key pragma is repeated here, and the
+metered engine cannot diverge from the real one.
 Existing pooled connections are dropped first, so a connection opened before
 attaching cannot quietly stay unmetered.
 
@@ -68,8 +69,8 @@ def value_bytes(value) -> int:
     if isinstance(value, (int, float)):
         return 8
     if isinstance(value, (dict, list)):
-        # A JSON column the driver already parsed (psycopg does; SQLite does
-        # not). Separators match what a database emits — no spaces.
+        # A JSON column the driver already parsed. psycopg parses it and SQLite
+        # does not. The separators match what a database emits, with no spaces.
         return len(json.dumps(value, separators=(",", ":"), default=str).encode("utf-8"))
     return len(str(value).encode("utf-8"))
 
@@ -82,8 +83,9 @@ def _table_of(statement: str) -> str:
     match = _TABLE_RE.search(statement)
     if match:
         return match.group(1).lower()
-    # No table to name — BEGIN, a PRAGMA, a savepoint. Group those under the
-    # keyword so they stay countable instead of collapsing into one "?" bucket.
+    # The statement names no table, such as BEGIN, a PRAGMA, or a savepoint.
+    # Group those under the keyword, so they stay countable rather than collapse
+    # into one "?" bucket.
     head = statement.strip().split(None, 1)
     return head[0].lower()[:20] if head else "(empty)"
 
@@ -236,10 +238,10 @@ class _MeteredConnection:
 class _MeteredCursor:
     """Counts the bytes of every row handed back.
 
-    The fetch methods are wrapped rather than `execute`, because what a
-    statement *costs* is not knowable when it is sent — `SELECT * FROM
-    memories` and `SELECT count(*) FROM memories` look alike going out and
-    differ by three megabytes coming back.
+    The wrapper covers the fetch methods rather than `execute`, because what a
+    statement costs is not known when it is sent. `SELECT * FROM memories` and
+    `SELECT count(*) FROM memories` look alike going out and differ by three
+    megabytes coming back.
     """
 
     def __init__(self, cursor, meter: Meter) -> None:
