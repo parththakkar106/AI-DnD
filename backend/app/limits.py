@@ -1,9 +1,10 @@
-"""Phase 9 — abuse guards for hosted (multi-user) deployments.
+"""Phase 9: abuse guards for hosted, multi-user deployments.
 
-Rate limits and row caps are no-ops in local mode: a single local player
-should never be throttled by their own app. Values are hardcoded on purpose —
-generous enough that a legitimate player never notices, tight enough that a
-hostile visitor can't burn the demo key, peg the CPU, or bloat the database.
+Rate limits and row caps do nothing in local mode, because a single local player
+should never be throttled by their own app. The values are hardcoded on purpose.
+They are generous enough that a legitimate player never notices them, and tight
+enough that a hostile visitor cannot exhaust the demo key, saturate the CPU, or
+fill the database.
 """
 
 import json
@@ -19,22 +20,22 @@ from sqlalchemy.orm import Session
 from . import auth, models
 
 # ---------- Rate limiting ----------
-# Fixed windows per (scope, caller). In-memory: fine for the single-process
-# deployment this app targets (and the worst case after a restart is a brief
-# extra allowance).
+# Fixed windows per scope and caller. The windows live in memory, which is
+# enough for the single-process deployment this app targets. The worst case
+# after a restart is a brief extra allowance.
 
-# scope -> (max requests, window seconds)
+# Maps a scope to (max requests, window seconds).
 RATE_LIMITS: dict[str, tuple[int, int]] = {
-    "turn": (10, 60),             # AI turn generation (demo key also has a daily cap)
-    "chat": (30, 60),             # AI Chat scratchpad (power users only)
-    "script-test": (30, 60),      # sandboxed, but each run costs up to 2s CPU
-    "connection-test": (10, 60),  # outbound HTTP to a user-supplied URL
-    "import": (30, 60),           # large writes
-    "auth": (10, 300),            # register/login attempts, per IP
-    "guest": (30, 300),           # new guest users, per IP (each is a DB row)
-    # Pageview beacons. Generous — a real reader clicking around a SPA fires a
-    # handful a minute — but low enough that nobody can inflate the traffic
-    # numbers faster than they could by actually reloading the page.
+    "turn": (10, 60),             # AI turn generation. The demo key also has a daily cap.
+    "chat": (30, 60),             # The AI Chat scratchpad, for power users.
+    "script-test": (30, 60),      # Sandboxed, but each run costs up to 2s of CPU.
+    "connection-test": (10, 60),  # Outbound HTTP to a user-supplied URL.
+    "import": (30, 60),           # Large writes.
+    "auth": (10, 300),            # Register and login attempts, per IP.
+    "guest": (30, 300),           # New guest users, per IP. Each one is a database row.
+    # Pageview beacons. The limit is generous, because a real reader clicking
+    # around a SPA sends a handful a minute, and it is low enough that nobody
+    # can inflate the traffic numbers faster than by reloading the page.
     "analytics": (120, 60),
 }
 
@@ -42,26 +43,30 @@ _windows: dict[tuple[str, str], deque] = defaultdict(deque)
 _windows_guard = threading.Lock()
 
 
-# How many proxy hops sit between the app and the real client. On Render (and
-# most PaaS) that's one: the platform's edge appends the connecting IP to the
-# RIGHT of X-Forwarded-For. A client can prepend anything it likes to the left,
-# but it cannot push a value past the edge's own append — so the trustworthy
-# client IP is the (hops)-th entry from the right, NOT uvicorn's leftmost pick.
-# Trusting the leftmost let anyone rotate X-Forwarded-For to mint a fresh
-# rate-limit bucket per request and bypass the auth/guest limits entirely.
-# Override with AIDND_TRUSTED_PROXY_HOPS if the deployment adds more hops.
+# How many proxy hops sit between the app and the real client. On Render, and on
+# most platforms, that is one, because the platform's edge appends the connecting
+# IP to the right of `X-Forwarded-For`. A client can prepend any value on the
+# left, but it cannot push a value past the edge's own append, so the trustworthy
+# client IP is the entry that many places from the right rather than uvicorn's
+# leftmost choice. Trusting the leftmost entry let anyone rotate
+# `X-Forwarded-For` to get a fresh rate-limit bucket per request and bypass the
+# auth and guest limits. If the deployment adds more hops, set
+# `AIDND_TRUSTED_PROXY_HOPS`.
 TRUSTED_PROXY_HOPS = max(1, int(os.environ.get("AIDND_TRUSTED_PROXY_HOPS", "1") or 1))
 
 
 def client_ip(request: Request) -> str:
-    """The real client IP, resistant to a spoofed X-Forwarded-For. Takes the
-    hop the trusted edge appended (rightmost minus any extra trusted hops);
-    falls back to the socket peer when no forwarded header is present
-    (local/dev, or a direct connection).
+    """Returns the real client IP, resisting a spoofed `X-Forwarded-For`.
 
-    Public because the access log needs the same answer, and two functions that
-    both decide "which address is the caller's" is how one of them ends up
-    trusting a header it shouldn't."""
+    The function reads the hop the trusted edge appended, which is the rightmost
+    entry minus any extra trusted hops. If no forwarded header is present, which
+    happens locally, in development, and on a direct connection, it falls back to
+    the socket peer.
+
+    The function is public because the access log needs the same answer. Two
+    functions that each decide which address belongs to the caller is how one of
+    them ends up trusting a header it should not.
+    """
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
         parts = [p.strip() for p in forwarded.split(",") if p.strip()]
@@ -71,8 +76,11 @@ def client_ip(request: Request) -> str:
 
 
 def rate_limit(scope: str, request: Request, user: models.User | None = None) -> None:
-    """429 when the caller exceeds the scope's window. Keyed per user when one
-    is known (accounts survive IP changes), per IP otherwise."""
+    """Raises a 429 when the caller exceeds the scope's window.
+
+    The window is keyed per user when a user is known, because an account
+    survives an IP change, and per IP otherwise.
+    """
     if not auth.MULTI_USER:
         return
     limit, window_seconds = RATE_LIMITS[scope]
@@ -92,25 +100,30 @@ def rate_limit(scope: str, request: Request, user: models.User | None = None) ->
 
 
 # ---------- Per-account login throttle ----------
-# Defense in depth beside the per-IP `auth` limit: that one can be diluted by a
-# botnet (many real source IPs, one bucket each), so it can't by itself stop a
-# distributed guessing run against a single account. This cap keys on the target
-# email instead of the caller, so guessing ONE account's password stays
-# expensive regardless of how many addresses it comes from. Failures only — a
-# correct password clears the record — and it's a short sliding window, not a
-# hard lock, so a user mistyping a few times recovers on their own in minutes.
-# Tradeoff: an attacker can keep a known account throttled (a nuisance), which
-# is strictly preferable to letting it be brute-forced.
-LOGIN_FAIL_LIMIT = 8          # failed attempts per account...
-LOGIN_FAIL_WINDOW = 900       # ...within this many seconds (15 min)
+# This is defense in depth next to the per-IP `auth` limit. A botnet dilutes
+# that limit, because many real source IPs each get their own bucket, so it
+# cannot by itself stop a distributed guessing run against one account. This cap
+# keys on the target email rather than on the caller, so guessing one account's
+# password stays expensive however many addresses the guesses come from.
+#
+# Only failures count, and a correct password clears the record. The window
+# slides over a short period rather than locking the account, so a user who
+# mistypes a few times recovers within minutes. The trade-off is that an
+# attacker can keep a known account throttled, which is an inconvenience and is
+# preferable to letting the account be brute-forced.
+LOGIN_FAIL_LIMIT = 8          # Failed attempts per account.
+LOGIN_FAIL_WINDOW = 900       # The window in seconds, which is 15 minutes.
 
 _login_fails: dict[str, deque] = defaultdict(deque)
 _login_guard = threading.Lock()
 
 
 def check_login_allowed(email: str) -> None:
-    """429 when an account has too many recent failed logins. Call before
-    verifying the password so guesses don't even reach the hash."""
+    """Raises a 429 when an account has too many recent failed logins.
+
+    Call this before verifying the password, so that a guess never reaches the
+    hash.
+    """
     if not auth.MULTI_USER:
         return
     now = time.time()
@@ -127,13 +140,13 @@ def check_login_allowed(email: str) -> None:
 
 
 def note_login_failure(email: str) -> None:
-    """Record one failed attempt against `email`."""
+    """Records one failed attempt against `email`."""
     if not auth.MULTI_USER:
         return
     now = time.time()
     with _login_guard:
         _login_fails[email].append(now)
-        if len(_login_fails) > 10_000:  # bound the map on a flood of unique emails
+        if len(_login_fails) > 10_000:  # Bound the map against a flood of unique emails.
             stale = [
                 key for key, window in _login_fails.items()
                 if not window or window[-1] < now - LOGIN_FAIL_WINDOW
@@ -143,14 +156,16 @@ def note_login_failure(email: str) -> None:
 
 
 def note_login_success(email: str) -> None:
-    """A correct password wipes the account's failure streak."""
+    """Clears the account's failure record after a correct password."""
     with _login_guard:
         _login_fails.pop(email, None)
 
 
 def _prune(now: float) -> None:
-    """Drop callers whose whole window has expired (call with guard held) so
-    the per-IP dict can't grow without bound."""
+    """Drops callers whose whole window has expired, so the per-IP dict stays bounded.
+
+    Call this with the guard held.
+    """
     longest = max(seconds for _, seconds in RATE_LIMITS.values())
     stale = [key for key, window in _windows.items()
              if not window or window[-1] < now - longest]
@@ -163,13 +178,14 @@ def _prune(now: float) -> None:
 MAX_ADVENTURES_PER_USER = 100
 MAX_SCENARIOS_PER_USER = 200
 MAX_SCRIPTS_PER_USER = 200
-MAX_STORY_CARDS_PER_OWNER = 200   # per scenario or adventure
+MAX_STORY_CARDS_PER_OWNER = 200   # Per scenario or per adventure.
 MAX_MEMORIES_PER_ADVENTURE = 1000
 MAX_ACTIONS_PER_ADVENTURE = 5000
-# Phase 14, SP6. A branch per divergence somebody built a story on, so a tree
-# with more of them than a story has turns is a file, not a game. Import-only
-# for now: forking is a POST that adds one row and has no cap of its own, and
-# the cap that matters there is `MAX_ACTIONS_PER_ADVENTURE` above it.
+# Phase 14, SP6. A tree holds one branch per divergence somebody built a story
+# on, so a tree with more branches than the story has turns came from a file
+# rather than from play. The cap applies to imports only. Forking is a POST that
+# adds one row and has no cap of its own, and the cap that matters there is
+# `MAX_ACTIONS_PER_ADVENTURE` above.
 MAX_BRANCHES_PER_ADVENTURE = 1000
 
 
@@ -182,9 +198,11 @@ def check_row_cap(
     scenario_id: int | None = None,
     adventure_id: int | None = None,
 ) -> None:
-    """409 with a friendly message when creating one more row of `kind` would
-    exceed its cap. Ownership of the passed scenario/adventure has already
-    been checked by the caller."""
+    """Raises a 409 when creating one more row of `kind` would exceed its cap.
+
+    The caller has already checked ownership of the scenario or adventure passed
+    in.
+    """
     if not auth.MULTI_USER:
         return
     if kind == "adventures":
@@ -220,18 +238,18 @@ def check_row_cap(
             "delete some to make room",
         )
     elif kind == "actions":
-        # Every action of the adventure — the whole tree, not the path being
-        # played. That is the number that costs storage, and nothing is ever
-        # auto-pruned, so it is the right one to cap on. It does mean a heavily
-        # branched adventure reaches the cap while its *story* is shorter than
-        # the cap, which is why the message counts "actions in this adventure"
-        # rather than turns.
+        # Count every action in the adventure, which is the whole tree rather
+        # than the path being played. That number is what costs storage, and
+        # nothing is pruned automatically, so it is the right one to cap. It does
+        # mean a heavily branched adventure reaches the cap while its story is
+        # shorter than the cap, which is why the message counts "actions in this
+        # adventure" rather than turns.
         count = _count(db, models.Action, models.Action.adventure_id == adventure.id)
         cap, subject, hint = (
             MAX_ACTIONS_PER_ADVENTURE, "actions in this adventure",
             "export it and continue in a new adventure",
         )
-    else:  # pragma: no cover — programming error, not user input
+    else:  # pragma: no cover. This is a programming error, not user input.
         raise ValueError(f"Unknown row cap kind: {kind}")
     if count >= cap:
         raise HTTPException(409, f"You've reached the limit of {cap} {subject} — {hint}.")
@@ -250,8 +268,11 @@ _BUNDLE_LIST_CAPS = {
 
 
 def check_bundle_lists(**lists) -> None:
-    """409 when an import bundle's lists exceed the same caps live creation
-    enforces (kwargs: story_cards=, memories=, actions=, branches=)."""
+    """Raises a 409 when an import bundle's lists exceed the caps live creation uses.
+
+    The keyword arguments are `story_cards`, `memories`, `actions`, and
+    `branches`.
+    """
     if not auth.MULTI_USER:
         return
     for name, value in lists.items():
@@ -264,18 +285,22 @@ def check_bundle_lists(**lists) -> None:
 
 
 # ---------- Request body size ----------
-# Generous enough for the biggest legitimate payload (an adventure export with
-# thousands of actions), applied in every mode — no honest request comes close.
+# The limit is generous enough for the largest legitimate payload, which is an
+# adventure export holding thousands of actions. It applies in every mode, and no
+# honest request approaches it.
 
 MAX_BODY_BYTES = 2 * 1024 * 1024
 MAX_IMPORT_BODY_BYTES = 20 * 1024 * 1024
 
 
 class BodySizeLimitMiddleware:
-    """Rejects oversized request bodies by declared Content-Length. Pure ASGI
-    (not BaseHTTPMiddleware) so SSE responses stream through untouched.
-    Chunked uploads without a length are refused — every real client of this
-    API (browser fetch, curl with a file) sends Content-Length."""
+    """Rejects oversized request bodies by their declared `Content-Length`.
+
+    This is pure ASGI rather than `BaseHTTPMiddleware`, so SSE responses stream
+    through unchanged. A chunked upload with no length is refused, because every
+    real client of this API sends `Content-Length`, including browser fetch and
+    curl with a file.
+    """
 
     def __init__(self, app):
         self.app = app
