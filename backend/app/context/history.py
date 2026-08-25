@@ -1,42 +1,44 @@
-"""Reading the story without reading all of it.
+"""Reads part of a story without loading all of it.
 
-`story_actions()` walked `adventure.actions`, which loads every row of the
-adventure — then every caller threw almost all of it away. The context builder
-concatenates the story and immediately cuts it back to the token budget; the
-NPC-in-scene check looks at the last 6; memory retrieval looks at the last 4;
-the post-turn cursor clamp only wants a count. So a turn on a 200-action
-adventure read ~840 KB to use maybe 70 KB of it, and the cost grew with every
-turn played.
+`story_actions()` used to walk `adventure.actions`, which loads every row of the
+adventure. Every caller then discarded nearly all of those rows. The context
+builder joins the story and immediately trims it to the token budget. The
+in-scene NPC check reads the last 6 actions. Memory retrieval reads the last 4.
+The post-turn cursor clamp needs only a count. A turn on a 200-action adventure
+read about 840 KB in order to use about 70 KB, and the cost grew with every
+turn.
 
-This module serves those shapes directly from SQL — a tail, a slice, a count —
-so the read is bounded by the context budget instead of by the length of the
-story.
+This module serves those shapes from SQL directly, as a tail, a slice, or a
+count. A read is therefore bounded by the context budget rather than by the
+length of the story.
 
-Three rules hold everything together:
+Three rules hold the module together:
 
-* **One definition of "story action".** Membership decides what a reader sees
-  and what the summarizer is handed, so SQL and Python must agree on it
-  exactly. `_STORY_TEXT` and `is_story_text()` are that one definition, written
-  twice; keep them in step.
-* **Never load twice.** If `adventure.actions` is already in memory (the
-  scripting pipeline hands the whole history to user scripts, as AI Dungeon
-  does), every helper here slices that instead of issuing a query, so a
-  scripted adventure pays what it always paid and nothing more.
-* **Every read goes through the branch clause** (Phase 14). `adventure.actions`
-  is every branch's actions, not the story being played — so the shortcut above
-  cuts the loaded collection down to the path before slicing it, exactly as the
-  SQL does. This is the line that would silently assemble a prompt out of two
-  different stories, which is why `lineage.Path` owns both halves of it.
+- There is one definition of a story action. That definition decides both what
+  a reader sees and what the summarizer receives, so the SQL and the Python must
+  agree exactly. `_STORY_TEXT` and `is_story_text()` express the same rule
+  twice. Keep them in step.
+- No caller loads the same rows twice. If `adventure.actions` is already in
+  memory, every helper here slices that collection instead of running a query.
+  The scripting pipeline hands the whole history to user scripts, as AI Dungeon
+  does, so a scripted adventure costs no more than it did before.
+- Every read applies the branch clause, as of Phase 14. `adventure.actions`
+  holds the actions of every branch rather than the story being played, so the
+  in-memory path filters the collection down to the path before slicing it, in
+  the same way the SQL does. Skipping that filter would build a prompt from two
+  different stories without reporting an error, which is why `lineage.Path`
+  owns both forms of the rule.
 
-Ordering is by `depth` now, not `index`. Since SP4 the two can hold the same
-number on *different rows* — attempts at one turn share both — so only `depth`
-plus the branch clause's `live` test says which of them the story is.
+Reads order by `depth` rather than `index`. Since SP4, two different rows can
+hold the same value for both columns, because the attempts at one turn share
+them. Only `depth` together with the `live` test in the branch clause
+identifies the row the story uses.
 
-SP3 added the reads that count *from a node* rather than from the start —
-`count_after`, `after`, `newest`. The memory bank used to ask for
-"positions 12 to 18 of the story", which is a question whose answer moves when
-an action is deleted from in front of it. It now asks for "the six actions
-after depth 41", which is the same question a fork has to answer anyway.
+SP3 added the reads that count from a node rather than from the start:
+`count_after`, `after`, and `newest`. The memory bank used to ask for positions
+12 through 18 of the story, and the answer to that question changes when an
+action in front of those positions is deleted. It now asks for the six actions
+after depth 41, which is the question that forking requires in any case.
 """
 
 from sqlalchemy import func, inspect as sa_inspect
@@ -45,17 +47,17 @@ from sqlalchemy.orm import Session, defer, object_session
 from .. import models
 from . import lineage
 
-# How many of the newest actions to read before checking whether the token
-# budget is covered. When it isn't, the next size is worked out from the
-# average action length just measured rather than by blind doubling — guessing
-# high means reading hundreds of actions to use sixty of them.
+# How many of the newest actions to read before checking whether they cover the
+# token budget. If they do not, the next size comes from the average action
+# length just measured rather than from doubling the previous size. Doubling
+# overshoots, which means reading hundreds of actions in order to use sixty.
 WINDOW_START = 32
-WINDOW_MARGIN = 0.15  # aim this far past the budget, so one more round is rare
-WINDOW_STEP = 8  # ...and at least this many more actions each round
+WINDOW_MARGIN = 0.15  # Aim this far past the budget, so a second round is rare.
+WINDOW_STEP = 8  # Read at least this many more actions in each round.
 
-# Depth is the ordering key; id breaks the tie that a pre-tree row (depth NULL,
-# and so invisible anyway) or a future sibling pair would otherwise leave to
-# the database's mood.
+# `depth` is the ordering key, and `id` breaks ties. Without `id`, the database
+# would choose the order. Two rows can share a depth: a pre-tree row, which has
+# a NULL depth and is invisible to reads, or a pair of sibling attempts.
 _OLDEST_FIRST = (models.Action.depth, models.Action.id)
 _NEWEST_FIRST = (models.Action.depth.desc(), models.Action.id.desc())
 
@@ -63,12 +65,13 @@ _NEWEST_FIRST = (models.Action.depth.desc(), models.Action.id.desc())
 def _sql_stripped(column):
     """`column` with leading/trailing whitespace removed, portably.
 
-    SQLite and Postgres both accept single-argument `trim()`, but it strips
-    spaces only — Python's `.strip()` also drops newlines and tabs, and an
-    action of nothing but a newline would otherwise count as story text here
-    and not in Python. `replace()` and `trim()` are the two string functions
-    both dialects spell identically, so fold the other whitespace into spaces
-    first. (Form feed and vertical tab are not covered; nothing produces them.)
+    SQLite and Postgres both accept `trim()` with a single argument, but that
+    form removes spaces only. Python's `str.strip()` also removes newlines and
+    tabs. Without this helper, an action containing only a newline would count
+    as story text in SQL but not in Python. Both dialects spell `replace()` and
+    `trim()` the same way, so this function converts the other whitespace to
+    spaces first. It does not handle form feed or vertical tab, because nothing
+    produces them.
     """
     folded = column
     for char in ("\n", "\r", "\t"):
@@ -80,15 +83,18 @@ _STORY_TEXT = _sql_stripped(models.Action.text) != ""
 
 
 def is_story_text(text: str) -> bool:
-    """The Python half of `_STORY_TEXT` — keep the two in step."""
+    """Returns whether `text` counts as story text.
+
+    This is the Python form of `_STORY_TEXT`. Keep the two in step.
+    """
     return bool(text.strip())
 
 
 def _loaded_actions(adventure: models.Adventure) -> list[models.Action] | None:
     """The adventure's actions if they are already in memory, else None.
 
-    Slicing an already-loaded collection is free; issuing a query beside it
-    would mean paying for the same rows twice.
+    Slicing a collection that is already loaded costs nothing, and running a
+    query beside it would fetch the same rows a second time.
     """
     state = sa_inspect(adventure)
     if state.detached or "actions" in state.unloaded:
@@ -101,11 +107,14 @@ def _from_memory(
 ) -> list[models.Action] | None:
     """The story, from the already-loaded collection, or None to go to SQL.
 
-    The collection is the *adventure's* actions — every branch of it. Cutting
-    it down to the path here is the same filter the SQL applies, and skipping
-    it would hand the context builder a prompt assembled from siblings of the
-    story being played. The path needs a session to read the branch row from;
-    without one there is no answer to give, so say so rather than guess.
+    The collection holds the adventure's actions, which means the actions of
+    every branch. Filtering it down to the path here applies the same rule that
+    the SQL applies. Without that filter, the context builder would receive a
+    prompt built from siblings of the story being played.
+
+    Resolving the path requires a session to read the branch row from. If there
+    is no session, this function returns None so that the caller falls back to
+    SQL rather than guessing.
     """
     loaded = _loaded_actions(adventure)
     if loaded is None:
@@ -131,11 +140,10 @@ def _filters(
     exclude_action_id: int | None,
     entries: int | None = None,
 ) -> list:
-    # adventure_id is redundant beside the branch clause — branch ids are
-    # unique, so a branch already names one adventure. It stays because it is
-    # the cheap half of the check that catches a node written onto the wrong
-    # adventure's branch, and because a clause nobody can read is a clause
-    # nobody maintains.
+    # `adventure_id` is redundant beside the branch clause, because branch ids
+    # are unique and a branch already identifies one adventure. The filter
+    # remains because it costs little, it catches a node written onto another
+    # adventure's branch, and it makes the query easier to read.
     conditions = [
         models.Action.adventure_id == adventure.id,
         path.clause(models.Action, count=entries),
@@ -171,11 +179,11 @@ def _count_query(
 ):
     """A real `SELECT count(...)`.
 
-    Deliberately not `_query(...).count()`: that wraps the entity select in a
-    subquery, so the emitted SQL names every column — including the deferred
-    ones this whole design exists to keep off the wire. No bytes come back
-    either way, but the database still has to read them, and an egress guard
-    that greps the SQL cannot tell the two apart.
+    This function deliberately avoids `_query(...).count()`. That form wraps the
+    entity select in a subquery, so the emitted SQL names every column,
+    including the deferred columns that this design keeps off the wire. Neither
+    form returns those bytes to the client, but the database still reads them,
+    and an egress guard that inspects the SQL cannot tell the two forms apart.
     """
     return db.query(func.count(models.Action.id)).filter(
         *_filters(adventure, path, exclude_action_id, entries)
@@ -197,14 +205,14 @@ def story_actions(
 ) -> list[models.Action]:
     """Every story action, oldest first.
 
-    Still the right call where the whole story is genuinely wanted — user
-    scripts receive it, per AI Dungeon's scripting API. Prefer `tail`, `slice_`
-    or `count` anywhere the caller only needs part of it.
+    Call this function when you need the whole story. User scripts receive it,
+    which matches AI Dungeon's scripting API. Use `tail`, `slice_`, or `count`
+    when you need only part of the story.
 
-    `exclude_action_id` drops one action from the story — used by retry, where
-    the attempt being replaced is still the live node of its turn (it stays
-    live until a replacement exists) but must not appear in the context
-    assembled to replace it.
+    `exclude_action_id` removes one action from the result. Retry uses it. The
+    attempt being replaced is still the live node of its turn, because it stays
+    live until a replacement exists, but it must not appear in the context that
+    is assembled to replace it.
     """
     in_memory = _from_memory(adventure, exclude_action_id)
     if in_memory is not None:
@@ -241,18 +249,20 @@ def tail_range(
 ) -> list[models.Action]:
     """`limit` story actions ending `skip` actions before the end, oldest first.
 
-    `skip=0` is the newest slice; `skip=32, limit=16` is the 16 actions just
-    older than the newest 32. Lets a growing window fetch only the part it
-    doesn't already have.
+    Passing `skip=0` returns the newest slice. Passing `skip=32` and `limit=16`
+    returns the 16 actions immediately older than the newest 32. A growing
+    window therefore fetches only the actions it does not already hold.
 
-    This is the read the lineage window exists for. The path's ranges are
-    disjoint and descending, so the newest N nodes come from the newest few
-    lineage entries and the rest of the ancestry need not be named at all: a
-    story forked two hundred times reads its tail with as few clauses as one
-    forked never. `prefix_covering` estimates how many entries that takes from
-    depth arithmetic alone; the estimate is only ever short where a middle
-    action was deleted, and then the read widens to the whole lineage and pays
-    one more query.
+    This read is the reason the lineage window exists. The path's ranges do not
+    overlap and they descend, so the newest N nodes come from the newest few
+    lineage entries and the query never has to name the rest of the ancestry. A
+    story that has forked 200 times reads its tail with as few clauses as one
+    that has never forked.
+
+    `prefix_covering` estimates how many entries that takes, using depth
+    arithmetic alone. The estimate falls short only when an action was deleted
+    from the middle of the story. In that case this function widens the read to
+    the whole lineage, at the cost of one more query.
     """
     if limit <= 0 or skip < 0:
         return []
@@ -295,11 +305,12 @@ def slice_(
 ) -> list[models.Action]:
     """Story actions at positions [start, start + length), oldest first.
 
-    Positions are into the same filtered, depth-ordered list the memory cursors
-    count in, which is why the filter has to match Python's exactly.
+    Positions index into the same filtered, depth-ordered list that the memory
+    cursors count in, which is why the SQL filter must match the Python filter
+    exactly.
 
-    Counts from the oldest end, so it names the whole lineage: there is no
-    prefix of the ancestry that holds "the story's first ten actions".
+    This function counts from the oldest end, so it names the whole lineage. No
+    prefix of the ancestry contains the first ten actions of the story.
     """
     if length <= 0 or start < 0:
         return []
@@ -321,9 +332,9 @@ def slice_(
 def depth_of(action: models.Action) -> int:
     """`action.depth`, with the no-depth case spelled once.
 
-    A row with no depth is a pre-tree row, which no path contains — so it can
-    only turn up in an already-loaded collection, and it sorts before the story
-    rather than after it.
+    A row with no depth predates the tree. No path contains such a row, so it
+    appears only in a collection that is already loaded. It sorts before the
+    story rather than after it.
     """
     return action.depth if action.depth is not None else lineage.NO_DEPTH
 
@@ -333,14 +344,14 @@ def count_after(
 ) -> int:
     """How many story actions lie past `depth` on the path.
 
-    The node-anchored replacement for "the story is N long and the cursor is at
-    M". Deleting an action from in front of the boundary makes this number
-    smaller, which is true; it does not make the boundary point somewhere else,
-    which is the bug the positions had.
+    This replaces the older calculation, which compared the length of the story
+    with the position of the cursor. Deleting an action in front of the boundary
+    makes this number smaller, which is correct. It does not move the boundary
+    to a different action, which is the error that positions produced.
 
-    `covering_after` says exactly which lineage entries can hold a node deeper
-    than the boundary, so a cursor near the tip names one branch however many
-    forks are below it.
+    `covering_after` reports which lineage entries can hold a node deeper than
+    the boundary, so a cursor near the tip names one branch however many forks
+    lie below it.
     """
     in_memory = _from_memory(adventure, exclude_action_id)
     if in_memory is not None:
@@ -367,8 +378,9 @@ def after(
 ) -> list[models.Action]:
     """The oldest `limit` story actions past `depth`, oldest first.
 
-    "The next block the summarizer has not seen", asked as a fact about the
-    story rather than as an offset into a list that shifts underneath it.
+    This returns the next block that the summarizer has not read. It asks a
+    question about the story rather than using an offset into a list whose
+    entries move.
     """
     if limit <= 0:
         return []
@@ -391,14 +403,15 @@ def after(
 def newest(adventure: models.Adventure) -> models.Action | None:
     """The newest story action, or None on an empty story.
 
-    A row, not a count and an offset: this is the node an anchor moves to when
-    derived work catches up with the end of the story.
+    This returns a row rather than a count and an offset, because it names the
+    node an anchor moves to when derived work reaches the end of the story.
 
-    It used to be the *second* newest — the memory bank held one action back
-    because retry rewrote a row, so a memory covering the newest action could
-    end up describing narration the player had retried away. Since SP4 a retry
-    writes a sibling instead, and the coordinate's derived work is withdrawn
-    when the story at it changes, so there is nothing left to hold back.
+    It used to return the second newest action. The memory bank held one action
+    back because retry rewrote a row, so a memory that covered the newest action
+    could describe narration the player had already replaced. Since SP4, a retry
+    writes a sibling row instead, and the derived work at a coordinate is
+    withdrawn when the story at that coordinate changes. There is nothing left
+    to hold back.
     """
     rows = tail(adventure, 1)
     return rows[0] if rows else None
@@ -407,11 +420,12 @@ def newest(adventure: models.Adventure) -> models.Action | None:
 def max_action_index(adventure: models.Adventure) -> int:
     """Highest `Action.index` in the adventure, story text or not. -1 if empty.
 
-    The one read here that is deliberately *not* path-scoped. `index` is the
-    legacy column, kept unread until SP8 drops it, and its only remaining job
-    is to hand the next row a number nothing else holds — which is a fact about
-    the adventure, not about the story being played. Scoping it to a branch
-    would let two branches issue the same index.
+    This is the only read in the module that is deliberately not scoped to a
+    path. `index` is a legacy column that remains unread until SP8 drops it. Its
+    one remaining job is to give the next row a number that no other row holds,
+    which is a fact about the adventure rather than about the story being
+    played. Scoping the query to a branch would let two branches issue the same
+    index.
     """
     loaded = _loaded_actions(adventure)
     if loaded is not None:
@@ -433,16 +447,18 @@ def window_covering(
     token_counter,
     exclude_action_id: int | None = None,
 ) -> list[models.Action]:
-    """The newest story actions whose combined text exceeds `budget_tokens` —
-    i.e. more than the context builder can possibly include, and never less.
+    """Returns the newest story actions whose combined text exceeds `budget_tokens`.
 
-    Measures rather than guesses a chars-per-token ratio, so the prompt is
-    byte-for-byte what loading the whole story would have produced. Budgets on
-    the raw text, which is never longer than the rendered history text, so
-    erring here can only mean fetching slightly too much.
+    The result always holds at least as much text as the context builder can
+    include, and never less.
 
-    Each round fetches only the actions it doesn't already hold, so no row is
-    ever read twice however many rounds it takes.
+    This function counts tokens rather than estimating a characters-per-token
+    ratio, so the prompt matches what loading the whole story would produce. It
+    budgets against the raw text, which is never longer than the rendered
+    history text, so any error causes it to fetch slightly more than needed.
+
+    Each round fetches only the actions it does not already hold, so no row is
+    read twice however many rounds the loop takes.
     """
     actions: list[models.Action] = []
     tokens = 0
@@ -452,15 +468,15 @@ def window_covering(
             adventure, len(actions), size - len(actions), exclude_action_id
         )
         if not older:
-            return actions  # already holding the whole story
+            return actions  # The result already holds the whole story.
         actions = older + actions
         tokens += sum(token_counter(a.text) for a in older)
         if len(actions) < size:
-            return actions  # that was the whole story
+            return actions  # That was the whole story.
         if tokens > budget_tokens:
             return actions
-        # Short. Project how many actions the budget takes at the length these
-        # ones turned out to be, and go straight there.
+        # The window is still short. Estimate how many actions the budget needs
+        # at the average length just measured, then read that many.
         average = tokens / len(actions)
         projected = int(budget_tokens / average * (1 + WINDOW_MARGIN)) + WINDOW_STEP
         size = max(projected, size + WINDOW_STEP)

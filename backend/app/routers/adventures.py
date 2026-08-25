@@ -24,17 +24,17 @@ router = APIRouter(prefix="/api/adventures", tags=["adventures"])
 
 CurrentUser = Depends(auth.get_current_user)
 
-# Exactly what schemas.ActionOut renders, named rather than implied.
+# Exactly the columns schemas.ActionOut renders, listed explicitly.
 #
-# `deferred=True` in models.py already keeps the four heavy columns out of a
-# bulk read, but it makes narrowness the default that a *future* column has to
-# remember to ask for — and both egress blowouts this project has had were a
-# column nobody remembered. Listing what a list response carries inverts that:
-# a new column costs nothing here until someone adds it to this tuple.
+# `deferred=True` in models.py already keeps the four heavy columns out of bulk
+# reads, but that makes staying narrow something each *future* column has to
+# remember to opt into — and both egress blowouts this project has had were a
+# column nobody remembered. Listing what a list response carries flips that
+# around: a new column costs nothing until someone adds it to this tuple.
 #
-# `world_delta` is on the list because ActionOut.world_changes is computed from
-# it. Leaving it off would not save the bytes, it would spend them one row at a
-# time as a lazy load, which is worse.
+# `world_delta` is included because ActionOut.world_changes is computed from it.
+# Leaving it out wouldn't save the bytes; it would spend them one row at a time
+# as lazy loads, which is worse.
 ACTION_LIST_COLUMNS = (
     models.Action.adventure_id,
     models.Action.index,
@@ -44,10 +44,10 @@ ACTION_LIST_COLUMNS = (
     models.Action.world_delta,
     models.Action.variant_count,
     models.Action.variant_index,
-    # SP9: the pager's key. Deferred, it would be a lazy load per row — a query
-    # behind every message on the page, which is the whole thing `load_only`
-    # is here to stop. `branch_id` rides along for the same reason: the pager
-    # reads it to tell a local step from a branch switch.
+    # SP9: the pager's key. If it were deferred it would be a lazy load per row
+    # — one query behind every message on the page, which is exactly what
+    # `load_only` is here to prevent. `branch_id` is here for the same reason:
+    # the pager reads it to tell a local step from a branch switch.
     models.Action.parent_id,
     models.Action.branch_id,
     models.Action.created_at,
@@ -55,11 +55,11 @@ ACTION_LIST_COLUMNS = (
 
 # How many actions an adventure opens with, and how many arrive per scroll.
 #
-# Opening a finished adventure used to fetch the whole story in one response —
-# 589.5 kB on production's longest, and growing, because a story only ever gets
-# longer. 60 is a few screens of reading: enough that the common case (open,
-# read the end, take a turn) never pages at all, small enough that the worst
-# case is bounded by the window rather than by the story.
+# Opening a finished adventure used to fetch the whole story in one response:
+# 589.5 kB on production's longest, and always growing, since stories only get
+# longer. 60 is a few screens of reading — enough that the common case (open,
+# read the end, take a turn) never pages at all, and small enough that the worst
+# case is bounded by the window rather than by the length of the story.
 ACTION_PAGE = 60
 
 
@@ -74,24 +74,24 @@ def action_window(
     Returns (actions, total, has_more). `before_id=None` is the newest window.
 
     Scoped to the story being played — the head branch's lineage — rather than
-    to the adventure, so a sibling branch's turns can never appear in the
-    transcript. `total` counts the same path, because it is what tells the
-    reader there is more above.
+    to the adventure, so a sibling branch's turns can never show up in the
+    transcript. `total` counts the same path, since it's what tells the reader
+    there's more above.
 
-    Anchored on an action, not on a count, and never on arithmetic over depth.
-    Two separate reasons, and both bite:
+    Anchored on an action rather than a count, and never on arithmetic over
+    depth. Two reasons, both of which come up in practice:
 
     * **Appends.** Counting back from the newest means every older position
-      shifts when a turn lands. A reader who scrolls up while a turn is
-      generating would be handed a window one row out — re-sending one action
-      and silently skipping another. An anchor is fixed: "older than this one"
-      means the same thing before and after the story grows.
-    * **The story tree.** Depth is dense today and branching ends that.
-      Comparing depths to order a path survives; treating them as positions
-      does not.
+      shifts when a turn lands. A reader scrolling up while a turn is generating
+      would get a window one row off, re-sending one action and silently
+      skipping another. An anchor is stable: "older than this one" means the
+      same thing before and after the story grows.
+    * **The story tree.** Depth is dense today, and branching ends that.
+      Comparing depths to order a path still works; treating them as positions
+      doesn't.
 
     `has_more` comes from asking for one row past the window rather than from
-    counting, so it costs a row and not a scan.
+    counting, so it costs one row instead of a scan.
     """
     path = lineage.path_of(db, adventure)
     on_path = (
@@ -111,9 +111,9 @@ def action_window(
         )
         if anchor is None:
             # The anchor was deleted (undo, or a turn edited away) while the
-            # reader was scrolling, or it belongs to a story this branch is not
-            # on. Nothing older can be identified relative to a row that is not
-            # here, so report the end rather than guessing and handing back a
+            # reader was scrolling, or it belongs to a story this branch isn't
+            # on. There's no way to say what's "older" than a row that isn't
+            # here, so report the end rather than guess and hand back a
             # duplicate page.
             return [], total, False
         query = query.filter(models.Action.depth < anchor)
@@ -129,8 +129,8 @@ def action_window(
     return rows, total, has_more
 
 
-# Exactly what schemas.MemoryOut renders. `embedded` is a real column and is on
-# the list; the vector it describes is not, and must never be.
+# Exactly the columns schemas.MemoryOut renders. `embedded` is a real column and
+# belongs here; the vector it describes does not, and never should.
 MEMORY_LIST_COLUMNS = (
     models.Memory.adventure_id,
     models.Memory.text,
@@ -154,42 +154,42 @@ def get_adventure_or_404(
     return adventure
 
 
-# How much of the last narrative beat a Continue card shows. Long enough to
-# re-establish the scene, short enough that the card stays a card.
+# How much of the last narrative beat a Continue card shows: long enough to
+# re-establish the scene, short enough that the card still looks like a card.
 SNIPPET_MAX = 220
 
 
 def _snippet(text: str) -> str:
     """Condense stored action text into one flowing line for a card."""
-    # Stored AI text already has any world-state block stripped (see the
-    # streaming handler below), so this only has to tidy whitespace.
+    # Stored AI text already has its world-state block stripped (see the
+    # streaming handler below), so this just has to tidy up whitespace.
     collapsed = " ".join((text or "").split())
     if len(collapsed) <= SNIPPET_MAX:
         return collapsed
-    # Cut on a word boundary rather than mid-word, then let CSS add the ellipsis.
+    # Cut at a word boundary rather than mid-word; CSS adds the ellipsis.
     cut = collapsed[:SNIPPET_MAX].rsplit(" ", 1)[0]
     return f"{cut}…"
 
 
 # Action types that read as narration. `start` is the scenario's opening prompt,
-# which is the only text a freshly-created adventure has — without it a brand-new
-# story's card would claim nothing had been written yet. `do`/`say` are excluded:
-# "where you left off" should be the story's voice, not the player's.
+# the only text a freshly-created adventure has — without it, a brand-new story's
+# card would claim nothing had been written yet. `do` and `say` are excluded
+# because "where you left off" should be the story's voice, not the player's.
 NARRATION_TYPES = ("ai", "story", "start")
 
 
 def _latest_narration(db: Session, head_branches: dict[int, int | None]) -> dict[int, str]:
     """Map adventure id -> text of its most recent narrated action.
 
-    One window-function query rather than a per-adventure lookup, so the list
+    One window-function query rather than a lookup per adventure, so the list
     endpoint stays at a fixed number of round trips.
 
-    Scoped by head *branch* rather than by the full lineage, which is the one
-    place in the codebase that is allowed to be: a lineage clause per adventure
-    would put a hundred OR-terms on the index screen's query to pick one row
-    each. The two answers differ only for a branch with no nodes of its own,
-    and a branch is created by playing a turn onto it, so that state does not
-    exist. An adventure with no branch at all has no story to quote.
+    Scoped by head *branch* rather than by the full lineage — the one place in
+    the codebase allowed to do that. A lineage clause per adventure would put a
+    hundred OR-terms on the index screen's query just to pick one row each. The
+    two only differ for a branch with no nodes of its own, and a branch is
+    created by playing a turn onto it, so that state doesn't occur. An adventure
+    with no branch at all has no story to quote.
     """
     branch_ids = [b for b in head_branches.values() if b is not None]
     if not branch_ids:
@@ -209,12 +209,11 @@ def _latest_narration(db: Session, head_branches: dict[int, int | None]) -> dict
             models.Action.adventure_id.in_(list(head_branches)),
             models.Action.branch_id.in_(branch_ids),
             models.Action.type.in_(NARRATION_TYPES),
-            # Siblings share a depth and the newest of them has the highest id,
-            # so without this the snippet quotes whichever attempt was written
-            # last rather than the one the story tells. Switching back to an
+            # Siblings share a depth and the newest has the highest id, so
+            # without this the snippet quotes whichever attempt was written last
+            # rather than the one the story actually tells. Switching back to an
             # earlier take would leave the index screen quoting the discarded
-            # one — the story on the screen and the story in the list would
-            # disagree, and only the list would be wrong.
+            # one, so the list and the story on screen would disagree.
             models.Action.live.is_(True),
         )
         .subquery()
@@ -225,12 +224,12 @@ def _latest_narration(db: Session, head_branches: dict[int, int | None]) -> dict
 
 @router.get("", response_model=list[schemas.AdventureListItem])
 def list_adventures(db: Session = Depends(get_db), user: models.User = CurrentUser):
-    # Four columns of Adventure, named, rather than the entity. The entity is
-    # sixteen columns wide and carries script_state, world_state, placeholders,
-    # story_summary, memory, authors_note and ai_instructions — ~15 kB a row in
-    # production, none of it on this screen, all of it fetched once per
-    # adventure every time the index loads. Naming the columns also means the
-    # next wide column added to Adventure has to opt *in* to being listed here.
+    # Select named columns rather than the whole Adventure entity. The entity is
+    # sixteen columns wide and includes script_state, world_state, placeholders,
+    # story_summary, memory, authors_note and ai_instructions — about 15 kB per
+    # row in production, none of which this screen uses, all of it fetched once
+    # per adventure on every index load. Naming the columns also means any wide
+    # column added to Adventure later has to opt *in* to being listed here.
     rows = (
         db.query(
             models.Adventure.id,
@@ -247,10 +246,10 @@ def list_adventures(db: Session = Depends(get_db), user: models.User = CurrentUs
         .outerjoin(models.Action)
         .outerjoin(models.Scenario, models.Adventure.scenario_id == models.Scenario.id)
         .filter(models.Adventure.user_id == user.id)
-        # Group by both PKs: Postgres requires every selected column to be
-        # grouped or aggregated. Adventure.* rides on its own grouped PK, but
-        # the Scenario columns come from a joined table and must be listed too
-        # (SQLite is lax here; Postgres rejects it).
+        # Group by both primary keys: Postgres requires every selected column to
+        # be grouped or aggregated. The Adventure columns are covered by its own
+        # grouped PK, but the Scenario columns come from a joined table and have
+        # to be listed too. SQLite allows the shorter form; Postgres rejects it.
         .group_by(
             models.Adventure.id,
             models.Scenario.id,
@@ -272,15 +271,15 @@ def list_adventures(db: Session = Depends(get_db), user: models.User = CurrentUs
             updated_at=updated_at,
             action_count=count,
             snippet=_snippet(narration.get(adv_id, "")),
-            # The art belongs to the scenario, so the cache-busting stamp is the
-            # scenario's updated_at, not the adventure's.
+            # The art belongs to the scenario, so the cache-busting stamp uses
+            # the scenario's updated_at, not the adventure's.
             image_url=images.public_url(scenario_id, image or "", scenario_updated),
             icon=icon or "",
         )
-        # `count` is every action of the adventure, not of the path. Under one
-        # branch they are the same number; once forking ships the index screen
-        # will overstate a story that has siblings hanging off it, and the fix
-        # belongs with SP5, where a fork can first exist.
+        # `count` counts every action in the adventure, not just the path. With
+        # one branch those are the same number. Once forking ships, the index
+        # screen will overstate a story that has siblings hanging off it; fixing
+        # that belongs with SP5, where a fork can first exist.
         for (adv_id, scenario_id, title, updated_at, _head_branch_id, count,
              scenario_title, image, icon, scenario_updated) in rows
     ]
@@ -290,7 +289,8 @@ PLACEHOLDER_RE = re.compile(r"\$\{([^}]+)\}")
 
 
 def fill_placeholders(text: str, values: dict[str, str]) -> str:
-    """Replace ${Name} with the player-provided value; unknown names are left as-is."""
+    """Replace ${Name} with the player-provided value. Unknown names are left
+    alone."""
     if not text or not values:
         return text
     return PLACEHOLDER_RE.sub(
@@ -298,10 +298,10 @@ def fill_placeholders(text: str, values: dict[str, str]) -> str:
     )
 
 
-# Adventure fields that start as a copy of the scenario's text and so can be
-# re-copied by "Update from scenario". `title` is excluded on purpose: it is the
-# adventure's own name, which players rename, and `story_summary` is play output,
-# not scenario content.
+# Adventure fields that start out as a copy of the scenario's text, and so can
+# be re-copied by "Update from scenario". `title` is deliberately excluded — it's
+# the adventure's own name, which players rename — and `story_summary` is play
+# output rather than scenario content.
 SCENARIO_TEXT_FIELDS = ("memory", "authors_note", "ai_instructions")
 
 # Story-card fields copied from the scenario, and compared to detect drift.
@@ -309,11 +309,11 @@ CARD_FIELDS = ("type", "name", "keys", "entry", "notes")
 
 
 def scenario_card_specs(scenario: models.Scenario, values: dict[str, str]) -> dict[str, dict]:
-    """Every story card a scenario implies, keyed by a stable `source_ref`:
-    its own cards ("card:<id>") plus one per NPC defined in its stat_schema
+    """Every story card a scenario implies, keyed by a stable `source_ref`: its
+    own cards ("card:<id>") plus one per NPC defined in its stat_schema
     ("npc:<key>"), with placeholders already filled in.
 
-    Shared by adventure creation and refresh so the two can't drift.
+    Shared by adventure creation and refresh so the two can't drift apart.
     """
     specs: dict[str, dict] = {}
     existing_names = {(c.name or "").strip().lower() for c in scenario.story_cards}
@@ -325,8 +325,9 @@ def scenario_card_specs(scenario: models.Scenario, values: dict[str, str]) -> di
             "entry": fill_placeholders(card.entry, values),
             "notes": card.notes,
         }
-    # Phase 12: each defined NPC gets a story card (for its description as lore +
-    # in-scene triggering), unless a card with that name already exists.
+    # Phase 12: each defined NPC gets a story card, so its description works as
+    # lore and can trigger in scene — unless a card with that name already
+    # exists.
     for npc_key, ndef in (scenario.stat_schema or {}).get("npcs", {}).items():
         if not isinstance(ndef, dict):
             continue
@@ -353,7 +354,7 @@ def create_adventure(
     scenario = None
     if payload.scenario_id is not None:
         scenario = db.get(models.Scenario, payload.scenario_id)
-        # Playable = your own scenario or a shared demo one.
+        # Playable means your own scenario, or a shared demo one.
         if scenario is None or (scenario.user_id != user.id and not scenario.is_public):
             raise HTTPException(404, "Scenario not found")
 
@@ -367,15 +368,15 @@ def create_adventure(
         ai_instructions=fill_placeholders(scenario.ai_instructions, values) if scenario else "",
         # Phase 12: seed the live RPG state from the scenario's template.
         world_state=worldstate.instantiate(scenario.stat_schema) if scenario else {},
-        # Kept so a later "Update from scenario" can re-fill re-copied text with
-        # the same answers instead of re-injecting literal ${...} tokens.
+        # Kept so a later "Update from scenario" can re-fill the re-copied text
+        # with the same answers instead of re-inserting literal ${...} tokens.
         placeholders=dict(values),
     )
     db.add(adventure)
     db.flush()
-    # Every adventure has a story tree from the moment it exists, even before
-    # anything is played onto it — an adventure with a NULL head is a state the
-    # tree would otherwise have to tolerate everywhere for no gain.
+    # Give every adventure a story tree from the moment it exists, even before
+    # anything is played onto it. Otherwise an adventure with a NULL head is a
+    # state the tree code would have to tolerate everywhere, for no benefit.
     tree.head_branch(db, adventure)
 
     if scenario:
@@ -402,9 +403,8 @@ def create_adventure(
                 type="start",
                 text=fill_placeholders(scenario.prompt, values),
             )
-            # The opening node leaves behind the state the adventure starts
-            # with, so undoing or retrying the first turn has somewhere to
-            # roll back to.
+            # Record the state the adventure starts with on the opening node, so
+            # undoing or retrying the first turn has somewhere to roll back to.
             attempts.snapshot_outcome(adventure, opening)
             tree.place_action(db, adventure, opening)
             db.add(opening)
@@ -412,9 +412,9 @@ def create_adventure(
     db.commit()
     db.refresh(adventure)
     analytics.record_event(analytics.EV_ADVENTURE, user)
-    # Which of the shared scenarios people actually pick — the one piece of
-    # content this module ever names, and only ever a seeded/public one. A
-    # player's own scenario titles are theirs.
+    # Track which shared scenarios people actually pick. This is the only piece
+    # of content this module ever records, and only ever a seeded/public one —
+    # a player's own scenario titles stay private.
     if scenario is not None and scenario.is_public:
         analytics.record(analytics.M_SCENARIO, scenario.title)
     return adventure
@@ -426,23 +426,23 @@ def get_adventure(
 ):
     """The adventure, and the newest window of its story.
 
-    `actions` is the last ACTION_PAGE, not all of them; `action_count` says how
-    many there are so the reader knows there is more above. Older pages come
-    from GET /{id}/actions as they scroll up.
+    `actions` holds the last ACTION_PAGE, not all of them. `action_count` gives
+    the real total so the reader knows there's more above. Older pages come from
+    GET /{id}/actions as they scroll up.
     """
     adventure = get_adventure_or_404(adventure_id, db, user)
     actions, total, _ = action_window(db, adventure)
-    # Before the window is handed over, because this path serialises through
-    # the relationship rather than building ActionOut itself — the pager
-    # numbers have to be on the rows by the time Pydantic reads them.
+    # Do this before handing over the window: this path serialises through the
+    # relationship rather than building ActionOut itself, so the pager numbers
+    # have to be on the rows by the time Pydantic reads them.
     annotate_takes(db, adventure.id, actions)
-    # Hand the response the window as if the relationship had loaded it.
-    # `set_committed_value` is the only way to do this safely: assigning
-    # `adventure.actions = [...]` marks the collection dirty, and the
-    # relationship cascades delete-orphan, so the actions left out of the
+    # Give the response the window as if the relationship had loaded it.
+    # `set_committed_value` is the only safe way to do this. Assigning
+    # `adventure.actions = [...]` would mark the collection dirty, and the
+    # relationship cascades delete-orphan, so every action left out of the
     # window would be deleted on the next flush. This records them as the
-    # loaded, unmodified value instead, so serialising touches no lazy load
-    # and nothing is pending.
+    # already-loaded, unmodified value instead, so serialising triggers no lazy
+    # load and leaves nothing pending.
     set_committed_value(adventure, "actions", actions)
     out = schemas.AdventureOut.model_validate(adventure)
     out.action_count = total
@@ -453,7 +453,7 @@ def get_adventure(
 def get_script_state(
     adventure_id: int, db: Session = Depends(get_db), user: models.User = CurrentUser
 ):
-    """The scripting `state` object — every variable scripts read/write via
+    """The scripting `state` object: every variable scripts read and write via
     `state.x`, persisted after each hook. Empty {} until a script sets one."""
     adventure = get_adventure_or_404(adventure_id, db, user)
     state = adventure.script_state if isinstance(adventure.script_state, dict) else {}
@@ -464,8 +464,9 @@ def get_script_state(
 def get_world_state(
     adventure_id: int, db: Session = Depends(get_db), user: models.User = CurrentUser
 ):
-    """The RPG world state (live values) plus the scenario's stat_schema, so the
-    play view can render the sheet + milestones. `schema` is null with no RPG layer."""
+    """The live RPG world state plus the scenario's stat_schema, so the play view
+    can render the sheet and milestones. `schema` is null when the adventure has
+    no RPG layer."""
     adventure = get_adventure_or_404(adventure_id, db, user)
     schema = adventure.scenario.stat_schema if adventure.scenario else None
     state = adventure.world_state if isinstance(adventure.world_state, dict) else {}
@@ -482,10 +483,11 @@ def override_world_state(
     db: Session = Depends(get_db),
     user: models.User = CurrentUser,
 ):
-    """Directly edit the live RPG values (a manual correction, not a turn).
+    """Directly edit the live RPG values — a manual correction, not a turn.
+
     `overrides` maps paths (e.g. "player.hp", "npc.gwen.trust", "flags.x",
-    "milestones.y") to their new absolute value. Unknown paths/wrong types are
-    rejected individually; the rest still apply."""
+    "milestones.y") to their new absolute values. Unknown paths and wrong types
+    are rejected one by one; the rest still apply."""
     adventure = get_adventure_or_404(adventure_id, db, user)
     schema = adventure.scenario.stat_schema if adventure.scenario else None
     if not worldstate.has_schema(schema):
@@ -499,19 +501,20 @@ def override_world_state(
 
 # ---------- Retry history (sibling attempts) ----------
 #
-# Retry used to delete the AI action and generate a replacement, then kept the
-# row and pushed each attempt into a JSON list on it. Now every attempt is its
-# own node: same branch, same depth, one of them `live`. `app/attempts.py` owns
-# the group and both of its invariants; the endpoints below only ask it things.
+# Retry originally deleted the AI action and generated a replacement, then later
+# kept the row and pushed each attempt into a JSON list on it. Now every attempt
+# is its own node: same branch, same depth, exactly one of them `live`.
+# `app/attempts.py` owns the group and its invariants; the endpoints below only
+# query it.
 
 
 def world_delta_of(snapshot: dict | None) -> dict | None:
     """The bulk-read slice of a context snapshot, for Action.world_delta.
 
-    context_snapshot is deferred (it holds the whole assembled prompt), so the
-    two things that ARE needed for every action — the world-change chips and
-    the emit block replayed into history — get their own small column. Keep
-    this in step with the snapshot wherever one is written."""
+    context_snapshot is deferred because it holds the whole assembled prompt, so
+    the two things every action does need — the world-change chips and the emit
+    block replayed into history — get their own small column. Keep this in step
+    with the snapshot wherever one is written."""
     ws = (snapshot or {}).get("world_state")
     if not isinstance(ws, dict):
         return None
@@ -542,23 +545,24 @@ def delete_adventure(
     adventure = get_adventure_or_404(adventure_id, db, user)
     db.delete(adventure)
     db.commit()
-    # Nothing else would ever ask for this adventure's vectors again, so the
-    # cache would hold them until the process restarted.
+    # Nothing will ever ask for this adventure's vectors again, so without this
+    # the cache would hold them until the process restarted.
     memorybank.forget_cached_vectors(adventure_id)
 
 
 # ---------- Turn engine ----------
 
-# One turn at a time per adventure (in-memory; fine for a single-process local app).
-# Sync endpoints run in a threadpool, so the check-and-add must be guarded — and
-# it must happen in the request phase, not when the SSE generator first runs,
-# or two rapid requests both pass the check and generate concurrently.
+# One turn at a time per adventure. In-memory, which is fine for a
+# single-process local app. Sync endpoints run in a threadpool, so the
+# check-and-add needs a guard — and it has to happen during the request rather
+# than when the SSE generator first runs, or two rapid requests both pass the
+# check and generate concurrently.
 _active_turns: set[int] = set()
 _active_turns_guard = threading.Lock()
 
 
 def acquire_turn_lock(adventure_id: int):
-    """Atomically claim the adventure's turn slot; with_turn_lock releases it."""
+    """Atomically claim the adventure's turn slot. with_turn_lock releases it."""
     with _active_turns_guard:
         if adventure_id in _active_turns:
             raise HTTPException(409, "A turn is already generating for this adventure.")
@@ -566,7 +570,7 @@ def acquire_turn_lock(adventure_id: int):
 
 
 async def with_turn_lock(adventure_id: int, gen):
-    """Wrap an SSE generator so the lock (from acquire_turn_lock) is released."""
+    """Wrap an SSE generator so the lock from acquire_turn_lock is released."""
     try:
         async for event in gen:
             yield event
@@ -575,7 +579,7 @@ async def with_turn_lock(adventure_id: int, gen):
 
 
 def format_player_input(action_type: str, text: str) -> str:
-    """AI Dungeon input conventions."""
+    """Format player input the way AI Dungeon does."""
     text = text.strip()
     if action_type == "say":
         text = text.strip('"')
@@ -588,7 +592,7 @@ def format_player_input(action_type: str, text: str) -> str:
         if text and text[-1] not in ".!?…":
             text += "."
         return f"> You {text}"
-    return text  # story: raw text appended
+    return text  # "story" type: appended as raw text
 
 
 def sse(obj: dict) -> str:
@@ -596,28 +600,30 @@ def sse(obj: dict) -> str:
 
 
 def turn_error(detail: str, **extra) -> str:
-    """An SSE error for a turn that could not be produced, counted on the way
-    out. Worth its own event: a failed turn is an HTTP 200 with a bad ending,
-    so the middleware's status-code tally cannot see it — a demo whose model
-    has started refusing every request looks perfectly healthy from outside."""
+    """An SSE error for a turn that couldn't be produced, counted on the way out.
+
+    This gets its own metric because a failed turn is still an HTTP 200 — just
+    one that ends badly — so the middleware's status-code tally can't see it.
+    Without this, a demo whose model has started refusing every request looks
+    perfectly healthy from the outside."""
     analytics.record(analytics.M_EVENT, analytics.EV_TURN_ERROR)
     return sse({"type": "error", "detail": detail, **extra})
 
 
-# no-cache defeats any intermediary caching; X-Accel-Buffering makes
-# nginx-style reverse proxies (hosted deploys) flush each event immediately
-# instead of buffering the stream.
+# no-cache stops any intermediary from caching the stream. X-Accel-Buffering
+# makes nginx-style reverse proxies (used by hosted deploys) flush each event
+# immediately instead of buffering.
 SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
 
 
 def action_json(action: models.Action, db: Session | None = None) -> dict:
     """One action, as the wire sees it.
 
-    `db` is what gives it the pager numbers, and a turn that has just been
-    played must pass it: the take it created is often the *second* at its turn,
-    so the message arrives needing a pager the client cannot draw from a count
-    of one. Without this a retry showed no pager until the page was reloaded —
-    the same trap as the adventure GET, which builds its window a third way.
+    Passing `db` is what fills in the pager numbers, and a turn that was just
+    played must pass it. The take it created is often the *second* at its turn,
+    so the message needs a pager the client can't infer from a count of one.
+    Without this, a retry showed no pager until the page was reloaded — the same
+    trap as the adventure GET, which builds its window a third way.
     """
     if db is not None:
         annotate_takes(db, action.adventure_id, [action])
@@ -631,11 +637,11 @@ def next_index(adventure: models.Adventure) -> int:
 def next_depth(adventure: models.Adventure) -> int:
     """Where the next node played onto this story goes: one past the tip.
 
-    Not `next_index`, which the two agreed on until SP5. `index` has to stay
-    unique across the whole adventure — it is the v1 bundle's key — so on a
-    story forked at depth 6 after twenty turns it would hand the next node
-    depth 21 and leave a fourteen-deep hole in the middle of a path. A depth is
-    a position along *this* story, and the branch is what makes it unambiguous.
+    Not `next_index`, which agreed with this until SP5. `index` has to stay
+    unique across the whole adventure since it's the v1 bundle's key, so on a
+    story forked at depth 6 after twenty turns it would hand the next node depth
+    21, leaving a fourteen-deep hole in the middle of the path. A depth is a
+    position along *this* story, and the branch is what makes it unambiguous.
     """
     return adventure.head_depth + 1
 
@@ -644,7 +650,7 @@ def last_action(adventure: models.Adventure, db: Session) -> models.Action | Non
     """The newest action of any kind on the story being played, or None.
 
     A query rather than `adventure.actions[-1]`, which would load the entire
-    story to look at one row — and, since that collection is every branch's
+    story to look at one row — and, since that collection holds every branch's
     actions, would sometimes look at the wrong one.
     """
     return (
@@ -670,9 +676,9 @@ async def generate_turn(
 
     With `retry_of`, the result is stored as a *sibling* of that AI action —
     same turn, same coordinate, another take — and the discarded attempt stays
-    exactly where it was written. The caller must have rolled the adventure
-    back to before the turn first (see `retry_action`); if this generator ends
-    without saving, that rollback is undone so state can't drift from the text
+    exactly where it was written. The caller must have rolled the adventure back
+    to before the turn first (see `retry_action`). If this generator ends without
+    saving, that rollback is undone, so the state can't drift away from the text
     still on screen."""
     saved = False
     try:
@@ -684,14 +690,14 @@ async def generate_turn(
     finally:
         if retry_of is not None and not saved:
             # Provider error, empty reply, a script stop, or the client hanging
-            # up: no sibling was written, so the attempt on screen is still the
-            # live one — put back the state it produced.
+            # up. No sibling was written, so the attempt on screen is still the
+            # live one — restore the state it produced.
             attempts.restore_state(adventure, retry_of)
             db.commit()
 
 
-# Sentinel yielded by _generate_turn once the action is committed, so the
-# wrapper above knows the rollback must stand rather than be reversed.
+# Sentinel yielded by _generate_turn once the action is committed, telling the
+# wrapper above to leave the rollback in place instead of reversing it.
 _SAVED = object()
 
 
@@ -704,14 +710,14 @@ async def _generate_turn(
 ):
     settings = get_settings(db, user)
     cfg = auth.resolve_provider_config(settings)
-    # On a retry the attempt being replaced is still the live node of its turn
-    # — it stays live until a replacement exists to take over — so it has to be
-    # filtered out of the context, or the model is shown the attempt it is
-    # supposed to be replacing as established story and writes a sequel to it.
+    # On a retry, the attempt being replaced is still the live node of its turn
+    # — it stays live until a replacement exists — so it has to be filtered out
+    # of the context. Otherwise the model sees the attempt it's supposed to be
+    # replacing as established story and writes a sequel to it.
     replacing_id = retry_of.id if retry_of is not None else None
     if cfg.using_demo:
-        # No embedding/summarization calls on the server-funded key: memory
-        # retrieval is skipped (with a visible note when the bank is on).
+        # No embedding or summarization calls on the server-funded key, so
+        # memory retrieval is skipped, with a visible note when the bank is on.
         memories = (
             {"used": [], "error": "Memory bank is unavailable on the shared demo key — add your own API key in Settings."}
             if adventure.memory_bank_enabled
@@ -725,7 +731,7 @@ async def _generate_turn(
         adventure, settings, memories, exclude_action_id=replacing_id
     )
 
-    # onModelContext: scripts see (and may rewrite) the whole assembled context.
+    # onModelContext: scripts see, and may rewrite, the whole assembled context.
     combined = f"{system_text}\n\n{story_text}" if system_text else story_text
     modified, stop = pipeline.run("context", combined)
     if stop:
@@ -764,12 +770,12 @@ async def _generate_turn(
         return
 
     text = "".join(chunks).strip()
-    # The model's literal reply, kept for the Insights "Raw AI output" view —
-    # this still contains any world-state block before it gets stripped below.
+    # The model's literal reply, kept for the Insights "Raw AI output" view.
+    # This still contains any world-state block, which gets stripped below.
     raw_output = text
     if not text:
-        # If the model streamed reasoning but no story text, it spent its whole
-        # budget thinking — say so instead of a mysterious "empty response".
+        # The model streamed reasoning but no story text, meaning it spent its
+        # whole budget thinking. Say so, rather than "empty response".
         if reasoning_chunks:
             detail = (
                 "The model used its entire token budget on reasoning and returned no "
@@ -789,12 +795,13 @@ async def _generate_turn(
     snapshot["script"] = snapshot["script"] | pipeline.report()
 
     # RPG world state (Phase 12): pull the AI's state delta out of the reply,
-    # let the engine referee it, and strip the block from the shown text.
-    # A retry re-runs the *same* turn, so it is played at that turn's depth —
-    # the clock the cooldown rules run on is a position in the story, and a
-    # second take on turn 12 is still turn 12. (It was `retry_of.index` until
-    # SP4, which held the same number; depth is the one that stays true once a
-    # branch has its own numbering.)
+    # let the engine referee it, and strip the block from the displayed text.
+    #
+    # A retry re-runs the *same* turn, so it's played at that turn's depth. The
+    # clock the cooldown rules run on is a position in the story, and a second
+    # take on turn 12 is still turn 12. This used to be `retry_of.index`, which
+    # held the same number until SP4; depth is the one that stays correct once a
+    # branch has its own numbering.
     ai_depth = retry_of.depth if retry_of is not None else next_depth(adventure)
     stat_schema = adventure.scenario.stat_schema if adventure.scenario else None
     if worldstate.has_schema(stat_schema):
@@ -809,18 +816,18 @@ async def _generate_turn(
         snapshot["world_state"] = {"delta": delta, "report": ws_report, "state": new_world_state}
 
     snapshot["raw_output"] = raw_output
-    # What the endpoint says the call cost, including how much of the prompt it
-    # read from cache rather than billed in full. Recorded per attempt, beside
-    # the prompt it priced.
+    # What the endpoint reports the call cost, including how much of the prompt
+    # came from cache rather than being billed in full. Recorded per attempt,
+    # alongside the prompt it priced.
     snapshot["usage"] = provider.last_usage
 
     reasoning = "".join(reasoning_chunks).strip() or None
     ai_action = models.Action(
         adventure_id=adventure.id,
         # A sibling shares the turn's legacy index for the same reason it
-        # shares its depth: it is the same turn. Two rows then hold one index,
-        # which `max_action_index` (a maximum, not a count) survives, and
-        # nothing else still reads the column.
+        # shares its depth: it's the same turn. That leaves two rows with one
+        # index, which is fine — `max_action_index` takes a maximum, not a
+        # count, and nothing else still reads the column.
         index=retry_of.index if retry_of is not None else next_index(adventure),
         depth=ai_depth,
         type="ai",
@@ -833,11 +840,11 @@ async def _generate_turn(
     if retry_of is not None:
         attempts.add_attempt(db, adventure, retry_of, ai_action)
         db.add(ai_action)
-        # The text at this coordinate has just changed, so whatever was derived
-        # from it is no longer about the story: withdraw the memory hanging off
-        # the node and hand the ground back to both passes. Before SP4 this was
+        # The text at this coordinate just changed, so anything derived from it
+        # no longer describes the story. Withdraw the memory hanging off the
+        # node and hand that stretch back to both passes. Before SP4 this was
         # unreachable, because the summarizer held the newest action back until
-        # a turn had landed on top of it — see `memorybank`.
+        # a turn landed on top of it — see `memorybank`.
         memorybank.forget_node(db, adventure, retry_of)
         cursors.rewind_all(adventure, retry_of.branch_id, ai_depth - 1)
         db.flush()
@@ -847,29 +854,29 @@ async def _generate_turn(
         db.add(ai_action)
     adventure.updated_at = models.utcnow()
     if cfg.using_demo:
-        # Successful demo turns count against the daily cap (checked up front
-        # in the endpoint); failed provider calls above don't reach here.
+        # Successful demo turns count against the daily cap, which the endpoint
+        # checks up front. Failed provider calls above never reach here.
         auth.count_demo_turn(user)
     db.commit()
     # Counted here, past every way the turn could still have failed, so the
-    # number means "stories advanced" rather than "requests attempted". The
-    # demo tally is those same turns seen as spend on the server-funded key.
+    # number means "stories advanced" rather than "requests attempted". The demo
+    # tally is those same turns counted as spend on the server-funded key.
     analytics.record_event(analytics.EV_TURN, user)
     if cfg.using_demo:
         analytics.record(analytics.M_EVENT, analytics.EV_DEMO_TURN)
     db.refresh(ai_action)
     yield _SAVED
     yield sse({"type": "done", "action": action_json(ai_action, db), "script": pipeline.report()})
-    # Phase 6: fire-and-forget summarization/embedding (opens its own DB
-    # session). Skipped on the demo key — background AI calls would be
+    # Phase 6: fire-and-forget summarization and embedding, which opens its own
+    # DB session. Skipped on the demo key, since background AI calls would be
     # unmetered spend on the server-funded key.
     if not cfg.using_demo:
         memorybank.schedule_post_turn(adventure)
 
 
 def check_demo_cap(db: Session, user: models.User) -> None:
-    """409/429-style guard before a turn starts, so a capped player's input
-    isn't stored and then left without a reply."""
+    """Check the demo cap before a turn starts, so a capped player's input isn't
+    stored and then left without a reply."""
     settings = get_settings(db, user)
     if auth.resolve_provider_config(settings).using_demo and auth.demo_turns_left(user) <= 0:
         raise HTTPException(429, auth.DEMO_CAP_MESSAGE)
@@ -884,17 +891,18 @@ async def run_player_turn(
 ):
     """Play a player's turn: their action, then the reply to it.
 
-    `preformatted` says the text already carries the "> You ..." conventions and
-    must be written as it stands. That is the case for another take of a turn
-    the player already played (SP9): the editor is seeded with the stored text,
-    which is the formatted form — the same text plain edit puts in the box and
-    writes back verbatim. Formatting it again gives "> You > You ...".
+    `preformatted` means the text already carries the "> You ..." conventions
+    and should be written as-is. That's the case when taking another go at a
+    turn the player already played (SP9): the editor is seeded with the stored
+    text, which is already in formatted form — the same text a plain edit puts
+    in the box and writes back verbatim. Formatting it again would produce
+    "> You > You ...".
     """
     pipeline = ScriptPipeline(adventure, db)
 
     # An empty do/say/story is just a continue.
     if payload.type != "continue" and payload.text.strip():
-        # onInput sees the formatted text (as in AI Dungeon: "> You ...").
+        # onInput sees the formatted text, as in AI Dungeon: "> You ...".
         formatted = (
             payload.text.strip() if preformatted
             else format_player_input(payload.type, payload.text)
@@ -911,21 +919,21 @@ async def run_player_turn(
             type=payload.type,
             text=modified,
         )
-        # The scoreboard once the input hook has run — what this node left
-        # behind, which is where the AI turn after it starts and where a retry
-        # of that turn rolls back to.
+        # The scoreboard after the input hook has run. This is what the node
+        # leaves behind: where the AI turn after it starts, and where a retry of
+        # that turn rolls back to.
         attempts.snapshot_outcome(adventure, player_action)
         tree.place_action(db, adventure, player_action)
         db.add(player_action)
         db.commit()
         db.refresh(player_action)
         # The new action was added via its FK, so the loaded adventure.actions
-        # collection is stale — without this, build_context and next_index for
-        # the AI action would not see the player action just saved.
+        # collection is stale. Without this, build_context and next_index for
+        # the AI action wouldn't see the player action just saved.
         db.expire(adventure, ["actions"])
         yield sse({"type": "player", "action": action_json(player_action, db)})
         if stop:
-            # onInput { stop: true } prevents the AI call.
+            # onInput returning { stop: true } skips the AI call.
             yield sse({"type": "stopped", "script": pipeline.report()})
             return
 
@@ -963,12 +971,12 @@ def _move_to_after(
 ) -> None:
     """Put the story where `after_id` says before the turn is played.
 
-    This is the moment a branch is born (SP9). Reading a take the story moved
-    past changes nothing on the server — the player is looking, and looking is
-    free. Writing below one is the first time they have said which line they
-    mean, and that is when the fork happens.
+    This is where a branch is born (SP9). Reading a take the story moved past
+    changes nothing on the server — looking is free. Writing below one is the
+    first time the player has said which line they mean, and that's when the
+    fork happens.
 
-    A take already on the path needs nothing: it is where the story is.
+    A take already on the path needs nothing; it's where the story already is.
     """
     if after_id is None:
         return
@@ -978,7 +986,8 @@ def _move_to_after(
     if node.live and lineage.path_of(db, adventure).contains(node):
         return
     if not node.live and len(attempts.group(db, node)) < 2:
-        # Not reachable through the pager, so nothing put the player here.
+        # Not reachable through the pager, so nothing could have put the
+        # player here legitimately.
         raise HTTPException(400, "That take is not one of this turn's.")
     stand_on(db, adventure, node)
     db.commit()
@@ -994,10 +1003,10 @@ def retry_action(
 ):
     """Regenerate the last AI action, keeping the discarded attempt.
 
-    The attempt on screen is left exactly as it was written; the shared
-    script/world state rolls back to what the node in front of it left behind,
-    and the new take is stored as a sibling at the same coordinate. Nothing the
-    AI wrote is ever rewritten, let alone thrown away.
+    The attempt on screen is left exactly as it was written. The shared script
+    and world state roll back to what the node in front of it left behind, and
+    the new take is stored as a sibling at the same coordinate. Nothing the AI
+    wrote is ever rewritten or thrown away.
     """
     adventure = get_adventure_or_404(adventure_id, db, user)
     limits.rate_limit("turn", request, user)
@@ -1010,10 +1019,10 @@ def retry_action(
             last_ai = newest
             # Roll the scoreboard back to before this AI turn's hooks ran, so
             # regenerating starts fresh instead of stacking output mutations on
-            # top of the attempt being replaced. A no-op where the preceding
-            # node has no snapshot (a row written before SP4 the migration
-            # could not derive one for), which leaves the state alone rather
-            # than resetting it.
+            # top of the attempt being replaced. This is a no-op when the
+            # preceding node has no snapshot — a pre-SP4 row the migration
+            # couldn't derive one for — which leaves the state alone rather than
+            # resetting it.
             attempts.roll_back_before(db, adventure, last_ai)
             db.commit()
             db.refresh(adventure)
@@ -1042,13 +1051,13 @@ def list_variants(
     db: Session = Depends(get_db),
     user: models.User = CurrentUser,
 ):
-    """Every attempt made for one AI turn. Fetched on demand — the adventure
-    payload carries only the counts, so old narration doesn't ride along on
-    every page load.
+    """Every attempt made for one AI turn. Fetched on demand, since the
+    adventure payload carries only the counts — that keeps old narration from
+    riding along on every page load.
 
-    Addressed by *any* attempt at the turn, not only the live one: switching
-    changes which row the story tells, and a client holding the id it was given
-    a moment ago must still be able to ask about the same turn.
+    Can be addressed by *any* attempt at the turn, not just the live one.
+    Switching changes which row the story tells, and a client holding the id it
+    was given a moment ago still has to be able to ask about the same turn.
     """
     get_adventure_or_404(adventure_id, db, user)
     action = db.get(models.Action, action_id)
@@ -1056,7 +1065,7 @@ def list_variants(
         raise HTTPException(404, "Action not found")
     rows = attempts.group(db, action)
     if len(rows) < 2:
-        return []  # never retried: the turn is its own only take
+        return []  # never retried, so the turn is its own only take
     return [
         schemas.VariantOut(
             id=row.id,
@@ -1084,10 +1093,10 @@ def select_variant(
     """Make an earlier attempt the live one again, restoring the script/world
     state it produced.
 
-    Only the last action can be switched: the turns after an older one were
-    written as a continuation of the text that's currently active, so swapping
-    it out from underneath them would leave the story contradicting itself.
-    Earlier turns' attempts stay readable through `list_variants`.
+    Only the last action can be switched. The turns after an older one were
+    written to continue the text that's currently active, so swapping it out
+    from underneath them would leave the story contradicting itself. Earlier
+    turns' attempts stay readable through `list_variants`.
     """
     adventure = get_adventure_or_404(adventure_id, db, user)
     action = db.get(models.Action, action_id)
@@ -1108,18 +1117,18 @@ def select_variant(
         chosen = rows[payload.index]
         if not chosen.live:
             # The story at this coordinate is about to say something else, so
-            # anything derived from what it used to say is withdrawn — the same
-            # move a retry makes, for the same reason.
+            # withdraw anything derived from what it used to say. Same move a
+            # retry makes, for the same reason.
             memorybank.forget_node(db, adventure, chosen)
             cursors.rewind_all(adventure, chosen.branch_id, (chosen.depth or 0) - 1)
         attempts.make_live(db, adventure, chosen)
         adventure.updated_at = models.utcnow()
         db.commit()
         db.refresh(chosen)
-        # The row that answers is the one now in the story, which is a
-        # *different row* from the one addressed — that is the whole change: an
-        # attempt is a node, so choosing one moves the story onto it rather
-        # than rewriting anything.
+        # Return the row that's now in the story, which is a *different row*
+        # from the one addressed. That's the whole point: an attempt is a node,
+        # so choosing one moves the story onto it rather than rewriting
+        # anything.
         return chosen
     finally:
         _active_turns.discard(adventure_id)
@@ -1130,15 +1139,15 @@ def delete_turn(
 ) -> None:
     """Remove a turn: every attempt at it, not only the one on screen.
 
-    A discarded attempt is a leaf hanging off the same coordinate, and it is
-    only reachable *through* that coordinate — leaving it behind when the turn
-    goes would leave a row nothing can name and no read can see. Whatever the
-    turn produced is withdrawn once, because a memory hangs off the coordinate
-    rather than off one of its attempts.
+    A discarded attempt is a leaf hanging off the same coordinate, reachable
+    only *through* that coordinate. Leaving it behind when the turn goes would
+    orphan a row nothing can name and no read can see. Whatever the turn
+    produced is withdrawn once, since a memory hangs off the coordinate rather
+    than off any one attempt.
     """
     memorybank.forget_node(db, adventure, node)
-    # Scoped to this node's branch (SP9). The group spans branches now, and a
-    # take that was forked onto its own line is another branch's story — see
+    # Scoped to this node's branch (SP9). Groups span branches now, and a take
+    # forked onto its own line belongs to another branch's story — see
     # `attempts.on_branch`.
     for attempt in attempts.on_branch(attempts.group(db, node), node):
         db.delete(attempt)
@@ -1146,12 +1155,12 @@ def delete_turn(
 
 # ---------- Branches (Phase 14, SP5) ----------
 #
-# Attempts pile up at the tip as siblings and cost nothing. One becomes a
-# *branch* at the moment the player takes the story down it and leaves the line
-# that moved past it — which is the same event as "a turn is played past it",
-# seen from the side that has to do the work. Doing it here rather than on the
-# next turn means a branch is only ever created for a divergence somebody
-# actually built on, and the line being left is never disturbed.
+# Attempts pile up at the tip as siblings, which costs nothing. One becomes a
+# *branch* only when the player takes the story down it and leaves the line that
+# moved past it — the same event as "a turn is played past it", viewed from the
+# side that has to do the work. Creating the branch here rather than on the next
+# turn means a branch only ever exists for a divergence someone actually built
+# on, and the line being left is never disturbed.
 
 
 def annotate_takes(
@@ -1160,14 +1169,14 @@ def annotate_takes(
     """Give every action on a page its `2/4` (SP9).
 
     One query for the whole page, not one per row. The pager needs the shape of
-    each turn's take group, and asking `attempts.group` per action would put a
+    each turn's take group, and calling `attempts.group` per action would put a
     query behind every message on screen — the cost `variant_count` was cached
-    to avoid, and the reason SP8 could not simply drop it and be done.
+    to avoid, and the reason SP8 couldn't just drop it.
 
-    Reading the siblings themselves rather than counting them: a group holds a
-    handful of takes, the page is bounded, and the alternative is a second query
-    for the ordinal. Only the id and the ordering keys are fetched, so this
-    stays cheap even where the text does not.
+    This reads the siblings rather than counting them: a group holds only a
+    handful of takes, the page is bounded, and counting would need a second
+    query for the ordinal anyway. Only the id and ordering keys are fetched, so
+    it stays cheap even when the text isn't.
     """
     parents = {a.parent_id for a in actions if a.parent_id is not None}
     if parents:
@@ -1192,8 +1201,8 @@ def annotate_takes(
     for action in actions:
         ids = siblings.get(action.parent_id) if action.parent_id else None
         if not ids:
-            # A root node, or a pre-SP9 row the backfill could not place. Its
-            # own only take, which is what it was written as.
+            # A root node, or a pre-SP9 row the backfill couldn't place. It's
+            # its own only take, which is how it was written.
             action.take_count, action.take_index = 1, 0
             continue
         action.take_count = len(ids)
@@ -1335,19 +1344,19 @@ def delete_branch(
 ):
     """Throw away a branch, and everything forked from it.
 
-    Nothing auto-prunes a tree, so this is the only thing standing between a
-    heavily-retried adventure and unbounded growth — which is why it ships with
-    the view that first lets anyone make a fork rather than after it.
+    Nothing prunes the tree automatically, so this is the only thing standing
+    between a heavily-retried adventure and unbounded growth. That's why it
+    ships alongside the view that first lets anyone make a fork, not after it.
 
-    Two branches cannot go. The root, because it holds the turns every other
-    branch borrows and deleting it would take the whole story. And the one
-    being read — or any branch it was forked from, which is the same mistake
-    wearing a disguise: the cascade would take the head out from under the
-    player and leave `head_branch_id` pointing at nothing. Switch first.
+    Two branches can't be deleted. The root, because it holds the turns every
+    other branch borrows, so deleting it would take the whole story. And the one
+    currently being read — or any branch it was forked from, which is the same
+    problem in disguise: the cascade would pull the head out from under the
+    player and leave `head_branch_id` dangling. Switch branches first.
 
-    The nodes and memories go with it through `ON DELETE CASCADE`, and the
-    descendants through `branches.parent_branch_id`'s, so the delete is one
-    statement however deep the subtree is.
+    Nodes and memories go with it via `ON DELETE CASCADE`, and descendants via
+    the cascade on `branches.parent_branch_id`, so the delete is a single
+    statement no matter how deep the subtree is.
     """
     adventure = get_adventure_or_404(adventure_id, db, user)
     branch = get_branch_or_404(adventure, branch_id, db)
@@ -1357,8 +1366,8 @@ def delete_branch(
                  "the adventure. Delete the adventure itself instead.",
         )
     head = db.get(models.Branch, adventure.head_branch_id)
-    # The head's lineage names itself and every branch it borrows from, so one
-    # membership test covers both "you are standing on it" and "you are on
+    # The head's lineage lists itself and every branch it borrows from, so a
+    # single membership test covers both "you're standing on it" and "you're on
     # something forked from it".
     if head is not None and branch.id in {
         entry_id for entry_id, _ in lineage.entries_of(head)
@@ -1369,12 +1378,11 @@ def delete_branch(
         )
     acquire_turn_lock(adventure_id)
     try:
-        # Collected before the delete, because afterwards there is nothing left
-        # to ask which branches went. A cursor left pointing at a deleted branch
-        # would be harmless on Postgres, where ids are never reused, and a real
-        # bug on SQLite, where the next fork can be handed the id that just went
-        # free — at which point a stale anchor silently resolves onto a branch
-        # it has never seen.
+        # Collect this before the delete — afterwards there's no way to ask
+        # which branches went. A cursor left pointing at a deleted branch is
+        # harmless on Postgres, where ids are never reused, but a real bug on
+        # SQLite, where the next fork can be handed the id that just went free.
+        # A stale anchor would then silently resolve onto a branch it never saw.
         doomed = _branch_subtree(db, adventure, branch)
         for cursor in cursors.ALL:
             stored_branch, _ = cursor.stored(adventure)
@@ -1385,9 +1393,9 @@ def delete_branch(
         db.commit()
     finally:
         _active_turns.discard(adventure_id)
-    # The deleted branch's memories go with it, and their cached vectors fall
-    # out of the catalogue on the next read — no invalidation call needed. See
-    # the note on memorybank's cache.
+    # The deleted branch's memories go with it, and their cached vectors drop
+    # out of the catalogue on the next read, so no invalidation call is needed.
+    # See the note on memorybank's cache.
 
 
 def _branch_subtree(

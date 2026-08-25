@@ -15,15 +15,18 @@ def utcnow() -> datetime:
 
 
 class User(Base):
-    """Phase 8 — optional accounts.
+    """Phase 8: optional accounts.
 
-    Three kinds of rows share this table:
-      - the "local user" (email NULL, is_guest False): auto-created in
-        single-user/local mode; owns everything a pre-Phase-8 DB had;
-      - guests (email NULL, is_guest True): created on first visit in
-        multi-user mode, identified only by their session cookie;
-      - registered users (email set): a guest upgraded in place, so their
-        data survives registration with no re-parenting.
+    Three kinds of row share this table:
+
+    - The local user has a NULL email and `is_guest` set to False. Single-user
+      mode creates this row automatically. It owns everything that a database
+      from before Phase 8 contained.
+    - Guests have a NULL email and `is_guest` set to True. Multi-user mode
+      creates one on a visitor's first visit and identifies it only by the
+      session cookie.
+    - Registered users have an email. Registration upgrades a guest row in
+      place, so the guest's data survives without being reassigned.
     """
 
     __tablename__ = "users"
@@ -64,18 +67,20 @@ class Scenario(Base):
     authors_note: Mapped[str] = mapped_column(Text, default="")
     ai_instructions: Mapped[str] = mapped_column(Text, default="")
     tags: Mapped[str] = mapped_column(String(500), default="")
-    # Cover art. Either an external "https://…" URL or an inline
-    # "data:image/…;base64,…" URI (the editor downscales uploads before storing
-    # one). Empty means the UI falls back to an emoji sigil or generated art.
-    # Kept in the row rather than on disk because Render's free tier has no
-    # persistent volume, and it makes export bundles self-contained.
+    # Cover art. The value is either an "https://" URL or an inline
+    # "data:image/...;base64,..." URI. The editor downscales uploads before
+    # storing them. An empty value tells the UI to fall back to an emoji sigil
+    # or to generated art. The image is stored in the row rather than on disk,
+    # because Render's free tier provides no persistent volume. Storing it here
+    # also keeps export bundles self-contained.
     image: Mapped[str] = mapped_column(Text, default="")
-    # A single emoji or glyph used when there's no `image` — cheap art for
-    # scenarios nobody wants to find a picture for. Separate from `image`
-    # because it's a character, not a locator: no fetch, no cache, no bytes.
+    # A single emoji or glyph, used when `image` is empty. This is a separate
+    # column because the value is a character rather than a location, so
+    # nothing needs to fetch or cache it.
     icon: Mapped[str] = mapped_column(String(16), default="")
-    # Phase 12: RPG world-state template — stat definitions (bands, rules) and
-    # milestones. NULL/empty means this scenario has no RPG layer.
+    # Phase 12: the RPG world-state template. It holds stat definitions, which
+    # include bands and rules, and milestones. A NULL or empty value means the
+    # scenario has no RPG layer.
     stat_schema: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
@@ -113,31 +118,36 @@ class Adventure(Base):
     # Phase 6: opt-in per adventure (extra AI calls)
     auto_summarize: Mapped[bool] = mapped_column(Boolean, default=False)
     memory_bank_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
-    # LEGACY (Phase 6): how many actions had been folded into memories / the
-    # story summary, as a *position* in the story. Unread since SP3, and
-    # unwritten except by a v1 import which is handed one; kept for one release
-    # so a rollback resumes from a real number, and dropped in SP8 beside
-    # `actions.index`. The live mark is the anchor pair below.
+    # Legacy columns from Phase 6. Each holds a count of the actions that were
+    # folded into the memories or the story summary, expressed as a position in
+    # the story. Nothing has read them since SP3, and nothing writes them except
+    # a v1 import. They remain for one release so that a rollback resumes from a
+    # real number. SP8 drops them along with `actions.index`. The columns below
+    # hold the marks that this code actually uses.
     memory_cursor: Mapped[int] = mapped_column(Integer, default=0)
     summary_cursor: Mapped[int] = mapped_column(Integer, default=0)
-    # Phase 14, SP3: the same two marks as nodes — (branch, depth) of the last
-    # action each pass covered. A position slides when an action in front of it
-    # is deleted and silently starts covering one it has never read; a depth
-    # does not move, because it is a coordinate along a path rather than an
-    # offset into a list. NO_DEPTH (-1) is "nothing covered yet", so the first
-    # block needs no special case. Plain integers, not foreign keys, for the
-    # same reason `head_branch_id` below is one. See `context/cursors.py`.
+    # Phase 14, SP3: the same two marks expressed as coordinates. Each pair
+    # holds the branch and depth of the last action that pass covered. A
+    # position moves when an action in front of it is deleted, so the mark
+    # silently starts covering an action it never read. A depth is a coordinate
+    # along a path, so deleting an action does not move it. NO_DEPTH, which is
+    # -1, means that nothing is covered yet, so the first block needs no special
+    # case. These are plain integers rather than foreign keys, for the reason
+    # given on `head_branch_id` below. See `context/cursors.py`.
     memory_cursor_branch_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     memory_cursor_depth: Mapped[int] = mapped_column(Integer, default=-1)
     summary_cursor_branch_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     summary_cursor_depth: Mapped[int] = mapped_column(Integer, default=-1)
-    # Phase 14: where the story is being played — which branch, and the depth of
-    # its newest node. Deliberately NOT a ForeignKey: branches.adventure_id
-    # already points this way, and a second constraint back would make the two
-    # tables a cycle that create_all cannot order (the fix for that is
-    # use_alter, which SQLite has no ALTER for). It is a cache of a pointer, and
-    # `tree.head_branch` treats a head naming a branch that no longer exists as
-    # a bug to recover from rather than a state to honour.
+    # Phase 14: where the story is being played. `head_branch_id` names the
+    # branch, and `head_depth` gives the depth of its newest node.
+    #
+    # `head_branch_id` is deliberately not a ForeignKey. `branches.adventure_id`
+    # already points from branches to adventures, so a constraint in this
+    # direction would make the two tables a cycle that `create_all` cannot
+    # order. The usual fix is `use_alter`, which needs an ALTER statement that
+    # SQLite does not provide. The column caches a pointer, and
+    # `tree.head_branch` treats a head that names a missing branch as a bug to
+    # recover from rather than a state to preserve.
     head_branch_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # The depth of the tip, so the next node is always head_depth + 1.
     # NO_DEPTH (-1) for an adventure with no actions yet.
@@ -149,12 +159,12 @@ class Adventure(Base):
     story_cards: Mapped[list["StoryCard"]] = relationship(
         back_populates="adventure", cascade="all, delete-orphan"
     )
-    # Every action of the adventure — that is, every *branch's*. Not the story
-    # being played, and re-ordering it by depth would not make it one: the
-    # collection is the tree, and a path is a selection out of it. Anything
-    # showing a reader a story goes through `context.history`, which goes
-    # through the branch clause. What is left here is ownership and the
-    # delete-orphan cascade, which are facts about the adventure.
+    # Every action in the adventure, across all branches. This collection is
+    # the tree, not the story being played. Ordering it by depth does not make
+    # it a story, because a path is a selection out of the tree. Code that shows
+    # a story to a reader goes through `context.history`, which applies the
+    # branch clause. This relationship exists for ownership and for the
+    # delete-orphan cascade.
     actions: Mapped[list["Action"]] = relationship(
         back_populates="adventure",
         cascade="all, delete-orphan",
@@ -173,24 +183,25 @@ class Adventure(Base):
 
 
 class Branch(Base):
-    """Phase 14 — one path through an adventure's story tree.
+    """Phase 14: one path through an adventure's story tree.
 
-    A branch does not own a copy of the story: it holds the nodes played on it
-    and *borrows* everything before its fork point from its ancestors. Reading
-    branch C means reading C's nodes, plus B's up to where C left it, plus A's
-    up to where B left it — which is what `lineage` spells out, so a read is an
-    OR-clause per entry instead of a walk up parent pointers.
+    A branch does not own a copy of the story. It holds the nodes played on it,
+    and it inherits everything before its fork point from its ancestors. Reading
+    branch C means reading C's nodes, then B's nodes up to the depth where C
+    forked, then A's nodes up to the depth where B forked. The `lineage` column
+    records that list, so a read becomes one OR clause per entry instead of a
+    walk up parent pointers.
 
-    Until forking ships there is exactly one root branch per adventure and
-    every node hangs off it. That is not a half-migrated state: a linear story
-    *is* a tree with one branch, which is why writing these columns changes
-    nothing anyone can observe.
+    Until forking ships, each adventure has one root branch and every node
+    belongs to it. This is not a partly migrated state. A linear story is a tree
+    with one branch, which is why writing these columns changes nothing that a
+    reader can observe.
 
-    No ORM relationships on purpose. `actions.branch_id` and `memories
-    .branch_id` carry ON DELETE CASCADE, so the database removes a deleted
-    branch's nodes; a relationship would have SQLAlchemy load them all to do
-    the same thing, and loading every action of a branch is the exact cost the
-    windowed reads exist to avoid.
+    This class defines no ORM relationships, by design. `actions.branch_id` and
+    `memories.branch_id` both use ON DELETE CASCADE, so the database removes a
+    deleted branch's nodes. A relationship would make SQLAlchemy load those rows
+    first, and loading every action of a branch is what the windowed reads exist
+    to avoid.
     """
 
     __tablename__ = "branches"
@@ -201,22 +212,23 @@ class Branch(Base):
     parent_branch_id: Mapped[int | None] = mapped_column(
         ForeignKey("branches.id", ondelete="CASCADE"), nullable=True
     )
-    # The depth this branch left its parent at, stored when the fork happens and
-    # never inferred afterwards. Inferring it from where two branches' nodes
-    # first differ would be a guess about how the story was played — and a wrong
-    # one as soon as an attempt happens to repeat its parent's text.
+    # The depth at which this branch left its parent. The fork records this
+    # value, and no code infers it later. Deriving it from the first depth where
+    # two branches' nodes differ would produce a wrong answer whenever an
+    # attempt repeats its parent's text.
     fork_depth: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    # The ancestry, newest first: [[branch_id, max_depth], ...] where max_depth
-    # is NULL for "to the tip" and otherwise the fork_depth of the branch
-    # beneath it, inclusive. Computed once at fork from the parent's lineage
-    # plus one entry, so no read ever reconstructs it.
+    # The ancestry, newest first, as [[branch_id, max_depth], ...]. A NULL
+    # `max_depth` means the entry extends to the tip of that branch. Any other
+    # value is the fork depth of the branch below it, inclusive. The fork
+    # computes this list once from the parent's lineage plus one entry, so no
+    # read has to reconstruct it.
     lineage: Mapped[list] = mapped_column(JSON, default=list)
-    # What the player called this line of the story, or NULL for one nobody has
-    # named. NULL rather than a generated "branch 4", because a generated name
-    # is derived and this column is for what was chosen — the same rule the v2
-    # bundle is built on. A stored default would also become a lie the moment a
-    # branch before it is deleted and the ordinals shift under it; an unnamed
-    # branch is drawn from its fork depth instead, which nothing can shift.
+    # The name the player gave this line of the story, or NULL if no one named
+    # it. The column stores NULL rather than a generated name such as
+    # "branch 4", because it records what the player chose rather than what the
+    # app derived. A stored default would also become wrong as soon as an
+    # earlier branch is deleted and the ordinals shift. The UI labels an unnamed
+    # branch by its fork depth, which deleting a branch does not change.
     name: Mapped[str | None] = mapped_column(String(80), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
@@ -228,11 +240,10 @@ class Memory(Base):
     NULL until embedded, which also marks it for backfill when an embedding
     model becomes available.
 
-    Cosine ranking happens in Python, which means the vectors cross the wire.
-    The original comment here sized that by count — "fine at a few hundred" —
-    and it was wrong by the only measure that mattered: a few hundred JSON
-    vectors is ten megabytes, fetched fresh every turn. Weigh new columns in
-    bytes.
+    Cosine ranking runs in Python, so the vectors travel over the wire. Measure
+    that cost in bytes rather than in rows. A few hundred vectors stored as JSON
+    come to about 10 MB, fetched again on every turn. Size any new column by the
+    bytes it adds, not by the number of rows.
     """
 
     __tablename__ = "memories"
@@ -240,39 +251,42 @@ class Memory(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     adventure_id: Mapped[int] = mapped_column(ForeignKey("adventures.id", ondelete="CASCADE"))
     text: Mapped[str] = mapped_column(Text, default="")
-    # The vector, little-endian float32. Deferred because it is wider than the
-    # rest of the row put together and exactly one code path wants it: anything
-    # bulk-loading memories (the Memories drawer, eviction, the embed queue)
-    # must project the columns it needs rather than load whole entities.
+    # The vector, stored as little-endian float32. This column is deferred
+    # because it is wider than the rest of the row combined and only one code
+    # path reads it. Code that loads memories in bulk, such as the Memories
+    # drawer, eviction, and the embed queue, must select the columns it needs
+    # instead of loading whole entities.
     embedding_blob: Mapped[bytes | None] = mapped_column(
         LargeBinary, nullable=True, deferred=True
     )
-    # The stretch of story this memory summarizes, as depths on `branch_id`
-    # (null for a hand-written memory, which summarizes nothing). Written as
-    # `Action.index` values before SP3, which held the same numbers.
-    # `source_end` is the depth of the node the memory hangs off, mirrored into
-    # `depth` below; `source_start` is where it began, which is where the
-    # summarizer has to resume from if the memory is ever withdrawn.
+    # The stretch of story this memory summarizes, given as depths on
+    # `branch_id`. Both are NULL for a hand-written memory, which summarizes no
+    # actions. Before SP3 these columns held `Action.index` values, which were
+    # the same numbers. `source_end` is the depth of the node the memory
+    # attaches to, and `depth` below mirrors it. `source_start` is where the
+    # stretch begins, which is where the summarizer resumes if the memory is
+    # withdrawn.
     source_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
     source_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    # Phase 14: the node that produced this memory — the last action it
-    # summarises. Anything derived attaches to the node it came from, which is
-    # what makes a fork free: a shared ancestor's memories are shared
-    # automatically, and a memory covering a stretch of branch B is invisible
+    # Phase 14: the node that produced this memory, meaning the last action the
+    # memory summarizes. Derived data attaches to the node it came from, which
+    # is what makes forking cheap. Memories on a shared ancestor are shared
+    # automatically, and a memory that covers part of branch B is not visible
     # from any path that does not go through B.
     #
-    # Every memory has one, including a hand-written one: it takes the head at
-    # the moment it was written (SP7). A NULL depth used to mean "belongs to the
-    # adventure, not to a path", which is a category no fork could cap — the
-    # memory followed the reader onto branches whose story it never described.
+    # Every memory has a coordinate, including a hand-written one, which takes
+    # the head as of the moment it was written (SP7). A NULL depth used to mean
+    # that the memory belonged to the adventure rather than to a path. A fork
+    # cannot cap a NULL, so such a memory followed the reader onto branches
+    # whose story it did not describe.
     branch_id: Mapped[int | None] = mapped_column(
         ForeignKey("branches.id", ondelete="CASCADE"), nullable=True
     )
     depth: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    # Whether embedding_blob is set. Maintained on write by memorybank
-    # .set_vector, for the same reason actions.variant_count exists beside
-    # actions.variants: every reader wants the one-bit answer and none of them
-    # should have to fetch six kilobytes of vector to get it.
+    # Whether `embedding_blob` is set. `memorybank.set_vector` keeps this
+    # column current, for the same reason that `actions.variant_count` sits
+    # beside `actions.variants`. Readers need only the yes-or-no answer, and
+    # fetching six kilobytes of vector to get it is too expensive.
     embedded: Mapped[bool] = mapped_column(Boolean, default=False)
     pinned: Mapped[bool] = mapped_column(Boolean, default=False)
     forgotten: Mapped[bool] = mapped_column(Boolean, default=False)  # evicted, kept for UI
@@ -300,10 +314,12 @@ class StoryCard(Base):
     keys: Mapped[str] = mapped_column(Text, default="")  # comma-separated triggers
     entry: Mapped[str] = mapped_column(Text, default="")
     notes: Mapped[str] = mapped_column(Text, default="")
-    # Adventure copies only: which piece of the scenario this card came from —
-    # "card:<scenario_card_id>" or "npc:<npc_key>". "Update from scenario"
-    # refreshes/removes exactly these; NULL means player-authored (left alone),
-    # or a copy predating the column (matched by name, then adopted).
+    # Set on adventure copies only. It records which piece of the scenario the
+    # card came from, as either "card:<scenario_card_id>" or "npc:<npc_key>".
+    # The "Update from scenario" action refreshes or removes exactly these
+    # cards. A NULL value means the player wrote the card, so the update leaves
+    # it alone, or that the copy predates this column, in which case the update
+    # matches it by name and then sets this value.
     source_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     scenario: Mapped[Scenario | None] = relationship(back_populates="story_cards")
@@ -312,72 +328,76 @@ class StoryCard(Base):
 
 class Action(Base):
     __tablename__ = "actions"
-    # Phase 14: every read of a story is "this branch up to this depth, or that
-    # branch up to that depth, ...", so (branch_id, depth) is the shape every
-    # one of those clauses wants an index on.
+    # Phase 14: every story read selects one branch up to one depth, then
+    # another branch up to another depth, and so on. The pair (branch_id, depth)
+    # is the index those clauses need.
     __table_args__ = (Index("ix_actions_branch_depth", "branch_id", "depth"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     adventure_id: Mapped[int] = mapped_column(ForeignKey("adventures.id", ondelete="CASCADE"))
     index: Mapped[int] = mapped_column(Integer)
-    # Phase 14: the node's place in the tree. `depth` is a position along *a*
-    # path, not a global turn number — A4 and B4 are alternatives, not
-    # duplicates — and it replaces `index` as the ordering key.
+    # Phase 14: the node's place in the tree. `depth` is a position along one
+    # path rather than a global turn number. Node A4 and node B4 are
+    # alternatives, not duplicates. `depth` replaces `index` as the ordering
+    # key.
     #
-    # Nullable because ALTER TABLE cannot add a NOT NULL column with no
-    # default and there is no sensible default for "which branch": the
-    # migration fills them, `tree.place_action` fills them for new nodes, and
-    # from SP2 on a NULL branch_id is a row no read can see. Legacy `index`
-    # stays beside them, unread, until the tree is proven live (SP8 drops it).
+    # Both columns are nullable because ALTER TABLE cannot add a NOT NULL column
+    # without a default, and no default makes sense for a branch. The migration
+    # fills these columns for existing rows, and `tree.place_action` fills them
+    # for new rows. From SP2 onward, a NULL `branch_id` marks a row that no read
+    # can see. The legacy `index` column stays alongside, unread, until the tree
+    # is proven in production. SP8 drops it.
     branch_id: Mapped[int | None] = mapped_column(
         ForeignKey("branches.id", ondelete="CASCADE"), nullable=True
     )
     depth: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    # Phase 14, SP9: the node this one was played after — the take that was
-    # live when it was written, not merely whatever sits at depth - 1 now.
+    # Phase 14, SP9: the node that this node was played after. It names the take
+    # that was live when this row was written, not whatever sits at depth - 1
+    # now.
     #
-    # It exists for one question: which takes belong to the same turn. A
-    # coordinate cannot answer it, because a take that gets forked onto its own
-    # branch leaves the coordinate its siblings are still at and would read
-    # `1/1` next to their `1/3`. A parent does not move when a branch does.
+    # This column answers one question: which takes belong to the same turn. A
+    # coordinate cannot answer it. A take that is forked onto its own branch
+    # leaves the coordinate that its siblings still occupy, so the pager would
+    # show it as 1/1 next to their 1/3. Forking a branch does not change a
+    # node's parent.
     #
-    # Read only to group takes — one indexed lookup, never a walk. Paths still
-    # resolve through `lineage`, which is why this column can be added without
-    # touching a single read of the story.
+    # Code reads this column only to group takes, using one indexed lookup
+    # rather than a walk. Paths still resolve through `lineage`, which is why
+    # adding this column required no change to any read of the story.
     #
-    # NULL on a root node, and on every pre-SP9 row the migration could not
-    # place: `attempts.group` falls back to the coordinate there, which is what
-    # those rows were written under.
+    # The value is NULL on a root node, and on pre-SP9 rows that the migration
+    # could not place. For those rows, `attempts.group` falls back to the
+    # coordinate, which is how they were written.
     parent_id: Mapped[int | None] = mapped_column(
         ForeignKey("actions.id", ondelete="SET NULL"), nullable=True, index=True
     )
-    # Phase 14, SP4: whether this node is the one the story tells at its
-    # coordinate. Retry no longer rewrites a row — it writes a *sibling* at the
-    # same (branch, depth), so a coordinate can hold several attempts and
+    # Phase 14, SP4: whether this node is the one the story uses at its
+    # coordinate. Retry no longer rewrites a row. It writes a sibling at the
+    # same branch and depth, so one coordinate can hold several attempts while
     # exactly one of them is on the path. `lineage.Path.clause` is the only
-    # place that reads this, for the same reason it is the only place that
-    # knows about branches: an attempt leaking into a read is a story quietly
-    # telling itself twice.
+    # place that reads this column, for the same reason it is the only place
+    # that knows about branches. If a discarded attempt reaches a read, the page
+    # renders the same turn twice.
     #
-    # A node with no siblings is live, which is why the default is True and why
-    # every pre-SP4 row is correct without being visited.
+    # A node with no siblings is live, so the default is True and every pre-SP4
+    # row is already correct. The migration does not need to visit them.
     live: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     type: Mapped[str] = mapped_column(String(20))  # start|do|say|story|continue|ai
     text: Mapped[str] = mapped_column(Text, default="")
     # Reasoning-model "thinking" that preceded the text (AI actions only).
     reasoning: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # The full assembled prompt for this turn, for the Insights viewer. By far
-    # the biggest column in the database — 163 KB a row averaged over
-    # production and 232 KB on the longest adventure, 89% of everything stored
-    # — and needed by exactly one endpoint, one action at a time.
+    # The full assembled prompt for this turn, used by the Insights viewer.
+    # This is the largest column in the database. It averages 163 KB per row in
+    # production and 232 KB on the longest adventure, and it accounts for 89% of
+    # everything stored. Only one endpoint reads it, one action at a time.
     #
-    # Two separate defences, because it is expensive in two separate ways.
-    # `deferred=True` is the read defence: never loaded unless something
-    # touches the attribute, so a page load pays nothing for it. Bulk readers
-    # must NOT touch it; that is what `world_delta` below exists for.
-    # CompressedJSON is the *storage* defence: this is the column that decides
-    # when the free tier's 512 MB runs out. Still a dict either way — see
-    # compression.py.
+    # The column is expensive in two ways, so it has two protections.
+    # `deferred=True` protects reads, because SQLAlchemy loads the column only
+    # when code touches the attribute. A page load therefore costs nothing. Code
+    # that reads actions in bulk must not touch this attribute, which is why
+    # `world_delta` below exists. `CompressedJSON` protects storage, because
+    # this column determines when the free tier's 512 MB limit is reached. The
+    # attribute behaves like a plain dict in both cases. See compression.py.
     context_snapshot: Mapped[dict | None] = mapped_column(
         CompressedJSON, nullable=True, deferred=True
     )
@@ -386,58 +406,58 @@ class Action(Base):
     # and for re-attaching the emit block when replaying history to the model.
     # Mirrors the active variant, same as text/reasoning/context_snapshot.
     world_delta: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    # LEGACY (SP4): Adventure.script_state / world_state as they were
-    # immediately BEFORE this action's script hooks ran. Unwritten since SP4
-    # and read by nothing — the *after* pair below replaced them, because a
-    # sibling attempt needs its own outcome and a "before" picture is shared by
-    # every attempt at the turn. Kept for one release so a rolled-back build
-    # still finds a real snapshot on every row it wrote itself; SP8 drops them
-    # beside `index` and `variants`.
+    # Legacy columns from before SP4. They hold `Adventure.script_state` and
+    # `Adventure.world_state` as they were immediately before this action's
+    # script hooks ran. Nothing has written or read them since SP4. The pair of
+    # "after" columns below replaced them, because each sibling attempt needs
+    # its own outcome and every attempt at a turn shares the same starting
+    # state. These columns remain for one release so that a rolled-back build
+    # still finds a real snapshot on the rows it wrote. SP8 drops them along
+    # with `index` and `variants`.
     state_before: Mapped[dict | None] = mapped_column(
         JSON, nullable=True, deferred=True
     )
     world_state_before: Mapped[dict | None] = mapped_column(
         JSON, nullable=True, deferred=True
     )
-    # Phase 14, SP4: the shared script scoreboard and the RPG world state as
-    # they stood once this node had been played — *its* outcome, not its
-    # starting position.
+    # Phase 14, SP4: the shared script state and the RPG world state as they
+    # stood after this node was played. These columns record the node's outcome
+    # rather than its starting position.
     #
-    # Two things want this and neither can use a "before" picture. Switching
-    # between siblings has to put back the state the chosen attempt produced,
-    # and the attempts differ precisely in what they produced. And rolling back
-    # to before a turn is "the state the node in front of it left behind",
-    # which is one lookup on the path rather than a snapshot that has to be
-    # taken from inside the turn being rolled back.
+    # Two operations need this outcome, and neither can use a snapshot taken
+    # before the turn. Switching between siblings must restore the state that
+    # the chosen attempt produced, and the attempts differ in exactly that.
+    # Rolling back to before a turn means restoring the state that the preceding
+    # node left behind, which is one lookup along the path.
     #
-    # NULL on rows written before SP4 that the migration could not derive one
-    # for, and tolerated everywhere: a missing snapshot means "leave the live
-    # state alone", never "reset it".
+    # The value is NULL on pre-SP4 rows for which the migration could not derive
+    # one. Every caller tolerates that. A missing snapshot means that the caller
+    # leaves the live state unchanged. It never means reset the state.
     #
-    # Deferred: only ever read for the one node being switched to, undone or
-    # retried past.
+    # These columns are deferred, because code reads them only for the single
+    # node being switched to, undone, or retried past.
     state_after: Mapped[dict | None] = mapped_column(
         JSON, nullable=True, deferred=True
     )
     world_state_after: Mapped[dict | None] = mapped_column(
         JSON, nullable=True, deferred=True
     )
-    # LEGACY (SP4): retry history as a JSON repeating group. Every attempt at
-    # this turn is its own row now — see `live` above and `app/attempts.py` —
-    # so nothing reads this. Kept until SP8 for the same reason `index` is, and
-    # read exactly once more on the way out: migration 60 is what turns each
-    # entry into the sibling row it should always have been.
+    # A legacy column from before SP4. It holds the retry history as a repeating
+    # group inside a JSON list. Every attempt at a turn is now its own row, as
+    # described on `live` above and in `app/attempts.py`, so nothing reads this
+    # column. It remains until SP8 for the same reason `index` does. Migration
+    # 60 reads it once more, to turn each entry into a sibling row.
     variants: Mapped[list | None] = mapped_column(JSON, nullable=True, deferred=True)
-    # Where the row sits in its sibling group: `variant_index` is this
-    # attempt's ordinal, oldest first, and `variant_count` is how many attempts
-    # the group holds (0, not 1, when the turn was never retried — the pager
-    # reads that as "nothing to page through").
+    # Where the row sits in its sibling group. `variant_index` is this
+    # attempt's ordinal, counting from the oldest. `variant_count` is the number
+    # of attempts in the group. It is 0 rather than 1 when the turn was never
+    # retried, which the pager treats as having nothing to page through.
     #
-    # A cache of two facts about the group, maintained in one place
-    # (`attempts.renumber`) for the same reason it used to be a cache of
-    # `len(variants)`: a page response wants them for every row and must not
-    # pay a query per turn to get them. SP7 replaces the pager with the branch
-    # view and SP8 drops both columns.
+    # Both columns are caches, and `attempts.renumber` is the only place that
+    # maintains them. The reason matches why `variant_count` once cached
+    # `len(variants)`: a page response needs both numbers for every row and
+    # cannot afford one query per turn. SP7 replaces the pager with the branch
+    # view, and SP8 drops both columns.
     variant_count: Mapped[int] = mapped_column(Integer, default=0)
     variant_index: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
@@ -450,9 +470,9 @@ class Action(Base):
         under an AI message. Labels are path-based (no schema needed):
         `npc.gwen.trust` -> "gwen trust".
 
-        Reads `world_delta`, never `context_snapshot` — this runs for every
-        action in a list response, and touching the deferred snapshot here
-        would drag the whole prompt archive out of the database."""
+        Reads `world_delta`, never `context_snapshot`. This runs for every
+        action in a list response, and touching the deferred snapshot here would
+        drag the entire prompt archive out of the database."""
         wd = self.world_delta if isinstance(self.world_delta, dict) else None
         if wd is None:
             return []
@@ -500,10 +520,10 @@ class AdventureScript(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     adventure_id: Mapped[int] = mapped_column(ForeignKey("adventures.id", ondelete="CASCADE"))
-    # The library Script this copy was made from, so it can be re-synced on
-    # demand. NULL for legacy copies (predate this column) and demo-derived
-    # ones whose source isn't owned by the player — those fall back to a
-    # name match, or simply aren't syncable.
+    # The library Script that this copy was made from, which lets the player
+    # re-sync it on demand. The value is NULL for legacy copies that predate
+    # this column, and for demo-derived copies whose source the player does not
+    # own. Those copies fall back to matching by name, or cannot be synced.
     source_script_id: Mapped[int | None] = mapped_column(
         ForeignKey("scripts.id", ondelete="SET NULL"), nullable=True
     )
@@ -529,7 +549,8 @@ class Settings(Base):
         ForeignKey("users.id", ondelete="CASCADE"), nullable=True, unique=True
     )
     endpoint_url: Mapped[str] = mapped_column(String(500), default="http://localhost:11434/v1")
-    # Fernet-encrypted at rest ("enc:..." — see security.py); use api_key_plain.
+    # Encrypted at rest with Fernet, which produces a value that starts with
+    # "enc:". See security.py. To read the key, use `api_key_plain`.
     api_key: Mapped[str] = mapped_column(String(500), default="")
     model: Mapped[str] = mapped_column(String(200), default="")
     api_mode: Mapped[str] = mapped_column(String(20), default="chat")  # chat|completion
@@ -557,10 +578,10 @@ class Settings(Base):
     # Phase 6: auto-summarization + memory bank
     summary_model: Mapped[str] = mapped_column(String(200), default="")  # "" = main model
     embedding_model: Mapped[str] = mapped_column(String(200), default="")  # "" = bank disabled
-    # Was 200. Lowered on retrieval-quality grounds first: ranking two hundred
-    # memories to pick five means the five are chosen out of a lot of noise,
-    # and older memories describe a story the player has moved on from. That it
-    # also cuts what the bank costs to read is the smaller reason.
+    # This was 200. It was lowered mainly to improve retrieval quality. Ranking
+    # 200 memories to choose 5 selects from a large amount of noise, and the
+    # oldest memories describe a part of the story that the player has left
+    # behind. Cheaper reads are a secondary benefit rather than the reason.
     memory_bank_capacity: Mapped[int] = mapped_column(Integer, default=80)
     memory_top_k: Mapped[int] = mapped_column(Integer, default=5)
 
@@ -576,18 +597,19 @@ class Settings(Base):
 
 
 # ---------- Visit analytics (see analytics.py) ----------
-# Two deliberately dumb tables. Neither can hold anything a player wrote, and
-# neither can be joined back to a `users` row: the visitor column is an HMAC,
-# with no foreign key, so guest cleanup deleting an account leaves the history
-# it contributed to intact and anonymous.
+# Two intentionally simple tables. Neither can hold text that a player wrote,
+# and neither can be joined back to a `users` row, because the visitor column
+# holds an HMAC and has no foreign key. When guest cleanup deletes an account,
+# the history that account contributed remains intact and anonymous.
 
 
 class AnalyticsDaily(Base):
     """One counter: how many times `label` happened within `metric` on `day`.
 
-    A generic (metric, label, hits) triple rather than a column per statistic,
-    so measuring something new later costs a constant instead of a migration.
-    Written only by UPSERT, from a buffer — see analytics.flush.
+    The table stores a generic triple of metric, label, and hits rather than one
+    column per statistic. Measuring something new therefore costs a constant
+    rather than a migration. The only writer is an UPSERT that runs from a
+    buffer. See `analytics.flush`.
     """
 
     __tablename__ = "analytics_daily"
@@ -607,10 +629,10 @@ class AnalyticsDaily(Base):
 class AnalyticsVisitorDay(Base):
     """One visitor, one day, and which funnel steps they reached on it.
 
-    Exists so the funnel counts people rather than clicks — a player who starts
-    six adventures is one person who started an adventure. `is_new` is set when
-    the visitor has no earlier row, which is also why the visitor column is
-    indexed on its own.
+    This table exists so that the funnel counts people rather than clicks. A
+    player who starts six adventures counts as one person who started an
+    adventure. `is_new` is set when the visitor has no earlier row, which is why
+    the visitor column also has an index of its own.
     """
 
     __tablename__ = "analytics_visitor_days"
@@ -634,15 +656,16 @@ class AnalyticsVisitorDay(Base):
 class AccessEvent(Base):
     """One sign-in, registration, failed attempt, or session first-seen.
 
-    The counterpart to the two tables above, and deliberately not mixed in with
-    them: this one identifies people on purpose — address, email, device — so
-    keeping it in its own table (and its own module) means the anonymity of the
-    counters stays a property of the code rather than of a convention.
+    This table is the counterpart to the two above, and it is kept separate from
+    them on purpose. It identifies people by design, recording address, email,
+    and device. Keeping it in its own table and its own module means that the
+    structure enforces the anonymity of the counters rather than a convention.
 
     `user_id` is a plain integer with no foreign key. An access log that
-    disappeared when the account did would not be an access log, and guest
-    cleanup deletes accounts on a schedule; `who` and `is_guest` are snapshots
-    for the same reason, so a row still reads correctly afterwards.
+    disappeared when the account did would not serve its purpose, and guest
+    cleanup deletes accounts on a schedule. `who` and `is_guest` are snapshots
+    for the same reason, so a row still reads correctly after the account is
+    gone.
     """
 
     __tablename__ = "access_events"
@@ -652,8 +675,9 @@ class AccessEvent(Base):
     # session | login | register | login_failed
     kind: Mapped[str] = mapped_column(String(16))
     user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    # Email for a registered account, "Guest #12" otherwise; for a failed
-    # sign-in, the address that was tried — which is the point of the row.
+    # The email for a registered account, or a label such as "Guest #12"
+    # otherwise. For a failed sign-in, this holds the address that was tried,
+    # which is the reason the row exists.
     who: Mapped[str] = mapped_column(String(320), default="")
     is_guest: Mapped[bool] = mapped_column(Boolean, default=False)
     ip: Mapped[str] = mapped_column(String(45), default="")   # 45 = max IPv6
@@ -662,19 +686,19 @@ class AccessEvent(Base):
     user_agent: Mapped[str] = mapped_column(String(200), default="")
 
 
-# Phase 14 — the floor under `tree.place_action`.
+# Phase 14: the fallback under `tree.place_action`.
 #
-# From SP2 a read selects on (branch_id, depth): a node written without them is
-# a node no page, no context build and no memory pass can see, and it fails by
-# disappearing rather than by raising. The writers all place their nodes
-# explicitly, but "all the writers remember" is a promise that has to hold for
-# every fixture, script and test written from here on, so the session enforces
-# it on the way to the database instead.
+# Since SP2, reads filter on `branch_id` and `depth`. A node written without
+# them is invisible to every page, every context build, and every memory pass.
+# The failure is silent, because nothing raises an error. Every current writer
+# places its nodes explicitly, but relying on that would also mean relying on
+# every fixture, script, and test written from now on. The session therefore
+# enforces the rule as rows travel to the database.
 #
-# Registered here rather than in tree.py so that importing the models is enough
-# to arm it — the invariant belongs to the rows, not to the module that usually
-# writes them. The import is deferred into the callback because tree.py imports
-# this module.
+# This listener is registered here rather than in tree.py so that importing the
+# models is enough to enable it. The invariant belongs to the rows, not to the
+# module that usually writes them. The import sits inside the callback because
+# tree.py imports this module.
 @event.listens_for(Session, "before_flush")
 def _place_new_nodes_on_the_tree(session, flush_context, instances):
     from . import tree

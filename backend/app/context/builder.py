@@ -10,11 +10,11 @@
     [Author's Note]          injected AUTHORS_NOTE_DEPTH actions before the end of history
     [Latest player action]   (+ script frontMemory right after it, Phase 4)
 
-Which components are present is AI Dungeon's design, above. The *order* they
-are laid out in is not: everything fixed is emitted first and everything that
-moves after the history, because prompt caching bills on a shared prefix and
-one mutable section high up re-prices the whole prompt under it. See the two
-"static block" / "live sections" comments in `build_context`.
+The list above comes from AI Dungeon's design. The order does not. This module
+emits every fixed section first and every changing section after the history,
+because prompt caching bills on a shared prefix. A section that changes near the
+top of the prompt re-prices everything below it. See the comments on the static
+block and the live sections in `build_context`.
 """
 
 import functools
@@ -30,33 +30,33 @@ CARD_BUDGET_SHARE = 0.4  # max share of non-reserved budget that story cards may
 NPC_WINDOW = 6  # actions of story searched for NPC trigger words ("in scene")
 SEPARATOR = "\n\n"
 
-# Output-length guidance. max_output_tokens is a hard wall the endpoint enforces
-# mid-sentence: hitting it truncates whatever is being written, and since the
-# state block is emitted last, it is what gets lost. Asking the model to land
-# just inside the wall keeps the cut from happening in the first place.
-LENGTH_HEADROOM = 50  # tokens held back from the cap for the state block itself
+# Output-length guidance. The endpoint enforces `max_output_tokens` as a hard
+# limit, and it truncates the reply mid-sentence when the model reaches it. The
+# state block is emitted last, so truncation removes it. Asking the model to
+# finish inside the limit prevents the truncation.
+LENGTH_HEADROOM = 50  # Tokens reserved from the cap for the state block.
 # Models cannot count their own tokens, but they do follow a word budget, so the
-# reserved budget is stated in words. ~0.75 words per token for English prose.
+# hint states a number of words. English prose averages 0.75 words per token.
 WORDS_PER_TOKEN = 0.75
-# A word budget is a suggestion the model routinely overshoots, and the cap it is
-# protecting is a hard wall — so aim 10% short of the real ceiling and let the
-# overshoot land in the slack instead of in the state block.
+# Models regularly exceed a word budget, and the cap it protects is a hard
+# limit. Aiming 10% below the real ceiling leaves room for that overshoot, so it
+# does not consume the state block.
 LENGTH_BUFFER = 0.90
-MIN_LENGTH_HINT_WORDS = 40  # below this the hint is noise; a tiny cap speaks for itself
-# A ceiling alone is a one-sided instruction, and models read it very differently:
-# a verbose one is held back by it, while a terse one has nothing to act on except
-# the "write only as much as the moment needs" clause and collapses to two
-# paragraphs. Stating a floor as well turns the guidance into a band, so the same
-# prompt lands in the same place regardless of which way the model leans. Set as a
-# share of the ceiling so the floor can never approach it.
+MIN_LENGTH_HINT_WORDS = 40  # Below this, the hint adds nothing useful.
+# A ceiling on its own gives one-sided guidance, and models respond to it
+# differently. A verbose model treats it as a limit. A terse model has only the
+# instruction to write as much as the moment needs, and it produces two
+# paragraphs. Adding a floor turns the guidance into a range, so the same prompt
+# produces a similar length from either model. The floor is a share of the
+# ceiling so that it can never approach the ceiling.
 LENGTH_FLOOR_SHARE = 0.35
-# Below this a floor is meaningless — at a tight cap a short turn is the correct
-# turn — and the tight-cap wording is the one measured to keep the state block
-# alive, so it is left exactly as it was.
+# Below this word count, a floor means nothing, because a short turn is the
+# correct turn at a tight cap. The wording used at a tight cap is also the
+# wording that was measured to preserve the state block, so it is unchanged.
 MIN_LENGTH_FLOOR_WORDS = 60
-# The floor exists to stop a collapse to two paragraphs, not to demand an essay:
-# at a 2400-token cap the share alone would ask for 555 words *minimum*. Past this
-# point a reader wanting more length can say so in the author's note.
+# The floor prevents a collapse to two paragraphs. It does not ask for an essay.
+# At a 2400-token cap, the share alone would request a minimum of 555 words. A
+# reader who wants longer turns can ask for them in the author's note.
 MAX_LENGTH_FLOOR_WORDS = 300
 
 
@@ -89,9 +89,9 @@ class Section:
 def length_hint(max_output_tokens: int, *, has_ws: bool) -> str:
     """Ask for a turn that fits inside the output cap, stated as a word budget.
 
-    Returns "" when the cap is too small to phrase usefully — the hint is a
-    suggestion the model can drift past, so it only earns its tokens when there
-    is enough room for the drift to still land inside the wall.
+    Returns an empty string when the cap is too small to state usefully. The
+    model can exceed the hint, so the hint earns its tokens only when there is
+    enough room for that overshoot to stay inside the cap.
     """
     words = int((max_output_tokens - LENGTH_HEADROOM) * WORDS_PER_TOKEN * LENGTH_BUFFER)
     if words < MIN_LENGTH_HINT_WORDS:
@@ -102,25 +102,27 @@ def length_hint(max_output_tokens: int, *, has_ws: bool) -> str:
         else " Bring the turn to a close well inside the limit rather than "
         "stopping mid-sentence."
     )
-    # Phrased as a ceiling, never as a budget. Measured against this model, "keep
-    # this turn under about N words" reads as a target to fill: it moved a 174-word
-    # average to 246 (n=5, every run longer than every unhinted one), i.e. the hint
-    # pushed turns toward the very wall it exists to keep them away from. Naming
-    # the number as a limit, plus saying a typical turn is far shorter, left the
-    # average at 170 while still rescuing the state block at tight caps.
+    # State the number as a ceiling, never as a budget. In measurements, the
+    # wording "keep this turn under about N words" read to the model as a target
+    # to fill. It raised the average from 174 words to 246 across five runs, and
+    # every hinted run was longer than every unhinted run. The hint therefore
+    # pushed turns toward the limit it exists to avoid. Naming the number as a
+    # limit, and adding that a typical turn is much shorter, held the average at
+    # 170 while still preserving the state block at tight caps.
     floor = min(int(words * LENGTH_FLOOR_SHARE), MAX_LENGTH_FLOOR_WORDS)
     if floor < MIN_LENGTH_FLOOR_WORDS:
         return (
             f"[Hard limit: this turn must not exceed {words} words. Write only as "
             f"much as the moment needs — a typical turn is much shorter.{tail}]"
         )
-    # Both numbers are bounds, and deliberately asymmetric ones: "must not exceed"
-    # for the wall the endpoint enforces, "should not stop short of" for the floor.
-    # Neither is a target, which is what the measurement above says matters. The
-    # "prefer the lower end" clause does the job the old "a typical turn is much
-    # shorter" line did — holding a verbose model off the wall — but now with a
-    # number under it, so a terse model reading the same clause lands on the floor
-    # instead of at forty words.
+    # Both numbers are bounds, and the wording is deliberately asymmetric. The
+    # ceiling uses "must not exceed", because the endpoint enforces it. The floor
+    # uses "should not stop short of". Neither reads as a target, which the
+    # measurement above shows is what matters. The clause that asks the model to
+    # prefer the lower end does the job the earlier wording did, which was to
+    # keep a verbose model away from the ceiling. It now has a number beneath it,
+    # so a terse model reading the same clause stops at the floor rather than at
+    # forty words.
     return (
         f"[Hard limit: this turn must not exceed {words} words, and it should not "
         f"stop short of about {floor}. Prefer the lower end of that range unless "
@@ -136,16 +138,19 @@ def _script_memory(adventure: models.Adventure) -> dict:
 
 
 def _history_text(action: models.Action) -> str:
-    """An AI turn as the model should see it in replayed history: its narration
-    with the state block it emitted re-appended (reconstructed from the stored
-    delta). The block is stripped before storage/UI, so without this every past
-    AI turn would look like one that emitted nothing — biasing the model, by
-    imitation, to stop emitting too. Player turns and blockless turns are
-    returned unchanged.
+    """Returns an AI turn as the model should see it in replayed history.
 
-    Reads `world_delta`, not `context_snapshot`: this runs for every action in
-    the replayed history, and the snapshot is deferred precisely so a turn
-    never drags the prompt archive out of the database."""
+    The result is the narration with its state block appended again,
+    reconstructed from the stored delta. The app strips that block before
+    storing and displaying the turn. Without this function, every past AI turn
+    would appear to have emitted no state, and the model would copy that pattern
+    and stop emitting state itself. Player turns and turns with no block pass
+    through unchanged.
+
+    This function reads `world_delta` rather than `context_snapshot`. It runs
+    for every action in the replayed history, and `context_snapshot` is deferred
+    so that a turn never loads the prompt archive from the database.
+    """
     text = action.text
     wd = action.world_delta if isinstance(action.world_delta, dict) else None
     if wd:
@@ -156,10 +161,13 @@ def _history_text(action: models.Action) -> str:
 
 
 def _visible_npcs(actions: list[models.Action], stat_schema: dict) -> dict[str, str]:
-    """Defined NPCs whose trigger words appear in the recent story — the ones
-    "in scene", so only their stats get injected. Maps npc id -> display name.
+    """Returns the NPCs whose trigger words appear in the recent story.
 
-    `actions` is already the last handful (see NPC_WINDOW)."""
+    These are the NPCs in scene, and the prompt includes stats for them only.
+    The result maps an NPC id to its display name.
+
+    `actions` holds only the most recent actions. See `NPC_WINDOW`.
+    """
     recent = SEPARATOR.join(a.text for a in actions).lower()
     visible: dict[str, str] = {}
     for npc_key, ndef in (stat_schema.get("npcs") or {}).items():
@@ -171,8 +179,11 @@ def _visible_npcs(actions: list[models.Action], stat_schema: dict) -> dict[str, 
 
 
 def _match_cards(cards: list[models.StoryCard], window_text: str) -> list[dict]:
-    """AI Dungeon trigger rules: case-insensitive, space-sensitive, partial-word
-    ('boat' triggers on 'boats'). Returns one record per card with the keyword that fired."""
+    """Returns one record per matched story card, naming the keyword that matched.
+
+    Matching follows AI Dungeon's rules. It ignores case, respects spaces, and
+    matches partial words, so "boat" matches "boats".
+    """
     haystack = window_text.lower()
     matched = []
     for card in cards:
@@ -196,20 +207,19 @@ def build_context(
     `exclude_action_id` omits one action from the story (see history.py)."""
     script_mem = _script_memory(adventure)
 
-    # ----- The static block: byte-for-byte the same prompt every turn -----
-    # The ordering here is a billing decision, not a stylistic one. Prompt
-    # caching matches a *prefix*: an endpoint reuses the prompt up to the first
-    # byte that differs from last time and no further. So one mutable section
-    # near the top re-prices everything below it, and what is below it is the
-    # story history, which is the bulk of the prompt. Anything that changes
-    # turn to turn therefore goes *after* the history, in the live sections —
-    # which is also where recency serves it best, the same reasoning that
-    # already puts EMIT_REMINDER last.
+    # ----- The static block, which is identical on every turn -----
+    # This ordering exists to reduce cost. Prompt caching matches a prefix. The
+    # endpoint reuses the prompt up to the first byte that differs from the
+    # previous request, and no further. A section that changes near the top
+    # therefore re-prices everything below it, and what sits below it is the
+    # story history, which is most of the prompt. Sections that change from turn
+    # to turn go after the history, among the live sections. Placing them there
+    # also gives them the most recency, which is why `EMIT_REMINDER` goes last.
     system_sections: list[Section] = [Section("narrator", settings.narrator_prompt.strip())]
 
-    # RPG world state (Phase 12): how to report changes. The live values are a
-    # live section below; the schema-derived guide and the emit rule are fixed
-    # for as long as the scenario is.
+    # RPG world state (Phase 12): the instructions for reporting changes. The
+    # live values go into a live section below. The guide derived from the
+    # schema and the emit rule do not change while the scenario is unchanged.
     stat_schema = adventure.scenario.stat_schema if adventure.scenario else None
     has_ws = worldstate.has_schema(stat_schema)
     if has_ws:
@@ -227,13 +237,14 @@ def build_context(
             Section("plot_essentials", f"Plot essentials:\n{adventure.memory.strip()}")
         )
 
-    # ----- Live sections: everything that moves, built here, placed after the
-    # history further down. Ordered least-volatile first, so a turn that
-    # changes only the fastest-moving one keeps the others cached too: the
-    # summary is rewritten every few turns, lore turns over with the scene, the
-    # retrieved memories change on most turns, the stat values on nearly all.
-    # `world_lore` joins them below — it is the history window that triggers
-    # the cards, so it cannot be known yet.
+    # ----- Live sections, which hold everything that changes -----
+    # This code builds them here and places them after the history further down.
+    # They are ordered from least to most volatile, so a turn that changes only
+    # the fastest-moving section leaves the others cached. The summary is
+    # rewritten every few turns. Lore changes with the scene. The retrieved
+    # memories change on most turns, and the stat values change on nearly every
+    # turn. `world_lore` is added below, because the history window determines
+    # which cards trigger and that window is not known yet.
     summary_section = (
         Section("story_summary", f"Story summary:\n{adventure.story_summary.strip()}")
         if adventure.story_summary.strip()
@@ -265,9 +276,9 @@ def build_context(
 
     length_note = length_hint(settings.max_output_tokens, has_ws=has_ws)
 
-    # The live sections moved below the history but they are still in the
-    # prompt, so they are still reserved against the budget. (`world_lore` is
-    # not: it is budgeted out of `available` further down, as it always was.)
+    # The live sections sit below the history, but they are still part of the
+    # prompt, so they still count against the budget. `world_lore` is the
+    # exception, because the code below budgets it out of `available`.
     reserved = (
         sum(s.tokens for s in system_sections)
         + sum(
@@ -282,10 +293,11 @@ def build_context(
     )
     available = max(256, settings.context_token_budget - reserved)
 
-    # Only the newest actions can reach the prompt: everything below is either
-    # truncated to `available` tokens or stops at the budget. Fetch a window
-    # that is provably larger than that and no more — a long adventure would
-    # otherwise read its entire history every turn to use the tail of it.
+    # Only the newest actions can reach the prompt, because the code below
+    # either truncates the text to `available` tokens or stops at the budget.
+    # Fetch a window that is provably larger than that and no larger. Otherwise
+    # a long adventure reads its whole history on every turn and uses only the
+    # end of it.
     actions = history.window_covering(
         adventure, available, count_tokens, exclude_action_id
     )
@@ -319,8 +331,8 @@ def build_context(
     spent = 0
     oldest_truncated = False
     for action in reversed(actions):
-        # Budget on the text as it will actually appear — with the re-attached
-        # state block (B) when this adventure tracks world state.
+        # Budget against the text as it appears in the prompt, which includes
+        # the state block when this adventure tracks world state.
         rendered = _history_text(action) if has_ws else action.text
         tokens = count_tokens(rendered) + count_tokens(SEPARATOR)
         if spent + tokens > history_budget:
@@ -339,9 +351,9 @@ def build_context(
         spent += tokens
     included_actions.reverse()
 
-    # ----- Assemble story text with author's note near the end -----
-    # Re-attach each AI turn's state block (stripped before storage) so recent
-    # history shows the model its own emit pattern to imitate.
+    # ----- Assemble the story text, with the author's note near the end -----
+    # Append each AI turn's state block again. The app strips it before storage,
+    # and the recent history has to show the model the pattern to follow.
     texts = [_history_text(a) if has_ws else a.text for a in included_actions]
     note_sections: list[Section] = []
     if authors_note:
@@ -353,21 +365,22 @@ def build_context(
         note_sections.append(Section("recent_history", SEPARATOR.join(after)))
     else:
         note_sections.append(Section("history", SEPARATOR.join(texts)))
-    # The live sections, least volatile first (see where they are built). They
-    # sit below the history so the history caches, and above the tail so the
-    # three sections that are last for a reason stay last.
+    # The live sections, ordered from least to most volatile. See the comment
+    # where they are built. They go below the history so that the history stays
+    # cached, and above the final sections so that those stay last.
     for live in (summary_section, lore_section, memories_section, world_state_section):
         if live is not None:
             note_sections.append(live)
     if front_memory:
         note_sections.append(Section("front_memory", front_memory))
-    # Sits just above the emit reminder, which keeps the strongest recency slot:
-    # the length budget is about the narration, the reminder about the block that
-    # comes after it, so this is also the order the model has to act in.
+    # Place the length hint just above the emit reminder, which keeps the last
+    # position. The length budget applies to the narration, and the reminder
+    # applies to the block that follows it, so this is also the order in which
+    # the model acts.
     note_sections.append(Section("length_hint", length_note))
     if has_ws:
-        # Terminal reminder: the emit rule sits up in the system block, far from
-        # where the model generates; repeat it last, in the strongest recency slot.
+        # The emit rule sits in the system block, far from where the model
+        # generates text, so repeat it last where it has the most effect.
         note_sections.append(Section("world_state_reminder", worldstate.EMIT_REMINDER))
 
     story_sections = [s for s in note_sections if s.text]
@@ -388,8 +401,9 @@ def build_context(
         "memories": memory_bank,
         "history": {
             "included": len(included_actions),
-            # The whole story, not just the window fetched above — Insights
-            # reports "N of M actions included" and M is the real total.
+            # The count covers the whole story rather than the window fetched
+            # above. Insights reports how many of the total actions it
+            # included, so this number must be the real total.
             "total": history.count(adventure, exclude_action_id),
             "oldest_truncated": oldest_truncated,
         },

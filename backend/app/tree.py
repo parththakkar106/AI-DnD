@@ -1,25 +1,24 @@
-"""Phase 14 — putting nodes on the story tree.
+"""Phase 14: writes nodes onto the story tree.
 
-The write half of the tree. Which branch a new node hangs off, what depth it
-gets, and where an adventure's head points all live here, because every one of
-them is the kind of thing that is silently wrong when it is spread across four
-call sites: a node written without a branch is a node no read can see, and it
-fails by disappearing rather than by raising.
+This module is the write half of the tree. It decides which branch a new node
+goes on, what depth the node gets, and where the adventure's head points. All
+three decisions live here because a mistake in any of them is silent. A node
+written without a branch is invisible to every read, and nothing raises an
+error.
 
-The read half — the lineage clause that turns a branch into "this story" —
-lives beside it in `context/lineage.py`.
+The read half is `context/lineage.py`. It turns a branch into the set of nodes
+that make up one story.
 
-Until forking ships there is exactly one branch per adventure and `depth` is
-the number `index` already held, so everything in this module is bookkeeping
-that changes nothing observable. That is the point: by the time a read depends
-on these columns, every row has them — including the rows written between the
-two deploys, which no migration will ever visit.
+Until forking ships, each adventure has one branch and `depth` mirrors `index`,
+so nothing here changes observable behavior yet. That is intentional. By the
+time reads depend on these columns, every row already has them, including the
+rows written between the two deploys that no migration visits.
 
-SP2 added `place_new_nodes`, which the session calls on every flush. Wiring the
-call sites was enough while nothing read the columns; now that reads select on
-them, "every writer remembers" is a promise that has to hold for every fixture,
-script and test ever written too, and its breach is a story quietly missing
-turns. So the invariant is enforced at the flush instead of asked for.
+SP2 added `place_new_nodes`, which runs on every flush. Wiring up individual
+call sites worked while nothing read the columns. Now that reads filter on them,
+relying on each writer to remember would also mean relying on every fixture,
+script, and test. A missed call produces a story with missing turns, so the
+flush enforces the rule instead.
 """
 
 import copy
@@ -30,18 +29,19 @@ from sqlalchemy.orm import Session
 from . import models
 from .context import lineage
 
-# The head depth of an adventure with no actions. Keeps "the next node goes at
-# head_depth + 1" true with no special case, and mirrors migrations.NO_DEPTH.
+# Head depth of an adventure that has no actions. Using -1 keeps the rule "the
+# next node goes at head_depth + 1" true without a special case. This matches
+# `migrations.NO_DEPTH`.
 NO_DEPTH = -1
 
 
 def root_branch(db: Session, adventure: models.Adventure) -> models.Branch:
-    """The adventure's root branch, created on first use.
+    """Returns the adventure's root branch, creating it on first use.
 
-    Get-or-create rather than created-with-the-adventure, because the adventures
-    that need one most are the ones that already exist: a bundle being imported,
-    a fixture built straight through the ORM, or a database whose migration ran
-    before this code shipped.
+    This function gets or creates the branch instead of creating it alongside
+    the adventure. The adventures that need a root branch are usually ones that
+    already exist: an imported bundle, a fixture built through the ORM, or a
+    database migrated before this code shipped.
     """
     branch = (
         db.query(models.Branch)
@@ -54,11 +54,10 @@ def root_branch(db: Session, adventure: models.Adventure) -> models.Branch:
     )
     if branch is not None:
         return branch
-    # Inserted through Core rather than through the unit of work, because this
-    # also runs from `place_new_nodes` inside a flush, and a nested ORM flush
-    # inside a flush raises. Same transaction either way, so it rolls back with
-    # everything else. The lineage names the branch's own id, so it takes a
-    # second statement — once per adventure, ever.
+    # Use a Core insert instead of the ORM. `place_new_nodes` can call this
+    # during a flush, and a nested ORM flush raises an error. Both paths share
+    # one transaction. The lineage refers to the branch's own id, so it needs a
+    # second statement, which runs once per adventure.
     new_id = db.execute(
         insert(models.Branch).values(
             adventure_id=adventure.id,
@@ -77,52 +76,50 @@ def root_branch(db: Session, adventure: models.Adventure) -> models.Branch:
 
 
 def head_branch(db: Session, adventure: models.Adventure) -> models.Branch:
-    """The branch new nodes are played onto."""
+    """Returns the branch that new nodes are played onto."""
     if adventure.head_branch_id is not None:
         branch = db.get(models.Branch, adventure.head_branch_id)
         if branch is not None:
             return branch
-        # A head naming a branch that is gone is a bug somewhere else. Recover
-        # onto the root instead of refusing to play — the alternative is an
-        # adventure nobody can add to.
+        # The head points at a branch that no longer exists, which means a bug
+        # elsewhere. Fall back to the root instead of refusing to play,
+        # otherwise the adventure becomes unusable.
     branch = root_branch(db, adventure)
     adventure.head_branch_id = branch.id
     return branch
 
 
 def fork(db: Session, adventure: models.Adventure, node: models.Action) -> models.Branch:
-    """Take the story down `node`, on a branch of its own.
+    """Moves `node` onto a new branch so the story can continue from it.
 
-    `node` is a discarded attempt at a turn the story has already moved past.
-    Making it live where it stands would orphan every turn played after it —
-    they were written as a continuation of the attempt that won — so it moves
-    onto a new branch instead, forked from the depth just before it. The parent
-    keeps its story, complete and untouched; the new branch borrows everything
-    up to the fork and owns exactly one node.
+    `node` is a discarded attempt at a turn that the story has already moved
+    past. Making it live where it stands would orphan every turn played after
+    it, because those turns continue the attempt that won. Instead, `node` moves
+    to a new branch that forks from the depth just before it. The parent branch
+    keeps its story unchanged. The new branch inherits everything up to the fork
+    and owns this one node.
 
-    **One row is inserted and one row is moved. Nothing is copied.** That is
-    the whole claim of the design: a fork costs a `branches` row and the
-    ancestry cached on it, whatever the story behind it is worth.
+    This function inserts one row and moves one row. It copies nothing, so a
+    fork costs one `branches` row plus the ancestry cached on it, regardless of
+    how long the story is.
 
-    Nothing derived moves with it, and that is not an omission. A memory hangs
-    off the coordinate its block ends on, and what it describes is whatever
-    attempt was live there — which stays on the parent. From the new branch it
-    is simply out of range: the lineage caps the parent at `fork_depth`, so the
-    memory sits one depth past the border and neither the retrieval clause nor
-    the cursors can see it. The block is summarized again, from the text this
-    branch actually tells, without a line of bookkeeping.
+    Derived data stays on the parent, by design. A memory attaches to the node
+    its block ends on, and that node does not move. From the new branch, the
+    lineage caps the parent at `fork_depth`, so the memory sits one depth past
+    the border. Neither retrieval nor the cursors can see it, and the block is
+    summarized again from the text this branch contains.
 
-    One thing does stay behind: the attempts this node leaves. They are still
-    takes on the parent's turn, and one of them has to be the parent's story —
-    the oldest, so the line the parent keeps is the one it was written on.
+    The other attempts at this turn also stay on the parent, because they are
+    still takes on the parent's turn. If none of them is live, the oldest one
+    becomes live, so the parent keeps the line it was written on.
     """
     parent = db.get(models.Branch, node.branch_id)
     if parent is None or node.depth is None:
         raise ValueError("cannot fork from a node that is not on a branch")
     fork_depth = node.depth - 1
-    # The attempts this node is leaving, read *before* it moves. The session
-    # does not autoflush, so asking afterwards would still find the node here
-    # and renumber it back into the group it just left.
+    # Read the sibling attempts before moving the node. The session does not
+    # autoflush, so a later read still finds the node here and renumbers it back
+    # into the group it just left.
     remaining = [
         row for row in db.query(models.Action)
         .filter(
@@ -134,17 +131,17 @@ def fork(db: Session, adventure: models.Adventure, node: models.Action) -> model
         .all()
         if row is not node
     ]
-    # The parent's ancestry, every entry capped at the fork. Only the first can
-    # actually move — an older entry is already capped at the fork depth of the
-    # branch beneath it, which is shallower than any node on the parent — but
-    # capping them all says the invariant instead of relying on it.
+    # The parent's ancestry, with every entry capped at the fork depth. Only the
+    # first entry can change in practice, because older entries are already
+    # capped at a shallower depth. Capping all of them states the invariant
+    # directly.
     inherited = [
         [branch_id, fork_depth if cap is None else min(cap, fork_depth)]
         for branch_id, cap in lineage.entries_of(parent)
     ]
-    # Inserted through Core, and its lineage written second, for the reason
-    # `root_branch` spells out: this can run inside a flush, and the lineage
-    # names the row's own id.
+    # Core insert with the lineage written second, for the reason given in
+    # `root_branch`. This code can run inside a flush, and the lineage refers to
+    # the new row's own id.
     new_id = db.execute(
         insert(models.Branch).values(
             adventure_id=adventure.id,
@@ -180,26 +177,29 @@ def fork(db: Session, adventure: models.Adventure, node: models.Action) -> model
 def branch_at(
     db: Session, adventure: models.Adventure, fork_depth: int
 ) -> models.Branch:
-    """An empty branch leaving the path being read at `fork_depth`.
+    """Creates an empty branch that leaves the current path at `fork_depth`.
 
-    `fork` moves a node that already exists onto a line of its own. This is the
-    same branch with nothing in it yet, for the case where the take that will
-    live there has not been written: the player asking for another take of a
-    turn the story has moved past (SP9). The head lands at `fork_depth`, so the
-    next node written is the new take, at the same depth as the one it is a take
-    of, with the same parent — `place_action` resolves that from the path, and
-    the path now ends at exactly the node the original hangs off.
+    `fork` moves an existing node onto its own branch. This function creates the
+    same kind of branch with no nodes on it yet, for the case where the take
+    that will live there does not exist. A player asking for another take of a
+    turn the story has moved past reaches this path (SP9).
 
-    The line being left is not touched at all. It keeps its node at that depth,
-    it keeps that node live, and it keeps everything played after it.
+    The head lands at `fork_depth`, so the next node written becomes the new
+    take. That node gets the same depth as the original and the same parent,
+    which `place_action` derives from the path.
+
+    This function does not modify the branch being left. That branch keeps its
+    node at that depth, the node stays live, and every turn played after it
+    stays in place.
     """
     parent = head_branch(db, adventure)
     inherited = [
         [branch_id, fork_depth if cap is None else min(cap, fork_depth)]
         for branch_id, cap in lineage.entries_of(parent)
     ]
-    # Core insert with the lineage written second, for the reason `root_branch`
-    # spells out: this can run inside a flush, and the lineage names its own id.
+    # Core insert with the lineage written second, for the reason given in
+    # `root_branch`. This code can run inside a flush, and the lineage refers to
+    # the new row's own id.
     new_id = db.execute(
         insert(models.Branch).values(
             adventure_id=adventure.id,
@@ -226,20 +226,20 @@ def place_action(
     branch: models.Branch | None = None,
     parent: models.Action | None = None,
 ) -> models.Branch:
-    """Put `action` on the head branch and move the head to it.
+    """Puts `action` on the head branch and moves the head to it.
 
-    `depth` follows `index` while the two coexist. They have to agree: a read
-    ordering by depth and a cursor counting in index space are describing the
-    same story, and SP2 swaps one for the other under everything at once.
+    `depth` follows `index` while both columns exist. The two must agree,
+    because a read that orders by depth and a cursor that counts in index space
+    describe the same story, and SP2 swaps one for the other in a single step.
 
-    `branch` is the head, already resolved, for a caller placing several nodes
-    at once — see `place_new_nodes` for why that is worth a parameter.
+    Pass `branch` when you have already resolved the head and are placing
+    several nodes at once. See `place_new_nodes` for why that is worth doing.
 
-    `parent` is the take this node was played after (SP9), and is what groups a
-    turn's takes. Resolved from the path when the caller does not say, which is
-    the honest default: a node written now follows whatever the player is
-    reading now. A caller placing several nodes in one flush should chain it —
-    the second node's parent is the first, and the database has not seen either.
+    `parent` is the take that this node was played after (SP9), and it is what
+    groups the takes of one turn. If you omit it, this function derives it from
+    the path, which is the correct default: a node written now follows the story
+    the player is reading now. If you place several nodes in one flush, chain
+    `parent` explicitly, because the database has not seen any of them yet.
     """
     branch = branch or head_branch(db, adventure)
     action.branch_id = branch.id
@@ -258,12 +258,12 @@ def place_action(
 def _preceding_id(
     db: Session, adventure: models.Adventure, branch: models.Branch, depth: int
 ) -> int | None:
-    """The id of the live node one step back along `branch`'s path.
+    """Returns the id of the live node one step back along `branch`'s path.
 
-    Asked of the whole lineage rather than of `branch` alone, because a branch
-    borrows the story before its fork point: the node in front of a forked
-    branch's first turn lives on an ancestor, and that is exactly the parent a
-    pager needs to find its siblings through.
+    The query searches the whole lineage instead of `branch` alone, because a
+    branch inherits the story before its fork point. The node in front of a
+    forked branch's first turn lives on an ancestor, and that node is the parent
+    a pager needs in order to find siblings.
     """
     path = lineage.Path(lineage.entries_of(branch))
     return (
@@ -286,19 +286,19 @@ def place_memory(
     memory: models.Memory,
     branch: models.Branch | None = None,
 ) -> models.Branch:
-    """Attach a memory to the node it belongs to.
+    """Attaches a memory to the node it belongs to.
 
-    `source_end` is the index of the last action the memory summarises, which is
-    that node's depth. A hand-written memory summarises nothing, so it takes the
-    head instead: **the story you were reading when you wrote it.**
+    `source_end` is the index of the last action the memory summarizes, which is
+    that node's depth. A hand-written memory summarizes no actions, so it uses
+    the head instead. That records the story the author was reading at the time.
 
-    That anchor is what makes a memory mean one thing (SP7). Before it, a
-    hand-written memory kept a NULL depth and "belonged to the adventure rather
-    than to a path" — which sounded harmless and meant it followed you onto
-    branches whose story it did not describe, because a NULL cannot be capped at
-    a fork. Every memory now sits at a coordinate, so "is this part of the story
-    I am reading?" has one answer for every row in the bank, and it is the same
-    answer the lineage already gives for nodes.
+    Giving every memory a coordinate is what makes its scope unambiguous (SP7).
+    Before SP7, hand-written memories had a NULL depth and belonged to the
+    adventure rather than to a path. A fork cannot cap a NULL, so those memories
+    followed the reader onto branches whose story they did not describe. Now the
+    question "is this memory part of the story I am reading?" has one answer for
+    every row in the bank, and it is the same answer the lineage gives for
+    nodes.
     """
     branch = branch or head_branch(db, adventure)
     memory.branch_id = branch.id
@@ -311,35 +311,37 @@ def place_memory(
 
 
 def attach_memory(memory: models.Memory, node: models.Action) -> None:
-    """Hang a memory off the node it was derived from.
+    """Attaches a memory to the node it was derived from.
 
-    The general rule, of which the memory bank is the first instance: anything
-    derived from the story attaches to the node that produced it, and is then
-    visible from exactly the paths that node is on. A fork inherits its
-    ancestors' memories because it inherits their nodes — nothing is copied and
-    nothing is recreated — and a memory made on a sibling is invisible here
-    because that node is not on this path.
+    This follows the general rule for derived data, and the memory bank is the
+    first case of it. Anything derived from the story attaches to the node that
+    produced it, and is then visible from exactly the paths that contain that
+    node. A fork inherits its ancestors' memories because it inherits their
+    nodes, so nothing is copied. A memory made on a sibling branch is not
+    visible, because that node is not on this path.
 
-    Not `place_memory`: this takes the branch from the *node*, which is not
-    always the head. A block of story can end before the fork the current
-    branch was made at, and the memory belongs where the ground is.
+    This function differs from `place_memory` because it takes the branch from
+    `node`, which is not always the head. A block of story can end before the
+    fork that created the current branch, and the memory belongs where that
+    block is.
     """
     memory.branch_id = node.branch_id
     memory.depth = node.depth
 
 
 def stamp_outcome(adventure: models.Adventure, action: models.Action) -> None:
-    """Give a node the state it left behind, if its writer did not.
+    """Records the state a node left behind, if the writer did not record it.
 
-    The floor under `attempts.snapshot_outcome`, and it is here for the same
-    reason `place_action` has one: from SP4 a node with no outcome is a node
-    undo and retry cannot roll back past, and it fails by leaving the
-    scoreboard where it was rather than by raising. The turn engine records the
-    outcome itself and this skips those rows; what it catches is every fixture,
-    script and import that writes a story straight through the ORM.
+    This is the fallback under `attempts.snapshot_outcome`, and it exists for
+    the same reason `place_action` has one. Since SP4, undo and retry cannot
+    roll back past a node that has no outcome, and the failure is silent: the
+    script state and world state stay where they were. The turn engine records
+    the outcome itself, so this function skips those rows. It catches fixtures,
+    scripts, and imports that write a story directly through the ORM.
 
-    What it writes is the truth as of the flush: a writer that changes no state
-    between two nodes leaves the same state behind both of them.
+    The values written are the state as of the flush. That is correct, because a
+    writer that changes no state between two nodes leaves the same state behind
+    both of them.
     """
     if action.state_after is None:
         state = adventure.script_state if isinstance(adventure.script_state, dict) else {}
@@ -350,25 +352,25 @@ def stamp_outcome(adventure: models.Adventure, action: models.Action) -> None:
 
 
 def place_new_nodes(session: Session) -> None:
-    """Place every unplaced node about to be inserted. Runs on every flush.
+    """Places every unplaced node that is about to be inserted.
 
-    The call sites still call `place_action` / `place_memory` themselves, and
-    should: a node placed at the call site is placed *before* the code around
-    it reads the row back, and the explicit call is what makes the ordering
-    visible. This is the floor under them — a fixture built straight through
-    the ORM, a script, a test, or a call site added next year gets a branch
-    without knowing the tree exists.
+    This runs on every flush. Call sites still call `place_action` and
+    `place_memory` directly, and they should. Placing a node at the call site
+    happens before the surrounding code reads the row back, and the explicit
+    call makes that ordering visible. This function is the fallback under those
+    calls, so a fixture, script, test, or a call site added later still gets a
+    branch without knowing the tree exists.
 
-    Nodes whose adventure has not been inserted yet are left alone: there is no
-    id to hang a branch off, and an Action needs `adventure_id` to be written
-    at all, so the case does not arise from any writer we have.
+    Nodes whose adventure has not been inserted yet are skipped, because there
+    is no id to attach a branch to. This case does not arise in practice, since
+    an Action needs `adventure_id` before it can be written at all.
 
-    The head is resolved once per adventure per flush, and held in `heads` for
-    the length of the call. That is not just saving a dictionary lookup: the
-    identity map holds *weak* references, so a branch row nobody keeps a strong
-    reference to is collected between two nodes and read back from the database
-    for the next one. Resolving per node turned a fixture writing two hundred
-    actions in one flush into two hundred SELECTs on `branches`.
+    The head is resolved once per adventure per flush and cached in `heads`.
+    This saves more than a dictionary lookup. The identity map holds weak
+    references, so a branch row that nothing else refers to is collected between
+    two nodes and read from the database again for the next one. Resolving the
+    head per node turned a fixture that wrote 200 actions in one flush into 200
+    separate queries.
     """
     heads: dict[int, models.Branch] = {}
     for obj in list(session.new):
@@ -394,11 +396,11 @@ def place_new_nodes(session: Session) -> None:
 
 
 def refresh_head(db: Session, adventure: models.Adventure) -> None:
-    """Re-derive the head depth after nodes were removed (undo, delete).
+    """Recomputes the head depth after nodes are removed by undo or delete.
 
-    A branch with nothing on it sits at its fork point, because that is the last
-    node its story contains — borrowed from the parent, but the tip all the
-    same. A root branch with nothing on it has no story at all.
+    A branch with no nodes of its own sits at its fork point, because that is
+    the last node its story contains. The node is inherited from the parent, but
+    it is still the tip. A root branch with no nodes has no story at all.
     """
     branch = head_branch(db, adventure)
     tip = (
