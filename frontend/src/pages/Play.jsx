@@ -1030,7 +1030,7 @@ function TakePager({
       <span className="take-count" aria-live="polite">{current + 1}/{count}</span>
       <button type="button" disabled={busy || loading || current === count - 1}
         onClick={() => step(1)} title="The take after this one" aria-label="Next take">›</button>
-      {preview && (
+      {preview && !preview.written && (
         <span className="take-note">write below to keep this one</span>
       )}
     </div>
@@ -1539,6 +1539,20 @@ export default function Play() {
   // decision. It becomes one when something is written below it, and that is
   // what `after_id` carries.
   const [preview, setPreview] = useState(null)
+  // The take a turn was just written below, held from the moment Send is
+  // pressed until the re-read lands.
+  //
+  // Writing below a take is the one moment the server IS told (`after_id`), and
+  // it obeys immediately — the take is made live before a single token is
+  // generated. The transcript only learns that from the resync afterwards, so
+  // dropping the preview at Send time put the *replaced* take back on screen
+  // for the whole length of the turn, and left it there for good if the resync
+  // never landed (a failed turn, a lost connection, a closed tab) — the story
+  // read one way and reloading the page read another.
+  //
+  // So the text stays pinned to what was chosen. Unlike `preview` it does not
+  // truncate the transcript below it: the turn being played goes there.
+  const [pinned, setPinned] = useState(null)
   // Bumped when a take's stored text changes under the pagers, which cache the
   // list they fetched. Nothing else invalidates it: a take is added by playing
   // a turn, and that re-reads the whole window anyway.
@@ -1614,6 +1628,7 @@ export default function Play() {
   const adoptWindow = useCallback((page) => {
     pinnedRef.current = true
     setPreview(null)
+    setPinned(null)
     setActions(page.actions)
     setTotal(page.total)
     setHasMore(page.has_more)
@@ -1784,6 +1799,10 @@ export default function Play() {
         if (after_id) await resync()
       }
     })
+    // Keep the chosen take on screen while the turn runs. The server has
+    // already been told to stand on it, so this is not optimism — it is the
+    // transcript catching up with a decision that is already made.
+    if (preview) setPinned({ ...preview, written: true })
     setPreview(null)
     if (type === 'continue') {
       // Continue never consumes typed text — leave it in the box.
@@ -1820,6 +1839,7 @@ export default function Play() {
   async function undo() {
     setToast(null)
     setPreview(null)
+    setPinned(null)
     try {
       // A window, not the whole story — undo is the action most likely to be
       // repeated several times running, so it must not re-fetch everything.
@@ -1914,6 +1934,9 @@ export default function Play() {
   async function resync() {
     try {
       const adv = await api.getAdventure(id)
+      // The window now says which take is live, so the pin has done its job.
+      // Left in place if this read fails, which is the whole point of it.
+      setPinned(null)
       setActions(adv.actions)
       setTotal(adv.action_count ?? adv.actions.length)
       setHasMore(adv.actions.length < (adv.action_count ?? adv.actions.length))
@@ -2002,6 +2025,11 @@ export default function Play() {
             // Non-null while the reader is browsing an older attempt of this
             // message without making it active (earlier turns only).
             const previewing = preview?.actionId === action.id ? preview : null
+            // The take this row was written below, still on screen because the
+            // re-read has not landed yet. Same text override as a preview, but
+            // it never truncates the story under it — see `pinned`.
+            const shown = previewing
+              || (pinned?.actionId === action.id ? pinned : null)
 
             // The editor stands in for the row it was opened from. That row is
             // keyed by the live node, so an edit on a take the pager is parked
@@ -2026,12 +2054,12 @@ export default function Play() {
               <Fragment key={action.id}>
                 {sceneBreak && <div className="scene-break" aria-hidden="true">❖</div>}
                 <div className={`action ${isPlayer ? 'player' : ''}${opening ? ' opening' : ''}`}>
-                  <ReasoningBlock text={previewing ? previewing.reasoning : action.reasoning} />
-                  {renderEmphasis(previewing ? previewing.text : action.text)}
+                  <ReasoningBlock text={shown ? shown.reasoning : action.reasoning} />
+                  {renderEmphasis(shown ? shown.text : action.text)}
                   {/* The chips describe the *active* attempt's state changes,
-                      which a previewed one didn't make — so they're hidden
+                      which the take on screen didn't make — so they're hidden
                       rather than shown against the wrong text. */}
-                  {action.type === 'ai' && !previewing && (
+                  {action.type === 'ai' && !shown && (
                     <StateChangeChips changes={action.world_changes} />
                   )}
                   {/* On every kind of node, not only the AI's: a player's own
@@ -2042,7 +2070,9 @@ export default function Play() {
                     advId={id}
                     action={action}
                     busy={busy}
-                    preview={previewing}
+                    // The pinned take counts as the one on screen, so the
+                    // ordinal matches the words above it.
+                    preview={shown}
                     takesKey={takesKey}
                     onPreview={setPreview}
                     onSwitchedBranch={adoptWindow}
