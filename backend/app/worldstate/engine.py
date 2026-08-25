@@ -1,23 +1,25 @@
 """RPG world-state engine.
 
-The scenario carries a `stat_schema` (the template: which stats exist, their
-bands and rules, and the milestones). An adventure carries a live `world_state`
-instantiated from it. Each turn the AI proposes a *delta* (only what changed);
-`apply_delta` is the referee — it clamps to min/max, caps per-turn change,
-enforces cooldowns, and marks milestones sticky.
+The scenario carries a `stat_schema`, which is the template: which stats exist,
+their bands and rules, and the milestones. An adventure carries a live
+`world_state` instantiated from it. Each turn the AI proposes a delta holding
+only what changed. `apply_delta` decides what the delta is allowed to do. It
+clamps values to min and max, caps the change per turn, enforces cooldowns, and
+makes milestones sticky.
 
-Nothing here ever raises on bad AI output: a malformed delta yields `{}` and the
-turn continues, exactly like a broken script never breaks a turn.
+Nothing here raises on bad AI output. A malformed delta returns `{}` and the
+turn continues, the same way a broken script never breaks a turn.
 """
 
 import copy
 import json
 import re
 
-# stat_schema top-level sections that hold stat definitions.
+# The `stat_schema` top-level sections that hold stat definitions.
 STAT_SECTIONS = ("world", "player")
 
-# Appended once to the system prompt so the model knows how to report changes.
+# Appended once to the system prompt, so the model knows how to report
+# changes.
 EMIT_RULE = (
     "You maintain a numeric world state. Treat your own narration as authoritative: "
     "whenever what you write implies a change to any tracked value — health or resources "
@@ -45,8 +47,8 @@ EMIT_RULE = (
     '"player.outfit": "torn traveling cloak"}\n```'
 )
 
-# Short terminal reminder placed at the very end of the prompt (strongest
-# recency position) so the emit rule is fresh right where the model generates.
+# A short reminder placed at the end of the prompt, which is the strongest
+# recency position, so the emit rule is close to where the model generates.
 EMIT_REMINDER = (
     "[Reminder: end your reply with a ```state block of the changes this turn "
     "(deltas only), or omit it if truly nothing changed.]"
@@ -54,9 +56,12 @@ EMIT_REMINDER = (
 
 
 def render_delta_block(delta: dict) -> str:
-    """Render a stored delta back into the fenced `state` block the AI emitted,
-    for re-injecting past turns into context so the model imitates the format.
-    Empty delta -> empty string (the turn legitimately changed nothing)."""
+    """Renders a stored delta back into the fenced `state` block the AI emitted.
+
+    The caller replays past turns into the context with this, so the model copies
+    the format. An empty delta returns an empty string, which means the turn
+    changed nothing.
+    """
     if not isinstance(delta, dict) or not delta:
         return ""
     return "```state\n" + json.dumps(delta, ensure_ascii=False) + "\n```"
@@ -68,7 +73,7 @@ _TRAILING_RE = re.compile(r"(\{[^{}]*\})\s*$", re.DOTALL)
 
 
 def has_schema(stat_schema: dict | None) -> bool:
-    """True when a scenario actually defines an RPG layer."""
+    """Returns `True` when a scenario defines an RPG layer."""
     if not isinstance(stat_schema, dict):
         return False
     return any(
@@ -83,8 +88,11 @@ def npc_name(ndef: dict, key: str) -> str:
 
 
 def npc_triggers(ndef: dict, key: str) -> list[str]:
-    """Lower-cased trigger words for detecting an NPC in scene: its `keys`
-    field, falling back to its display name."""
+    """Returns the lowercased trigger words that detect an NPC in a scene.
+
+    The words come from the NPC's `keys` field, or from its display name when
+    `keys` is empty.
+    """
     raw = ndef.get("keys") or npc_name(ndef, key)
     return [k.strip().lower() for k in str(raw).split(",") if k.strip()]
 
@@ -98,7 +106,7 @@ def _initials(defs: dict) -> dict:
 
 
 def instantiate(stat_schema: dict | None) -> dict:
-    """Build a fresh live world_state from a schema (initial values only)."""
+    """Builds a fresh live `world_state` from a schema, using initial values only."""
     if not has_schema(stat_schema):
         return {}
     ws: dict = {}
@@ -121,24 +129,26 @@ def instantiate(stat_schema: dict | None) -> dict:
 
 
 def reconcile(world_state: dict | None, stat_schema: dict | None) -> tuple[dict, dict]:
-    """Bring a live world_state back in line with an edited schema.
+    """Brings a live `world_state` back in line with an edited schema.
 
-    Deliberately NOT `instantiate`: a value the schema still defines keeps
-    whatever it has reached in play (re-instantiating would heal the player to
-    full and wipe their milestones). Only the difference is applied — stats,
-    NPCs, flags and milestones the schema gained appear at their initial value,
-    and ones it no longer defines are dropped, along with their `last_changed`
-    bookkeeping. Returns (new_state, report) where the report lists paths under
-    `added` / `removed` so the UI can show what a refresh would do.
+    This is not `instantiate`. A value the schema still defines keeps whatever it
+    reached in play, because re-instantiating would restore the player to full
+    health and clear their milestones. Only the difference is applied. Stats,
+    NPCs, flags, and milestones the schema gained appear at their initial value,
+    and ones it no longer defines are removed along with their `last_changed`
+    bookkeeping. The return value is `(new_state, report)`, where the report
+    lists paths under `added` and `removed`, so the UI can show what a refresh
+    would do.
 
-    Note the additions are mostly cosmetic: rendering and delta-application both
-    fall back to a stat def's `initial` when the live state has no value for it,
-    so a newly added stat already behaves correctly. This materialises it (and,
-    unlike those read-through paths, actually cleans up removals).
+    The additions are mostly cosmetic. Rendering and delta application both fall
+    back to a stat definition's `initial` when the live state has no value for
+    it, so a newly added stat already behaves correctly. This function stores the
+    value, and unlike those read-through paths it also removes what the schema
+    dropped.
     """
     report: dict = {"added": [], "removed": []}
     if not has_schema(stat_schema):
-        # The scenario dropped its RPG layer entirely — so does the adventure.
+        # The scenario dropped its RPG layer, so the adventure drops it too.
         stale = bool(world_state)
         if stale:
             report["removed"].append("(all world state)")
@@ -199,9 +209,10 @@ def reconcile(world_state: dict | None, stat_schema: dict | None) -> tuple[dict,
             report["removed"].append(f"flags.{name}")
     ws["flags"] = new_flags
 
-    # Milestones store only the ones reached, so there is nothing to add here —
-    # an unreached milestone is simply absent. Drop reached ones the scenario
-    # no longer defines, or they'd sit in "Achieved" forever with no label.
+    # Milestones store only the ones reached, so there is nothing to add here.
+    # An unreached milestone is absent. Drop reached milestones the scenario no
+    # longer defines, because they would otherwise stay in "Achieved" with no
+    # label.
     milestone_defs = stat_schema.get("milestones") or {}
     reached = ws.get("milestones") if isinstance(ws.get("milestones"), dict) else {}
     ws["milestones"] = {k: v for k, v in reached.items() if k in milestone_defs}
@@ -209,8 +220,8 @@ def reconcile(world_state: dict | None, stat_schema: dict | None) -> tuple[dict,
         if k not in milestone_defs:
             report["removed"].append(f"milestones.{k}")
 
-    # Cooldown bookkeeping for paths that no longer exist would never be read,
-    # but it accumulates in every stored snapshot — prune it with the rest.
+    # Cooldown bookkeeping for paths that no longer exist is never read, but it
+    # accumulates in every stored snapshot, so remove it with the rest.
     meta = ws.setdefault("_meta", {})
     last_changed = meta.get("last_changed")
     if isinstance(last_changed, dict):
@@ -226,10 +237,10 @@ def reconcile(world_state: dict | None, stat_schema: dict | None) -> tuple[dict,
 
 
 def band_label(stat_def: dict, value) -> str | None:
-    """The word label for `value` from a stat def's bands, if any.
+    """Returns the word label for `value` from a stat definition's bands, if any.
 
-    Bands are [lo, hi, label]; matched as lo <= value < hi, with the top band
-    inclusive of its upper bound so a maxed stat still gets a label.
+    A band is `[lo, hi, label]` and matches when `lo <= value < hi`. The top band
+    includes its upper bound, so a stat at its maximum still gets a label.
     """
     bands = stat_def.get("bands")
     if not isinstance(bands, list) or not isinstance(value, (int, float)):
@@ -265,12 +276,12 @@ def _tolerant_load(blob: str) -> dict:
 
 
 def extract_delta(text: str) -> tuple[str, dict]:
-    """Pull the trailing state block out of an AI response.
+    """Removes the trailing state block from an AI response.
 
-    Returns (clean_text, delta). `delta` is `{}` when there is no block or it
-    can't be parsed; `clean_text` has the block removed. Only strips a bare
-    trailing object when it actually parses to a delta, so ordinary prose
-    ending in `}` is never eaten.
+    The return value is `(clean_text, delta)`. `delta` is `{}` when there is no
+    block or the block cannot be parsed, and `clean_text` has the block removed.
+    A bare trailing object is stripped only when it parses to a delta, so
+    ordinary prose that ends in `}` is left alone.
     """
     matches = list(_FENCE_RE.finditer(text))
     if matches:
@@ -293,7 +304,7 @@ def extract_delta(text: str) -> tuple[str, dict]:
 # --------------------------------------------------------------------------- #
 
 def _coerce_number(value):
-    if isinstance(value, bool):  # bool is an int subclass — reject here
+    if isinstance(value, bool):  # `bool` is an `int` subclass, so reject it here.
         return None
     if isinstance(value, (int, float)):
         return value
@@ -349,9 +360,12 @@ def _apply_stat(container: dict, key: str, stat_def: dict, change,
 
 def _apply_text_stat(container: dict, key: str, stat_def: dict, change,
                      path: str, action_index: int, meta: dict, report: dict) -> None:
-    """Free-text stats replace rather than add: the AI sends the new value in
-    full, not a delta. No clamping/bands apply — only an optional cooldown and
-    an optional max_length truncation."""
+    """Applies a free-text stat, which replaces rather than adds.
+
+    The AI sends the new value in full rather than a delta. No clamping and no
+    bands apply. Only an optional cooldown and an optional `max_length`
+    truncation apply.
+    """
     if not isinstance(change, str):
         report["rejected"].append({"path": path, "reason": "not a string"})
         return
@@ -369,7 +383,7 @@ def _apply_text_stat(container: dict, key: str, stat_def: dict, change,
 
     old = container.get(key, stat_def.get("initial", ""))
     if new == old:
-        return  # no actual change — silent no-op
+        return  # Nothing changed, so do nothing.
 
     container[key] = new
     meta["last_changed"][path] = action_index
@@ -377,14 +391,17 @@ def _apply_text_stat(container: dict, key: str, stat_def: dict, change,
 
 
 def apply_override(world_state: dict, stat_schema: dict, overrides: dict) -> tuple[dict, dict]:
-    """Directly set live values — a manual author/admin edit, not an AI turn.
+    """Sets live values directly, as a manual author edit rather than an AI turn.
 
-    Unlike `apply_delta`: numeric stats are SET rather than added to, and
-    `cooldown`/`max_delta_per_turn`/the counter-can't-decrease rule are all
-    ignored (a deliberate correction, not an AI move to police). Milestones
-    can be toggled either way, not only marked reached. Values are still
-    validated against the schema (unknown path/type is rejected) and numeric
-    values still clamp to min/max."""
+    This differs from `apply_delta` in three ways. Numeric stats are set rather
+    than added to. `cooldown`, `max_delta_per_turn`, and the rule that a counter
+    cannot decrease are all ignored, because this is a deliberate correction
+    rather than an AI move to check. Milestones can be toggled in both
+    directions rather than only marked reached.
+
+    Values are still validated against the schema, so an unknown path or a wrong
+    type is rejected, and numeric values still clamp to min and max.
+    """
     ws = copy.deepcopy(world_state) if isinstance(world_state, dict) else {}
     if not ws:
         ws = instantiate(stat_schema)
@@ -492,8 +509,11 @@ def apply_override(world_state: dict, stat_schema: dict, overrides: dict) -> tup
 
 def apply_delta(world_state: dict, stat_schema: dict, delta: dict,
                 action_index: int) -> tuple[dict, dict]:
-    """Validate/clamp `delta` against `stat_schema` and apply to a copy of
-    `world_state`. Returns (new_world_state, report)."""
+    """Validates and clamps `delta` against `stat_schema`, then applies it.
+
+    The delta is applied to a copy of `world_state`. The return value is
+    `(new_world_state, report)`.
+    """
     ws = copy.deepcopy(world_state) if isinstance(world_state, dict) else {}
     if not ws:
         ws = instantiate(stat_schema)
@@ -512,7 +532,7 @@ def apply_delta(world_state: dict, stat_schema: dict, delta: dict,
         path = str(raw_path)
         parts = path.split(".")
 
-        # flags.<name>  — free two-way boolean, either value accepted.
+        # `flags.<name>` is a two-way boolean, and either value is accepted.
         if parts[0] == "flags" and len(parts) == 2:
             fid = parts[1]
             if fid not in flag_defs:
@@ -528,7 +548,7 @@ def apply_delta(world_state: dict, stat_schema: dict, delta: dict,
                 report["applied"].append({"path": path, "old": old, "new": change})
             continue
 
-        # milestones.<id>  — sticky boolean, only `true` accepted.
+        # `milestones.<id>` is a sticky boolean, and only `true` is accepted.
         if parts[0] == "milestones" and len(parts) == 2:
             mid = parts[1]
             if mid not in milestones:
@@ -539,7 +559,7 @@ def apply_delta(world_state: dict, stat_schema: dict, delta: dict,
                 continue
             reached = ws.setdefault("milestones", {})
             if reached.get(mid, {}).get("reached"):
-                continue  # already done — silent no-op
+                continue  # Already reached, so do nothing.
             reached[mid] = {"reached": True, "at": action_index}
             report["applied"].append({"path": path, "old": False, "new": True})
             continue
@@ -559,7 +579,7 @@ def apply_delta(world_state: dict, stat_schema: dict, delta: dict,
                             action_index, meta, report)
             continue
 
-        # npc.<npcId>.<stat>  — each NPC has its own stat defs.
+        # `npc.<npcId>.<stat>`. Each NPC has its own stat definitions.
         if parts[0] == "npc" and len(parts) == 3:
             ndef = npcs.get(parts[1])
             if not isinstance(ndef, dict):
@@ -608,8 +628,11 @@ def _stat_line(defs: dict, values: dict) -> str:
 
 def render_state_section(world_state: dict, stat_schema: dict,
                          visible_npcs: dict[str, str]) -> str:
-    """Compact, always-included context block. `visible_npcs` maps card-id ->
-    display name for NPCs currently in scene."""
+    """Returns the compact context block that every turn includes.
+
+    `visible_npcs` maps a card id to a display name, for the NPCs currently in
+    the scene.
+    """
     ws = world_state if isinstance(world_state, dict) else {}
     lines: list[str] = []
 
@@ -658,13 +681,16 @@ def render_state_section(world_state: dict, stat_schema: dict,
 
 
 def _describe_stat(name: str, d: dict) -> str | None:
-    """One reference line for a stat. Description and band-ladder are independent —
-    each is included only when present, so a stat may have either, both, or neither."""
+    """Returns one reference line for a stat.
+
+    The description and the band ladder are independent, and each is included
+    only when present, so a stat may have either, both, or neither.
+    """
     bits: list[str] = []
     desc = d.get("desc")
     if isinstance(desc, str) and desc.strip():
-        # Fragments are joined with "; " and end with a single ".", so drop any
-        # trailing period the author already put on the description.
+        # Fragments are joined with "; " and end with a single ".", so remove
+        # any trailing period the author put on the description.
         bits.append(desc.strip().rstrip("."))
     if d.get("type") == "text":
         bits.append("free text")
@@ -684,8 +710,12 @@ def _describe_stat(name: str, d: dict) -> str | None:
 
 
 def render_reference(stat_schema: dict) -> str:
-    """A fixed, per-scenario legend describing what each stat means (its `desc`)
-    and its band ladder. Static across turns — separate from the live values."""
+    """Returns a fixed, per-scenario legend for the stats.
+
+    Each line gives what a stat means, from its `desc`, and its band ladder. The
+    legend does not change from turn to turn, and it is separate from the live
+    values.
+    """
     lines: list[str] = []
     for section in STAT_SECTIONS:
         for name, d in (stat_schema.get(section) or {}).items():
