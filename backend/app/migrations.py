@@ -1,20 +1,22 @@
 """Lightweight versioned schema migrations.
 
 How it works:
-- A fresh database is created by `Base.metadata.create_all()` (always current)
-  and stamped with LATEST_VERSION.
-- An existing database runs every migration whose version is greater than its
-  stored version, in order, then is stamped.
 
-The version lives in SQLite's PRAGMA user_version, or a one-row
-`schema_version` table on Postgres (no PRAGMA there).
+* `Base.metadata.create_all()` creates a fresh database, which is always
+  current, and stamps it with `LATEST_VERSION`.
+* An existing database runs every migration whose version is greater than its
+  stored version, in order, and is then stamped.
 
-To change the schema: update models.py (keeps fresh DBs current) AND append a
-(version, sql) pair here (upgrades existing DBs). Keep migrations idempotent
-where cheap (IF NOT EXISTS etc.). Migrations up to 23 predate Postgres support
-and use SQLite-only syntax — that's fine because every Postgres database
-starts fresh (created by create_all, stamped LATEST, never replays them), but
-migrations added from Phase 9 on must run on both dialects.
+The version is stored in SQLite's `PRAGMA user_version`, or in a one-row
+`schema_version` table on Postgres, which has no `PRAGMA`.
+
+To change the schema, update `models.py`, which keeps fresh databases current,
+and append a `(version, sql)` pair here, which upgrades existing databases. Keep
+migrations idempotent where that is cheap, such as with `IF NOT EXISTS`.
+Migrations up to 23 predate Postgres support and use SQLite-only syntax. That is
+safe, because every Postgres database starts fresh: `create_all` creates it, the
+code stamps it `LATEST`, and it never replays those migrations. Migrations added
+from Phase 9 on must run on both dialects.
 """
 
 import json
@@ -27,12 +29,13 @@ from sqlalchemy.engine import Engine
 from . import compression, vectors
 from .database import Base
 
-# (version, SQL to run when upgrading past it) — append only, never reorder.
-# The SQL is a string, or a {dialect: sql} map with a "default" entry when the
-# two dialects have to be spelled differently (BLOB vs BYTEA and the like).
+# Each entry is a version and the SQL to run when upgrading past it. Append to
+# this list, and never reorder it. The SQL is a string, or a `{dialect: sql}` map
+# with a `default` entry when the two dialects need different syntax, such as
+# BLOB against BYTEA.
 MIGRATIONS: list[tuple[int, str | dict[str, str]]] = [
-    # Phase 6: auto-summarization + memory bank (the `memories` table itself is
-    # created by create_all, which runs for existing DBs too).
+    # Phase 6: auto-summarization and the memory bank. `create_all` creates the
+    # `memories` table itself, and it runs for existing databases too.
     (2, "ALTER TABLE adventures ADD COLUMN auto_summarize BOOLEAN NOT NULL DEFAULT 0"),
     (3, "ALTER TABLE adventures ADD COLUMN memory_bank_enabled BOOLEAN NOT NULL DEFAULT 0"),
     (4, "ALTER TABLE adventures ADD COLUMN memory_cursor INTEGER NOT NULL DEFAULT 0"),
@@ -41,11 +44,11 @@ MIGRATIONS: list[tuple[int, str | dict[str, str]]] = [
     (7, "ALTER TABLE settings ADD COLUMN embedding_model VARCHAR(200) NOT NULL DEFAULT ''"),
     (8, "ALTER TABLE settings ADD COLUMN memory_bank_capacity INTEGER NOT NULL DEFAULT 200"),
     (9, "ALTER TABLE settings ADD COLUMN memory_top_k INTEGER NOT NULL DEFAULT 5"),
-    # Repair duplicate action indexes (player + AI actions of one turn used to
-    # get the same index): renumber 0..n-1 per adventure, preserving order.
-    # UPDATE..FROM: ranks are computed as a snapshot before any row is
-    # rewritten (a correlated subquery would see partially-updated rows and
-    # could produce duplicates again).
+    # Repair duplicate action indexes. The player action and the AI action of
+    # one turn used to get the same index, so renumber each adventure's actions
+    # to 0..n-1 in their existing order. `UPDATE..FROM` computes the ranks as a
+    # snapshot before any row is rewritten. A correlated subquery would read
+    # partially updated rows and could produce duplicates again.
     (10, """
         UPDATE actions SET "index" = ranked.new_index
         FROM (
@@ -56,12 +59,13 @@ MIGRATIONS: list[tuple[int, str | dict[str, str]]] = [
         ) AS ranked
         WHERE ranked.id = actions.id
     """),
-    # Reasoning-model support: separate thinking budget + stored reasoning text.
+    # Reasoning-model support: a separate thinking budget and stored reasoning
+    # text.
     (11, "ALTER TABLE settings ADD COLUMN reasoning_max_tokens INTEGER NOT NULL DEFAULT 0"),
     (12, "ALTER TABLE actions ADD COLUMN reasoning TEXT"),
-    # Phase 8: optional accounts. The `users` table itself comes from
-    # create_all; these adopt all pre-existing rows under a "local user"
-    # (id=1) so a single-user install keeps working unchanged.
+    # Phase 8: optional accounts. `create_all` creates the `users` table itself.
+    # These migrations move every pre-existing row under a local user with
+    # `id=1`, so a single-user install keeps working unchanged.
     (13, """
         INSERT INTO users (id, email, password_hash, is_guest, created_at,
                            demo_turns_used, demo_turns_date)
@@ -78,202 +82,219 @@ MIGRATIONS: list[tuple[int, str | dict[str, str]]] = [
     (21, "ALTER TABLE settings ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE CASCADE"),
     (22, "UPDATE settings SET user_id = 1"),
     (23, "CREATE UNIQUE INDEX IF NOT EXISTS ix_settings_user_id ON settings (user_id)"),
-    # Link each adventure-script copy back to its library Script so it can be
-    # re-synced on demand. NULL for copies made before this column existed.
+    # Link each adventure-script copy back to its library Script, so a player
+    # can re-sync it on demand. The column is NULL for a copy made before it
+    # existed.
     (24, "ALTER TABLE adventure_scripts ADD COLUMN source_script_id INTEGER "
          "REFERENCES scripts(id) ON DELETE SET NULL"),
-    # Per-action snapshot of the shared script_state as it was before that
-    # action's hooks ran, enabling undo/retry to roll state back. JSON is valid
-    # on both SQLite and Postgres.
+    # A per-action snapshot of the shared `script_state` as it was before that
+    # action's hooks ran, so undo and retry can roll the state back. JSON is
+    # valid on both SQLite and Postgres.
     (25, "ALTER TABLE actions ADD COLUMN state_before JSON"),
-    # Phase 12: RPG world state. `stat_schema` defines the stats/bands/rules and
-    # milestones for a scenario; `world_state` holds an adventure's live values;
-    # `world_state_before` snapshots it per action for undo/retry (mirrors
-    # state_before). JSON is valid on both SQLite and Postgres.
+    # Phase 12: RPG world state. `stat_schema` defines a scenario's stats,
+    # bands, rules, and milestones. `world_state` holds an adventure's live
+    # values. `world_state_before` snapshots those values per action for undo and
+    # retry, the same way `state_before` does. JSON is valid on both SQLite and
+    # Postgres.
     (26, "ALTER TABLE scenarios ADD COLUMN stat_schema JSON"),
     (27, "ALTER TABLE adventures ADD COLUMN world_state JSON"),
     (28, "ALTER TABLE actions ADD COLUMN world_state_before JSON"),
-    # Raise the default context budget 4096 -> 16384 (Phase 12 injects a stat
-    # guide + world state each turn). Only bumps rows still on the old default,
-    # so anyone who picked a custom value keeps it.
+    # Raise the default context budget from 4096 to 16384, because Phase 12 adds
+    # a stat guide and the world state to every turn. This updates only rows
+    # still on the old default, so anyone who chose a custom value keeps it.
     (29, "UPDATE settings SET context_token_budget = 16384 WHERE context_token_budget = 4096"),
-    # Scenario cover art — an external URL or an inline base64 data URI. TEXT
-    # (not VARCHAR) because a downscaled data URI runs tens of kilobytes.
+    # Scenario cover art, either an external URL or an inline base64 data URI.
+    # The column is TEXT rather than VARCHAR, because a downscaled data URI runs
+    # to tens of kilobytes.
     (30, "ALTER TABLE scenarios ADD COLUMN image TEXT NOT NULL DEFAULT ''"),
-    # Emoji/glyph fallback used when `image` is empty.
+    # The emoji or glyph fallback, used when `image` is empty.
     (31, "ALTER TABLE scenarios ADD COLUMN icon VARCHAR(16) NOT NULL DEFAULT ''"),
-    # The ${Placeholder} answers given when the adventure was started. Kept so
-    # "Update from scenario" can re-fill re-copied text; NULL for adventures
-    # created before this column, which re-prompt for them on first refresh.
+    # The `${Placeholder}` answers given when the adventure started. They are
+    # stored so that "Update from scenario" can fill the copied text again. The
+    # column is NULL for an adventure created before it existed, and that
+    # adventure prompts for the answers again on its first refresh.
     (32, "ALTER TABLE adventures ADD COLUMN placeholders JSON"),
-    # Which piece of the scenario a copied story card came from ("card:<id>" or
-    # "npc:<key>"), so a refresh can update/remove exactly the scenario-derived
-    # cards and leave player-authored ones alone. NULL = player-authored, or a
-    # copy predating this column (matched by name once, then adopted).
+    # Which part of the scenario a copied story card came from, either
+    # `card:<id>` or `npc:<key>`, so that a refresh updates and removes only the
+    # scenario-derived cards and leaves player-authored ones unchanged. NULL
+    # means the card is player-authored, or that the copy predates this column.
+    # A predating copy is matched by name once and then tagged.
     (33, "ALTER TABLE story_cards ADD COLUMN source_ref VARCHAR(64)"),
-    # Retry history: every attempt made for an AI turn, oldest first, so retry
-    # can append instead of deleting. NULL = never retried (the row is its own
-    # only version), which is also the correct reading for every action that
-    # predates this column.
+    # Retry history: every attempt made for an AI turn, oldest first, so that a
+    # retry appends rather than deletes. NULL means the turn was never retried
+    # and the row is its only version, which is also the correct reading for
+    # every action that predates this column.
     (34, "ALTER TABLE actions ADD COLUMN variants JSON"),
     (35, "ALTER TABLE actions ADD COLUMN variant_index INTEGER NOT NULL DEFAULT 0"),
-    # Egress: context_snapshot holds the whole assembled prompt (~74 KB/row) and
-    # was being loaded in bulk for two tiny things — the world-change chips and
-    # the emit block replayed into history. Lift just that slice into its own
-    # column so the snapshot can be deferred. Backfilled by _backfill_world_delta.
+    # Egress: `context_snapshot` holds the whole assembled prompt, about 74 kB
+    # per row, and bulk reads loaded it for two small values: the world-change
+    # chips and the emit block replayed into history. Move that slice into its
+    # own column so the snapshot can be deferred. `_backfill_world_delta` fills
+    # the new column.
     (36, "ALTER TABLE actions ADD COLUMN world_delta JSON"),
     # Egress, part two: `variants` holds every discarded retry attempt, but a
-    # list response only needs how many there are. Keep the count beside it so
-    # the column itself can be deferred — otherwise each retry permanently adds
-    # ~5 KB to every later load of that adventure. Backfilled by
-    # _backfill_variant_count.
+    # list response needs only how many there are. Store the count next to it so
+    # the column can be deferred. Otherwise each retry adds about 5 kB to every
+    # later load of that adventure. `_backfill_variant_count` fills the new
+    # column.
     (37, "ALTER TABLE actions ADD COLUMN variant_count INTEGER NOT NULL DEFAULT 0"),
-    # Egress, round three: a 1536-dimension embedding written as a JSON list is
-    # ~31 KB, and the whole bank is fetched every turn to rank it. Packed
-    # float32 is 6 KB for the same numbers, exactly (see vectors.py). Dimensions
-    # are unchanged, so this is a format conversion — no re-embedding, no API
-    # calls. Backfilled by _backfill_embedding_blob. The old JSON column is left
-    # in place and keeps being written until a follow-up migration drops it.
+    # Egress, part three: a 1536-dimension embedding written as a JSON list is
+    # about 31 kB, and ranking fetches the whole bank every turn. Packed float32
+    # holds the same numbers exactly in 6 kB. See `vectors.py`. The dimensions do
+    # not change, so this is a format conversion with no re-embedding and no API
+    # calls. `_backfill_embedding_blob` fills the new column. The old JSON column
+    # stays in place and is still written until a later migration drops it.
     (38, {"sqlite": "ALTER TABLE memories ADD COLUMN embedding_blob BLOB",
           "default": "ALTER TABLE memories ADD COLUMN embedding_blob BYTEA"}),
-    # ...and the one-bit answer beside it, so the Memories drawer and the embed
-    # queue can ask "has this got a vector?" without fetching one. Same shape as
-    # actions.variant_count beside actions.variants. TRUE/FALSE and a boolean
-    # DEFAULT are spelled the same on both dialects; 0/1 would not be.
+    # A one-bit flag next to the vector, so the Memories drawer and the embed
+    # queue can test whether a memory has a vector without fetching one. This
+    # matches `actions.variant_count` next to `actions.variants`. TRUE, FALSE,
+    # and a boolean DEFAULT use the same syntax on both dialects, and 0 and 1
+    # would not.
     (39, "ALTER TABLE memories ADD COLUMN embedded BOOLEAN NOT NULL DEFAULT false"),
     (40, "UPDATE memories SET embedded = true WHERE embedding_blob IS NOT NULL"),
-    # Memory bank capacity 200 -> 80. Only rows still on the old default move,
-    # so anyone who picked a value keeps it — same rule as migration 29.
-    # Adventures already over 80 evict down on their next turn.
+    # Memory bank capacity from 200 to 80. Only rows still on the old default
+    # change, so anyone who chose a value keeps it. Migration 29 follows the same
+    # rule. An adventure already over 80 evicts down on its next turn.
     (41, "UPDATE settings SET memory_bank_capacity = 80 WHERE memory_bank_capacity = 200"),
-    # The JSON vectors, gone. Migration 38 left them in place so a rollback
-    # could still find them; production has since been verified reading from
-    # embedding_blob (schema_version 41, 134/134 backfilled), so the column is
-    # now 4 MB of a 99.6 MB database holding nothing anyone reads. DROP COLUMN
-    # is spelled the same on both dialects — SQLite has had it since 3.35.
+    # Drop the JSON vectors. Migration 38 left them in place so a rollback could
+    # still find them. Production has since been verified reading from
+    # `embedding_blob`, at schema version 41 with 134 of 134 rows backfilled, so
+    # the column is 4 MB of a 99.6 MB database that nothing reads. DROP COLUMN
+    # uses the same syntax on both dialects, and SQLite has supported it since
+    # 3.35.
     (42, "ALTER TABLE memories DROP COLUMN embedding"),
-    # context_snapshot, compressed. 89% of the database is one column holding
-    # assembled prompts nobody filters on and one screen reads, one row at a
-    # time; Postgres already TOASTs it, but pglz only manages 1.7x and zlib
-    # gets three to four on the same text. Reads were fixed by deferring it —
-    # this is about the 512 MB the free tier allows.
+    # Compress `context_snapshot`. One column holds 89% of the database. It
+    # stores assembled prompts that no query filters on and that one screen
+    # reads, one row at a time. Postgres already TOASTs the column, but pglz
+    # reaches only 1.7x, while zlib reaches three to four times on the same text.
+    # Deferring the column already fixed the read cost. This migration is about
+    # the 512 MB the free tier allows.
     #
-    # Three steps because a column cannot portably change type in place: add
-    # the new one, convert into it (_backfill_context_snapshot, which verifies
-    # every row round-trips before the old column goes), then swap the names so
-    # the model keeps calling it context_snapshot.
+    # This takes three steps, because a column cannot portably change type in
+    # place. Add the new column, convert into it with
+    # `_backfill_context_snapshot`, which verifies that every row round-trips
+    # before the old column is dropped, then swap the names so the model still
+    # calls it `context_snapshot`.
     #
-    # **Postgres does not hand the disk back on its own.** DROP COLUMN only
-    # marks the column dropped, and the backfill's UPDATE leaves a dead tuple
-    # per row, so the table gets *bigger* before it gets smaller: peak is
-    # roughly twice the starting size while both columns are live. Plain
-    # autovacuum makes that space reusable but does not shrink the files. The
-    # deploy that ships this should follow it with, once:
+    # Postgres does not release the disk space on its own. DROP COLUMN only
+    # marks the column dropped, and the backfill's UPDATE leaves one dead tuple
+    # per row, so the table grows before it shrinks. The peak is roughly twice
+    # the starting size while both columns exist. Autovacuum makes that space
+    # reusable but does not shrink the files. Run this once after the deploy
+    # that ships this migration:
     #
     #     VACUUM FULL actions;
     #
-    # which needs exclusive access and free space equal to the finished table.
-    # On the 2026-08-17 figures that is 99.6 MB peaking near 200, settling at
-    # about 53 once vacuumed, against a 512 MB tier. Skipping the vacuum is
-    # safe and simply leaves the win unrealised.
+    # That command needs exclusive access and free space equal to the finished
+    # table. On the 2026-08-17 figures, the database is 99.6 MB, peaks near 200
+    # MB, and settles at about 53 MB once vacuumed, against a 512 MB tier.
+    # Skipping the vacuum is safe and leaves the saving unrealized.
     (43, {"sqlite": "ALTER TABLE actions ADD COLUMN context_snapshot_z BLOB",
           "default": "ALTER TABLE actions ADD COLUMN context_snapshot_z BYTEA"}),
     (44, "ALTER TABLE actions DROP COLUMN context_snapshot"),
     (45, "ALTER TABLE actions RENAME COLUMN context_snapshot_z TO context_snapshot"),
     # Phase 14, SP1: the story becomes a tree. Every action gains the branch it
-    # was played on and its depth along that branch; adventures gain a head
-    # pointer; memories attach to the node that produced them. The `branches`
-    # table itself comes from create_all, like `memories` did.
+    # was played on and its depth along that branch, adventures gain a head
+    # pointer, and memories attach to the node that produced them. `create_all`
+    # creates the `branches` table itself, as it did for `memories`.
     #
-    # Nothing reads these yet — SP2 moves the reads onto them. This subphase
-    # exists so that by the time anything does, every row already has them,
-    # including the rows written between the two deploys (`app/tree.py` stamps
-    # those). Legacy `index`, `variants`, `variant_index` and `variant_count`
-    # stay in place, unread, until the tree is proven live.
+    # Nothing reads these columns yet. SP2 moves the reads onto them. This
+    # subphase exists so that every row already has the columns by the time
+    # anything reads them, including the rows written between the two deploys,
+    # which `app/tree.py` stamps. The legacy `index`, `variants`,
+    # `variant_index`, and `variant_count` columns stay in place, unread, until
+    # the tree is proven live.
     #
-    # **This rewrites every row of `actions`, twice** — once per ADD COLUMN
-    # backfill pass on Postgres — so the deploy that ships it must be followed
-    # by, once:
+    # This rewrites every row of `actions` twice, once per ADD COLUMN backfill
+    # pass on Postgres, so run this once after the deploy that ships it:
     #
     #     VACUUM FULL actions;
     #
-    # on the direct endpoint, not -pooler. That is the 144 MB lesson from
-    # 2026-08-17: a rewrite roughly doubles the table and only a VACUUM FULL
-    # hands the space back. Skipping it is safe and simply leaves the table fat.
+    # Run it on the direct endpoint, not on -pooler. This is the 144 MB result
+    # from 2026-08-17: a rewrite roughly doubles the table, and only a VACUUM
+    # FULL releases the space. Skipping it is safe and leaves the table large.
     (46, "ALTER TABLE actions ADD COLUMN branch_id INTEGER "
          "REFERENCES branches(id) ON DELETE CASCADE"),
     (47, "ALTER TABLE actions ADD COLUMN depth INTEGER"),
-    # head_branch_id carries no REFERENCES: branches.adventure_id already points
-    # the other way, and two constraints would make the pair a cycle create_all
-    # cannot order. See the column comment in models.py.
+    # `head_branch_id` has no REFERENCES clause. `branches.adventure_id` already
+    # points the other way, and a second constraint would make the pair a cycle
+    # that `create_all` cannot order. See the column comment in `models.py`.
     (48, "ALTER TABLE adventures ADD COLUMN head_branch_id INTEGER"),
     (49, "ALTER TABLE adventures ADD COLUMN head_depth INTEGER NOT NULL DEFAULT -1"),
     (50, "ALTER TABLE memories ADD COLUMN branch_id INTEGER "
          "REFERENCES branches(id) ON DELETE CASCADE"),
     (51, "ALTER TABLE memories ADD COLUMN depth INTEGER"),
-    # The index every branch clause wants, and the data pass that fills the six
-    # columns above (_backfill_tree, hung off this version because it needs all
-    # of them to exist).
+    # The index every branch clause needs, plus the data pass that fills the six
+    # columns above. `_backfill_tree` runs at this version because it needs all
+    # six columns to exist.
     (52, "CREATE INDEX IF NOT EXISTS ix_actions_branch_depth ON actions (branch_id, depth)"),
-    # Phase 14, SP3 — the memory and summary cursors stop being positions in the
-    # story and become nodes in it: (branch, depth) of the last action each pass
-    # covered. Legacy `memory_cursor` / `summary_cursor` stay, unread, until SP8
-    # drops them beside `actions.index`.
+    # Phase 14, SP3: the memory cursor and the summary cursor stop being
+    # positions in the story and become nodes in it, as the `(branch, depth)` of
+    # the last action each pass covered. The legacy `memory_cursor` and
+    # `summary_cursor` columns stay, unread, until SP8 drops them along with
+    # `actions.index`.
     #
-    # Unlike 46-52 this rewrites `adventures`, not `actions` — a few hundred
-    # rows against a few hundred thousand — so it needs no VACUUM FULL of its
-    # own. (The one SP1's deploy asks for is still owed.)
+    # Unlike migrations 46 to 52, this rewrites `adventures` rather than
+    # `actions`, which is a few hundred rows against a few hundred thousand, so
+    # it needs no VACUUM FULL of its own. The one SP1's deploy asks for is still
+    # outstanding.
     (53, "ALTER TABLE adventures ADD COLUMN memory_cursor_branch_id INTEGER"),
     (54, "ALTER TABLE adventures ADD COLUMN memory_cursor_depth INTEGER NOT NULL DEFAULT -1"),
     (55, "ALTER TABLE adventures ADD COLUMN summary_cursor_branch_id INTEGER"),
     (56, "ALTER TABLE adventures ADD COLUMN summary_cursor_depth INTEGER NOT NULL DEFAULT -1"),
-    # Phase 14, SP4 — a retry stops rewriting a row and writes a sibling beside
-    # it. `live` says which sibling the story tells; `state_after` /
-    # `world_state_after` give each attempt its own outcome to be switched back
-    # to. The legacy `variants` / `variant_index` / `state_before` /
+    # Phase 14, SP4: a retry stops rewriting a row and writes a sibling next to
+    # it. `live` records which sibling the story tells. `state_after` and
+    # `world_state_after` give each attempt its own outcome to switch back to.
+    # The legacy `variants`, `variant_index`, `state_before`, and
     # `world_state_before` columns stay, unread, until SP8.
     #
-    # **This rewrites every row of `actions` three times** (one ADD COLUMN
-    # backfill pass each on Postgres) and then inserts a row per discarded
-    # attempt, so the deploy that ships it must be followed by, once:
+    # This rewrites every row of `actions` three times, once per ADD COLUMN
+    # backfill pass on Postgres, and then inserts one row per discarded attempt,
+    # so run this once after the deploy that ships it:
     #
     #     VACUUM FULL actions;
     #
-    # on the direct endpoint, not -pooler. Same 144 MB lesson as SP1's.
+    # Run it on the direct endpoint, not on -pooler. This is the same 144 MB
+    # result as SP1.
     (57, "ALTER TABLE actions ADD COLUMN live BOOLEAN NOT NULL DEFAULT true"),
     (58, "ALTER TABLE actions ADD COLUMN state_after JSON"),
     (59, "ALTER TABLE actions ADD COLUMN world_state_after JSON"),
-    # The two data passes, hung off a version of their own so they run after
-    # all three columns exist: derive the after-snapshots from the before-ones
-    # (_backfill_state_after), then split each `variants` list into sibling
-    # rows (_split_variants_into_siblings). The index below is the one those
-    # siblings make worth having — a group lookup is (branch_id, depth) with a
-    # handful of rows behind it, which ix_actions_branch_depth already serves,
-    # so this is a no-op statement that gives the passes a version to hang on.
+    # The two data passes get a version of their own, so that they run after all
+    # three columns exist. `_backfill_state_after` derives the after-snapshots
+    # from the before-snapshots, and `_split_variants_into_siblings` splits each
+    # `variants` list into sibling rows. The statement below is the index those
+    # siblings would make worth having, but a group lookup is `(branch_id,
+    # depth)` over a few rows and `ix_actions_branch_depth` already serves it, so
+    # the statement does nothing and only gives the passes a version to run
+    # at.
     (60, "CREATE INDEX IF NOT EXISTS ix_actions_branch_depth ON actions (branch_id, depth)"),
-    # Phase 14, SP7 — a branch can be named. NULL is "nobody named this one",
-    # which is every branch alive when this runs, so there is no backfill and
-    # nothing to derive. `branches` holds a handful of rows per adventure rather
-    # than one per turn, so unlike SP1's and SP4's this rewrite is a few hundred
-    # rows against a few hundred thousand and needs no VACUUM FULL of its own.
+    # Phase 14, SP7: a branch can be named. NULL means nobody named the branch,
+    # which is true of every branch that exists when this runs, so there is no
+    # backfill and nothing to derive. `branches` holds a few rows per adventure
+    # rather than one per turn, so unlike SP1 and SP4 this rewrite covers a few
+    # hundred rows against a few hundred thousand and needs no VACUUM FULL of
+    # its own.
     (61, "ALTER TABLE branches ADD COLUMN name VARCHAR(80)"),
-    # Phase 14, SP7 — every memory gets a node. A hand-written memory used to
-    # keep a NULL depth, which no fork could cap, so it followed the reader onto
-    # branches whose story it never described. New ones anchor at the head; the
-    # ones already written land at **depth 0 of the branch they are on**, which
-    # is the only choice that takes nothing away from anybody: 0 is at or before
-    # every fork point, so a memory stays visible from exactly the paths it is
-    # visible from today. Anchoring them at the tip instead would have emptied
-    # them out of every branch forked earlier than they were typed.
+    # Phase 14, SP7: every memory gets a node. A hand-written memory used to
+    # keep a NULL depth, which no fork could bound, so it followed the reader
+    # onto branches whose story it never described. A new memory anchors at the
+    # head. An existing memory lands at depth 0 of the branch it is on, which is
+    # the only choice that removes a memory from no path: 0 is at or before every
+    # fork point, so a memory stays visible from the same paths it is visible
+    # from today. Anchoring an existing memory at the tip would have removed it
+    # from every branch forked earlier than the memory was written.
     (62, "UPDATE memories SET depth = 0 WHERE depth IS NULL"),
-    # Phase 14, SP9 — the node a node was played after, so a turn's takes can be
-    # grouped by parent instead of by coordinate. A coordinate stops answering
-    # "which takes belong together" the moment one of them is forked onto its
-    # own branch: it leaves its siblings behind and reads 1/1 beside their 1/3.
+    # Phase 14, SP9: the node a node was played after, so a turn's attempts can
+    # be grouped by parent rather than by coordinate. A coordinate stops
+    # identifying which attempts belong together as soon as one of them is forked
+    # onto its own branch, because it leaves its siblings behind and reads 1/1
+    # next to their 1/3.
     #
-    # Nullable, and left NULL wherever the backfill cannot honestly place a row
-    # (see _backfill_parents). `attempts.group` falls back to the coordinate for
-    # those, which is the rule they were written under.
+    # The column is nullable, and the backfill leaves it NULL wherever it cannot
+    # place a row correctly. See `_backfill_parents`. `attempts.group` falls back
+    # to the coordinate for those rows, which is the rule they were written
+    # under.
     (63, "ALTER TABLE actions ADD COLUMN parent_id INTEGER REFERENCES actions(id) ON DELETE SET NULL"),
     (64, "CREATE INDEX IF NOT EXISTS ix_actions_parent ON actions (parent_id)"),
 ]
@@ -290,27 +311,30 @@ CURSOR_ANCHOR_VERSION = 56
 SIBLING_SPLIT_VERSION = 60
 PARENT_BACKFILL_VERSION = 64
 
-# An adventure with no actions has no tip. -1 keeps "the next node goes at
-# head_depth + 1" true without a special case (mirrors tree.NO_DEPTH).
+# An adventure with no actions has no tip. A value of -1 keeps the rule that the
+# next node goes at `head_depth + 1` true without a special case. This matches
+# `tree.NO_DEPTH`.
 NO_DEPTH = -1
 
-# Snapshots converted per round trip. Deliberately far smaller than
-# BACKFILL_BATCH: a vector is 6 KB and a snapshot is 232 KB, so 200 of these
-# would be 46 MB held at once.
+# How many snapshots are converted per round trip. This is much smaller than
+# `BACKFILL_BATCH`, because a vector is 6 kB and a snapshot is 232 kB, so 200
+# snapshots would hold 46 MB at once.
 SNAPSHOT_BATCH = 50
 
-# Vectors converted per round trip. Small enough that the backfill never holds
-# more than a few megabytes, large enough that it isn't a query per row.
+# How many vectors are converted per round trip. The value is small enough that
+# the backfill never holds more than a few megabytes, and large enough that it
+# does not run one query per row.
 BACKFILL_BATCH = 200
 
 
 def _backfill_world_delta(conn) -> None:
-    """Populate actions.world_delta from the existing context_snapshot.
+    """Populates `actions.world_delta` from the existing `context_snapshot`.
 
-    Runs entirely server-side: the snapshots are the reason this change exists,
-    so pulling ~40 MB of them into Python to rewrite a slice would defeat the
-    point. Dialect-specific because SQLite and Postgres spell JSON access
-    differently, and both have to work (SQLite locally and in tests).
+    The pass runs entirely on the server. The snapshots are the reason this
+    change exists, so reading about 40 MB of them into Python to rewrite one
+    slice would defeat its purpose. The SQL is dialect-specific, because SQLite
+    and Postgres use different JSON syntax and both have to work. SQLite runs
+    locally and in the tests.
     """
     if conn.dialect.name == "sqlite":
         sql = """
@@ -336,23 +360,23 @@ def _backfill_world_delta(conn) -> None:
 
 
 def _backfill_parents(conn) -> None:
-    """Point every node at the take it was played after.
+    """Points every node at the attempt it was played after.
 
-    One pass, and deliberately only one: the live node one depth back on the
-    same branch. That is the whole of a linear story, which is the whole of
-    every adventure written before SP9 — forking reached the screen in SP7 and
-    the tree was found unusable before anyone forked with it.
+    The pass makes one query, which reads the live node one depth back on the
+    same branch. That covers a linear story, and every adventure written before
+    SP9 is linear. Forking reached the screen in SP7, and the tree was found
+    unusable before anyone forked with it.
 
-    The rows left NULL are the first node of a forked branch, whose parent sits
-    on an ancestor branch and cannot be found without walking `lineage` per row.
-    `attempts.group` falls back to the coordinate for a NULL parent, which is
-    exactly the rule those rows were written under, so the fallback is not a
-    degraded answer for them — it is the original one. Every fork made from SP9
-    on sets `parent_id` at write time and never relies on this.
+    The rows left NULL are the first node of a forked branch, whose parent is on
+    an ancestor branch and cannot be found without walking `lineage` for each
+    row. `attempts.group` falls back to the coordinate for a NULL parent, which
+    is the rule those rows were written under, so the fallback returns the
+    original answer for them rather than a worse one. Every fork made from SP9 on
+    sets `parent_id` at write time and does not use this pass.
 
-    Correlated to the row being updated rather than numbering the table, so the
-    planner drives it off ix_actions_branch_depth. That is the lesson of
-    _backfill_cursor_anchors, which numbered every action once per adventure.
+    The query correlates to the row being updated rather than numbering the
+    table, so the planner uses `ix_actions_branch_depth`. This follows from
+    `_backfill_cursor_anchors`, which numbered every action once per adventure.
     """
     conn.execute(
         text(
@@ -375,12 +399,12 @@ def _backfill_parents(conn) -> None:
 
 
 def _backfill_variant_count(conn) -> None:
-    """Populate actions.variant_count from the existing variants list.
+    """Populates `actions.variant_count` from the existing `variants` list.
 
-    Server-side for the same reason as _backfill_world_delta: `variants` is the
-    column being taken off the wire, so counting it in Python would mean
-    dragging every stored attempt across the network once to avoid dragging it
-    across forever.
+    The pass runs on the server for the same reason as `_backfill_world_delta`.
+    `variants` is the column this change removes from responses, so counting it
+    in Python would read every stored attempt over the network once in order to
+    stop reading it on every request.
     """
     if conn.dialect.name == "sqlite":
         sql = """
@@ -400,21 +424,21 @@ def _for_dialect(sql: str | dict[str, str], dialect: str) -> str:
     return sql if isinstance(sql, str) else sql.get(dialect, sql["default"])
 
 
-# Matches the ADD COLUMN migrations in this file — all hand-written above, so
-# this parses SQL we control and nothing else.
+# Matches the ADD COLUMN migrations in this file. Every one is written above,
+# so this pattern parses only SQL this file controls.
 _ADD_COLUMN = re.compile(r"^\s*ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+\"?(\w+)\"?", re.I)
 
 
 def _column_already_there(conn, sql: str) -> bool:
-    """True when `sql` adds a column the table already has.
+    """Returns `True` when `sql` adds a column the table already has.
 
-    This is the `IF NOT EXISTS` the docstring asks for, spelled in Python
-    because SQLite has no syntax for it on ADD COLUMN. Without it, any database
-    carrying a *newer* column than its stamp claims dies on a duplicate column
-    with the backfill never running — and that database is not hypothetical:
-    `create_all` always builds the current schema, so it is what every test
-    replaying a migration starts from, and SQLite cannot drop the columns back
-    off again once a foreign key names them.
+    This is the `IF NOT EXISTS` the module docstring asks for, written in Python
+    because SQLite has no syntax for it on ADD COLUMN. Without this check, a
+    database that carries a newer column than its stamp claims fails on a
+    duplicate column and never runs the backfill. That database is common:
+    `create_all` always builds the current schema, so it is what every test that
+    replays a migration starts from, and SQLite cannot drop those columns again
+    once a foreign key names them.
     """
     match = _ADD_COLUMN.match(sql)
     if match is None:
@@ -427,17 +451,17 @@ def _column_already_there(conn, sql: str) -> bool:
 
 
 def _backfill_embedding_blob(conn) -> None:
-    """Repack memories.embedding (JSON list) into memories.embedding_blob.
+    """Repacks `memories.embedding`, a JSON list, into `memories.embedding_blob`.
 
-    The one backfill here that has to come through Python: struct packing has
-    no portable SQL spelling, so unlike migrations 36 and 37 this pays a
-    one-time read of every vector (~4 MB in production) to stop paying three
-    megabytes every turn. Batched so the read is bounded whatever the bank
-    grows to.
+    This is the only backfill here that runs through Python, because struct
+    packing has no portable SQL form. Unlike migrations 36 and 37, it pays a
+    one-time read of every vector, about 4 MB in production, to stop reading
+    three megabytes every turn. It runs in batches, so the read stays bounded
+    however large the bank grows.
 
-    Reads the JSON defensively — SQLite hands back the raw string while psycopg
-    has already parsed it into a list — and skips anything that isn't a
-    non-empty list, so one malformed row can't strand the migration.
+    The pass reads the JSON defensively, because SQLite returns the raw string
+    while psycopg has already parsed it into a list. It skips any value that is
+    not a non-empty list, so one malformed row cannot block the migration.
     """
     last_id = 0
     while True:
@@ -463,19 +487,19 @@ def _backfill_embedding_blob(conn) -> None:
 
 
 def _backfill_context_snapshot(conn) -> None:
-    """Compress actions.context_snapshot into actions.context_snapshot_z.
+    """Compresses `actions.context_snapshot` into `actions.context_snapshot_z`.
 
-    Runs between migration 43 and 44, which is the only window where both
-    columns exist. Migration 44 drops the original, so unlike every other
-    backfill here this one is destructive if it is wrong — and every row it
-    converts is somebody's game. So each row is decompressed again and
-    compared against what went in before it counts as converted, and a row
-    that fails to round-trip aborts the whole run rather than being skipped:
-    the transaction rolls back, the DROP never happens, and the prompts are
-    still there to try again.
+    This runs between migrations 43 and 44, which is the only point where both
+    columns exist. Migration 44 drops the original column, so unlike every other
+    backfill here this one destroys data if it is wrong, and every row it
+    converts belongs to somebody's game. Each row is therefore decompressed again
+    and compared with the input before it counts as converted. A row that fails
+    to round-trip aborts the run rather than being skipped: the transaction rolls
+    back, the DROP never runs, and the prompts are still there for another
+    attempt.
 
-    Reads the JSON the same defensive way as the vector backfill — SQLite
-    hands back a raw string, psycopg has already parsed it.
+    The pass reads the JSON as defensively as the vector backfill does, because
+    SQLite returns a raw string and psycopg has already parsed it.
     """
     last_id = 0
     while True:
@@ -504,10 +528,10 @@ def _backfill_context_snapshot(conn) -> None:
                 )
             params.append({"z": packed, "id": row_id})
         if params:
-            # One executemany per batch, not one statement per row. This runs
-            # at container start, before the port opens, against a database on
-            # the other end of a network: a thousand round trips is the
-            # difference between a deploy that comes up and a health check that
+            # Run one executemany per batch rather than one statement per row.
+            # This runs at container start, before the port opens, against a
+            # database across a network. A thousand round trips is the
+            # difference between a deploy that starts and a health check that
             # times out waiting for it.
             conn.execute(
                 text("UPDATE actions SET context_snapshot_z = :z WHERE id = :id"),
@@ -516,9 +540,10 @@ def _backfill_context_snapshot(conn) -> None:
         last_id = rows[-1][0]
 
 
-# "The root branch of the adventure this row belongs to." MIN(id) rather than a
-# LIMIT so it is a plain scalar subquery on both dialects, and deterministic if a
-# database ever ends up with two roots for one adventure.
+# Returns SQL for the root branch of the adventure a row belongs to. It uses
+# MIN(id) rather than a LIMIT, so the result is a plain scalar subquery on both
+# dialects and stays deterministic if a database ends up with two roots for one
+# adventure.
 def _root_branch_of(column: str) -> str:
     return (
         "(SELECT MIN(b.id) FROM branches b "
@@ -527,25 +552,26 @@ def _root_branch_of(column: str) -> str:
 
 
 def _backfill_tree(conn) -> None:
-    """Re-read every existing adventure's linear story as a tree with one branch.
+    """Rewrites every existing adventure's linear story as a tree with one branch.
 
-    One root branch per adventure, `depth` = the old `index`, the head pointing
-    at the tip, and every memory hung off the node it summarised. Nothing is
-    copied, nothing is deleted, and no ordering changes — `index` and `depth`
-    hold the same numbers when this finishes, which is what makes "current
-    adventures are unaffected" a testable claim rather than a hope.
+    The pass creates one root branch per adventure, sets `depth` to the old
+    `index`, points the head at the tip, and attaches every memory to the node it
+    summarized. It copies no row, deletes no row, and changes no ordering.
+    `index` and `depth` hold the same numbers when it finishes, which makes the
+    claim that current adventures are unaffected testable.
 
-    Server-side: `actions` is the table that fills the disk, and pulling it into
-    Python to write two integers a row would be the same mistake this project
-    has now made twice. Each statement is guarded on its own target being unset,
-    so a run that dies halfway resumes rather than double-applying.
+    The pass runs on the server. `actions` is the table that fills the disk, and
+    reading it into Python to write two integers per row would repeat a mistake
+    this project has already made twice. Each statement is guarded on its own
+    target being unset, so a run that fails partway through resumes rather than
+    applying twice.
     """
     sqlite = conn.dialect.name == "sqlite"
 
     # 1. A root branch per adventure. Its lineage names the row's own id, which
-    #    does not exist until the row does, so it starts as the empty list —
-    #    `branches` comes from create_all, where lineage is NOT NULL, so an
-    #    empty array is what "not filled in yet" has to look like.
+    #    does not exist until the row does, so lineage starts as an empty list.
+    #    `create_all` creates `branches` with lineage NOT NULL, so an empty array
+    #    is how an unfilled lineage has to be stored.
     conn.execute(text("""
         INSERT INTO branches (adventure_id, parent_branch_id, fork_depth, lineage, created_at)
         SELECT a.id, NULL, NULL, '[]', CURRENT_TIMESTAMP
@@ -553,11 +579,12 @@ def _backfill_tree(conn) -> None:
         WHERE NOT EXISTS (SELECT 1 FROM branches b WHERE b.adventure_id = a.id)
     """))
 
-    # 2. lineage = [[own_id, null]] — one entry, uncapped: the root branch is
-    #    the whole story. Built by the database's own JSON functions because
-    #    binding a JSON string as a parameter has no spelling that means the
-    #    same thing to SQLite (TEXT) and to Postgres (json). The guard is a
-    #    length, not `= '[]'`: Postgres `json` has no equality operator.
+    # 2. Set lineage to `[[own_id, null]]`, which is one uncapped entry,
+    #    because the root branch is the whole story. The database's own JSON
+    #    functions build it, because binding a JSON string as a parameter has no
+    #    form that means the same thing to SQLite, which sees TEXT, and to
+    #    Postgres, which sees json. The guard tests a length rather than
+    #    `= '[]'`, because Postgres `json` has no equality operator.
     conn.execute(text(
         "UPDATE branches SET lineage = json_array(json_array(id, null)) "
         "WHERE json_array_length(lineage) = 0"
@@ -567,10 +594,11 @@ def _backfill_tree(conn) -> None:
         "WHERE json_array_length(lineage) = 0"
     ))
 
-    # 3. Every action onto that branch, at the depth its index already implies.
-    #    Deleting a middle action left gaps in `index`, and those gaps carry
-    #    over deliberately: depth has to keep the order the story is read in,
-    #    and renumbering here would move every cursor that points past the gap.
+    # 3. Move every action onto that branch, at the depth its index implies.
+    #    Deleting an action in the middle left gaps in `index`, and those gaps
+    #    carry over on purpose. Depth has to preserve the order the story is read
+    #    in, and renumbering here would move every cursor that points past a
+    #    gap.
     conn.execute(text(f"""
         UPDATE actions
         SET branch_id = {_root_branch_of('actions.adventure_id')},
@@ -578,7 +606,7 @@ def _backfill_tree(conn) -> None:
         WHERE branch_id IS NULL
     """))
 
-    # 4. The head: the root branch, and the depth of its newest node.
+    # 4. Set the head to the root branch and to the depth of its newest node.
     conn.execute(text(f"""
         UPDATE adventures
         SET head_branch_id = {_root_branch_of('adventures.id')},
@@ -589,9 +617,9 @@ def _backfill_tree(conn) -> None:
         WHERE head_branch_id IS NULL
     """))
 
-    # 5. Memories onto the node that produced them: `source_end` is the index of
-    #    the last action a memory summarised, so it is that node's depth. A
-    #    hand-written memory has no node and keeps depth NULL.
+    # 5. Attach memories to the node that produced them. `source_end` is the
+    #    index of the last action a memory summarized, so it is that node's
+    #    depth. A hand-written memory has no node and keeps a NULL depth.
     conn.execute(text(f"""
         UPDATE memories
         SET branch_id = {_root_branch_of('memories.adventure_id')},
@@ -600,11 +628,11 @@ def _backfill_tree(conn) -> None:
     """))
 
 
-# A frozen copy of `context.history._STORY_TEXT` as it stood at version 56:
-# "text that is not blank once whitespace is stripped". It is written out here
-# rather than imported because a migration has to keep meaning what it meant on
-# the day it ran, while the module is free to move. `char()` is `chr()` on
-# Postgres and there is no third spelling, so it takes a dialect map.
+# A frozen copy of `context.history._STORY_TEXT` as it stood at version 56,
+# which selects text that is not blank once whitespace is stripped. It is written
+# out here rather than imported, because a migration has to keep meaning what it
+# meant on the day it ran, while the module can change. `char()` is `chr()` on
+# Postgres, and there is no third form, so the SQL depends on the dialect.
 def _story_text_sql(column: str, sqlite: bool) -> str:
     char = "char" if sqlite else "chr"
     folded = column
@@ -614,38 +642,38 @@ def _story_text_sql(column: str, sqlite: bool) -> str:
 
 
 def _backfill_cursor_anchors(conn) -> None:
-    """Read each adventure's two cursors as nodes instead of as positions.
+    """Converts each adventure's two cursors from positions into nodes.
 
-    `memory_cursor` = 12 meant "the first twelve story actions are covered".
-    The twelfth story action, in depth order, is the node that says the same
-    thing and goes on saying it after something in front of it is deleted — so
-    the translation is a `ROW_NUMBER()` over the story and a lookup at the
+    A `memory_cursor` of 12 meant that the first twelve story actions were
+    covered. The twelfth story action, in depth order, is the node that means the
+    same thing and keeps meaning it after an action before it is deleted. The
+    translation is therefore a `ROW_NUMBER()` over the story plus a lookup at the
     cursor's own value.
 
-    Two cases the arithmetic has to survive:
+    The arithmetic has to handle two cases:
 
-    * **A cursor past the end of the story.** Legitimate — an adventure caught
-      up under the older rule can have a cursor equal to its action count, and
-      `run_post_turn` used to clamp it every pass. There is no `rn` to match,
-      so it falls back to the deepest node there is: still "caught up", which
-      is what the number meant.
-    * **A cursor of 0**, which is most adventures. Nothing covered, the column
-      default already says so, and no row is touched.
+    * A cursor past the end of the story. This is legitimate. An adventure that
+      was caught up under the older rule can have a cursor equal to its action
+      count, and `run_post_turn` clamped it on every pass. No `rn` matches, so
+      the query falls back to the deepest node that exists, which still means
+      caught up.
+    * A cursor of 0, which is what most adventures have. Nothing is covered, the
+      column default already records that, and no row is updated.
 
-    Guarded on `_depth = -1` so a run that dies halfway resumes: every
-    adventure this has already converted is skipped, and one it has not is
-    indistinguishable from an untouched row.
+    The statement is guarded on `_depth = -1`, so that a run which fails partway
+    through resumes. Every adventure it has already converted is skipped, and one
+    it has not converted looks the same as an untouched row.
 
-    **The row numbering is correlated, not ranked-then-filtered.** Numbering
-    every action in the table and picking one row out of the result reads the
-    whole of `actions` per adventure — the window function is what stops the
-    correlation being pushed down, so the planner has no way to make it cheaper
-    — and this runs inside the one transaction that holds the schema, at boot,
-    against a database with real stories in it. Restricting the scan to the
-    adventure being updated makes each pass an index lookup on
-    `actions.adventure_id` instead, and `PARTITION BY` is then a partition of
-    one. The two forms give the same answer for the same reason: the rows the
-    partition would have separated are exactly the rows the filter removes.
+    The row numbering is correlated rather than ranked and then filtered.
+    Numbering every action in the table and selecting one row from the result
+    reads all of `actions` once per adventure, because the window function stops
+    the correlation from being pushed down and the planner cannot make it
+    cheaper. This runs at boot, inside the single transaction that holds the
+    schema, against a database with real stories in it. Restricting the scan to
+    the adventure being updated makes each pass an index lookup on
+    `actions.adventure_id`, and `PARTITION BY` then partitions one adventure. The
+    two forms return the same answer, because the rows the partition would
+    separate are the rows the filter removes.
     """
     sqlite = conn.dialect.name == "sqlite"
     story = _story_text_sql("text", sqlite)
@@ -673,29 +701,31 @@ def _backfill_cursor_anchors(conn) -> None:
 
 
 # The per-attempt slices of a context snapshot, frozen here as they stood at
-# version 60 (`adventures.VARIANT_SNAPSHOT_KEYS`, now `attempts.ATTEMPT_KEYS`).
-# Everything else in a snapshot is the assembled prompt, which every attempt at
-# one turn shares — which is why a discarded attempt's row carries only these.
+# version 60, where they were `adventures.VARIANT_SNAPSHOT_KEYS` and are now
+# `attempts.ATTEMPT_KEYS`. Everything else in a snapshot is the assembled prompt,
+# which every attempt at one turn shares, so a discarded attempt's row carries
+# only these keys.
 _ATTEMPT_KEYS = ("world_state", "script", "raw_output")
 
 
 def _backfill_state_after(conn) -> None:
-    """Turn each action's "before" snapshots into the "after" ones SP4 reads.
+    """Derives the "after" snapshots SP4 reads from each action's "before" ones.
 
-    The state a node left behind is the state the node in front of it started
-    from, so `state_after` of action *n* is `state_before` of action *n + 1* —
-    exactly, not approximately: the hooks that ran between them are this turn's,
-    and both snapshots were taken with them already applied. The newest action
-    of an adventure has nothing in front of it, and what it left behind is
-    simply what the adventure is carrying right now.
+    The state a node left behind is the state the node after it started from, so
+    `state_after` of action n is exactly `state_before` of action n + 1. The
+    hooks that ran between them belong to this turn, and both snapshots were
+    taken with those hooks already applied. The newest action of an adventure has
+    no action after it, and what it left behind is what the adventure currently
+    holds.
 
-    Two statements per column rather than one COALESCE, because the second is
-    guarded on there being no later action at all — a row whose successor
-    predates `state_before` must stay NULL rather than inherit the tip's state.
+    Each column takes two statements rather than one COALESCE, because the second
+    statement is guarded on there being no later action at all. A row whose
+    successor predates `state_before` has to stay NULL rather than inherit the
+    tip's state.
 
-    Ordered by `index`, which is still the story's order at version 60: SP4 is
-    the first migration where `depth` and `index` can disagree, and it has not
-    run yet when this does.
+    The queries order by `index`, which is still the story's order at version 60.
+    SP4 is the first migration where `depth` and `index` can disagree, and it has
+    not run when this pass does.
     """
     for column, live in (
         ("state_after", "script_state"),
@@ -726,29 +756,28 @@ def _backfill_state_after(conn) -> None:
 
 
 def _split_variants_into_siblings(conn) -> None:
-    """Give every discarded retry attempt the row it should always have had.
+    """Gives every discarded retry attempt its own row.
 
-    `actions.variants` is a JSON repeating group: attempts at one turn, oldest
-    first, with `variant_index` naming the one the row's own `text` mirrors.
-    SP4 makes each attempt a node — same branch, same depth, `live` on exactly
-    one of them — so this reads the list one last time and writes it out as
-    siblings.
+    `actions.variants` is a JSON repeating group holding the attempts at one
+    turn, oldest first, with `variant_index` naming the one the row's own `text`
+    duplicates. SP4 makes each attempt a node on the same branch at the same
+    depth, with `live` set on exactly one of them, so this pass reads the list one
+    last time and writes it out as siblings.
 
-    The row that already exists keeps its attempt (the one it mirrors) and its
-    context snapshot, which is the assembled prompt for the whole turn and is
-    stored once per turn, never once per attempt. A sibling's snapshot carries
-    only the slices that actually differ between attempts, which is precisely
-    what the JSON entry held — so this changes how the bytes are arranged and
-    not how many there are.
+    The existing row keeps its own attempt and its context snapshot. That
+    snapshot is the assembled prompt for the whole turn and is stored once per
+    turn, never once per attempt. A sibling's snapshot carries only the slices
+    that differ between attempts, which is what the JSON entry held, so this pass
+    changes how the bytes are arranged rather than how many there are.
 
-    In Python rather than SQL because the shape of the work is "iterate a JSON
-    array and insert a row per element", which the two dialects spell
-    differently and neither spells well. It is bounded by the number of turns
-    anyone has ever retried, not by the size of the table, and it reads no
-    `context_snapshot` at all.
+    The pass runs in Python rather than SQL, because the work iterates a JSON
+    array and inserts one row per element, which the two dialects express
+    differently and neither expresses well. Its cost is bounded by the number of
+    turns anyone has retried rather than by the size of the table, and it reads no
+    `context_snapshot`.
 
-    Resumable: a group that already has as many rows as its `variant_count`
-    claims has been split, and is skipped.
+    The pass is resumable. A group that already has as many rows as its
+    `variant_count` claims has been split, so it is skipped.
     """
     actions = Base.metadata.tables["actions"]
     last_id = 0
@@ -786,12 +815,13 @@ def _split_one_action(conn, actions, row, entries: list) -> None:
         {"adv": row["adventure_id"], "branch": row["branch_id"], "depth": row["depth"]},
     ).scalar()
     if already and already >= len(entries):
-        return  # a previous run of this pass already split it
-    # The live attempt's own recorded outcome beats the one _backfill_state_after
-    # derived from the turn in front of it — they agree, but only one of them is
-    # a fact about this attempt. Left alone where the entry has none to give
-    # (an adventure with no RPG layer stores no world state per attempt), so a
-    # derived value is never overwritten with a NULL.
+        return  # A previous run of this pass already split it.
+    # Prefer the live attempt's own recorded outcome over the one
+    # `_backfill_state_after` derived from the turn after it. The two agree, but
+    # only the recorded one is a fact about this attempt. If the entry has no
+    # outcome to give, which happens when an adventure has no RPG layer and
+    # stores no world state per attempt, leave the derived value in place rather
+    # than overwrite it with NULL.
     kept = {"live": True, "variant_count": len(entries), "variant_index": live_index}
     live_state = _entry_script_state(entries[live_index])
     live_world = _entry_world_state(entries[live_index])
@@ -799,9 +829,9 @@ def _split_one_action(conn, actions, row, entries: list) -> None:
         kept["state_after"] = live_state
     if live_world is not None:
         kept["world_state_after"] = live_world
-    # Through the Table rather than text(), here and below: these values are
-    # dicts headed for JSON columns, and the column type is the only thing that
-    # knows how to spell one on this dialect.
+    # Use the Table rather than `text()`, here and below. These values are dicts
+    # bound for JSON columns, and the column type is the only thing that knows
+    # how to render one on this dialect.
     conn.execute(actions.update().where(actions.c.id == row["id"]).values(**kept))
     siblings = [
         {
@@ -856,11 +886,11 @@ def _attempt_snapshot(entry) -> dict:
 
 
 def _entry_created_at(entry, fallback):
-    """The attempt's own timestamp, falling back to the row's.
+    """Returns the attempt's own timestamp, or the row's timestamp as a fallback.
 
-    Only ever cosmetic — sibling order is `variant_index`, which this pass
-    writes explicitly, precisely so that nothing depends on two attempts made
-    in the same second sorting the way they were made.
+    The value is cosmetic. Sibling order comes from `variant_index`, which this
+    pass writes explicitly, so that nothing depends on two attempts made in the
+    same second sorting in the order they were made.
     """
     raw = (entry or {}).get("created_at")
     if isinstance(raw, str) and raw:
@@ -883,8 +913,8 @@ def _get_version(conn) -> int:
         "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)"
     ))
     version = conn.execute(text("SELECT version FROM schema_version")).scalar()
-    # A non-fresh database with no stamp can only have been created by an
-    # earlier create_all of this same codebase — i.e. already at LATEST.
+    # An existing database with no stamp can only have been created by an
+    # earlier `create_all` of this same codebase, so it is already at LATEST.
     return version if version is not None else LATEST_VERSION
 
 
@@ -914,8 +944,8 @@ def bootstrap(engine: Engine) -> None:
         for version, sql in MIGRATIONS:
             if version > current:
                 statement = _for_dialect(sql, conn.dialect.name)
-                # The DDL is skippable when it has already happened; the data
-                # pass below it is not, and still runs.
+                # Skip the DDL when it has already run. The data pass below it
+                # still runs.
                 if not _column_already_there(conn, statement):
                     conn.execute(text(statement))
                 if version == WORLD_DELTA_VERSION:
@@ -924,24 +954,26 @@ def bootstrap(engine: Engine) -> None:
                     _backfill_variant_count(conn)
                 if version == EMBEDDING_BLOB_VERSION:
                     _backfill_embedding_blob(conn)
-                # Must land between 43 (add the column) and 44 (drop the old
-                # one). The loop is one transaction, so if this raises, the
-                # DROP rolls back with it and the prompts are still there.
+                # This has to run between migration 43, which adds the column,
+                # and migration 44, which drops the old one. The loop is one
+                # transaction, so if this raises, the DROP rolls back with it
+                # and the prompts are still there.
                 if version == SNAPSHOT_COMPRESS_VERSION:
                     _backfill_context_snapshot(conn)
                 if version == TREE_BACKFILL_VERSION:
                     _backfill_tree(conn)
                 if version == CURSOR_ANCHOR_VERSION:
                     _backfill_cursor_anchors(conn)
-                # Order matters: the split reads what the first pass wrote for
-                # the rows it does not touch, and overwrites it for the ones it
-                # does — an attempt's own outcome beats one derived from the
-                # turn after it.
+                # The order matters. The split reads what the first pass wrote
+                # for the rows it does not change, and overwrites it for the
+                # rows it does, because an attempt's own outcome takes priority
+                # over one derived from the turn after it.
                 if version == SIBLING_SPLIT_VERSION:
                     _backfill_state_after(conn)
                     _split_variants_into_siblings(conn)
-                # After 63 adds the column and 64 indexes it: the UPDATE is
-                # what the index is for, so it runs once both are in place.
+                # Migration 63 adds the column and migration 64 indexes it.
+                # The UPDATE is what the index serves, so it runs once both
+                # exist.
                 if version == PARENT_BACKFILL_VERSION:
                     _backfill_parents(conn)
                 current = version
@@ -950,10 +982,13 @@ def bootstrap(engine: Engine) -> None:
 
 
 def _encrypt_plaintext_api_keys(conn) -> None:
-    """Phase 8 data migration (can't be plain SQL): API keys saved before
-    encryption-at-rest existed are stored bare; wrap them in Fernet. Runs on
-    every start but matches nothing once all rows carry the enc: prefix."""
-    from . import security  # deferred: security derives its key from DB_PATH setup
+    """Encrypts API keys saved before encryption at rest existed (Phase 8).
+
+    Those keys are stored in plain text, so this pass wraps them in Fernet. Plain
+    SQL cannot do it. The pass runs on every start, and it matches no rows once
+    every row carries the `enc:` prefix.
+    """
+    from . import security  # Deferred: security derives its key from DB_PATH setup.
 
     rows = conn.execute(text(
         "SELECT id, api_key FROM settings WHERE api_key != '' AND api_key NOT LIKE 'enc:%'"
