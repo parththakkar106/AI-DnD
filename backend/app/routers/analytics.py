@@ -1,10 +1,10 @@
 """Visit analytics: one endpoint the browser writes to, one the owner reads.
 
-The split matters. `/collect` is public and takes exactly one fact — which
-page was viewed — because anything a stranger can POST is a number a stranger
-can invent. Everything the dashboard actually relies on (turns, adventures,
-sign-ups, demo spend, errors) is recorded server-side by the code performing
-it, so those counts are as trustworthy as the app itself.
+The split matters. `/collect` is public and accepts one fact, which page was
+viewed, because anything a stranger can POST is a number a stranger can invent.
+Everything the dashboard relies on, meaning turns, adventures, sign-ups, demo
+spend, and errors, is recorded on the server by the code that performs it, so
+those counts are as trustworthy as the app itself.
 
 The two reading endpoints are owner-only and 404 for everyone else, the same
 way the AI Chat router does: a feature nobody else can use is better off not
@@ -27,7 +27,8 @@ def owner(
     db: Session = Depends(get_db),
     user: models.User = Depends(auth.get_current_user),
 ) -> models.User:
-    """Gate for the reading half. 404, not 403 — see the module docstring."""
+    """Gates the reading half. It returns 404 rather than 403. See the module
+    docstring."""
     if not auth.is_owner(user):
         raise HTTPException(404, "Not found")
     return user
@@ -39,10 +40,10 @@ Owner = Depends(owner)
 class Pageview(BaseModel):
     """What the SPA reports on a page load or a route change.
 
-    `first` marks a real page load rather than a client-side navigation: the
-    things that describe a *visit* rather than a *view* — where it came from,
-    on what kind of device, from which country — are recorded only then, so a
-    visitor who clicks around five pages is still one referral.
+    `first` marks a real page load rather than a client-side navigation. The
+    facts that describe a visit rather than a view, which are where it came from,
+    on what kind of device, and from which country, are recorded only on a page
+    load, so a visitor who clicks through five pages is still one referral.
     """
 
     path: str = Field("", max_length=300)
@@ -67,9 +68,9 @@ def collect(
         if auth.MULTI_USER
         else auth.local_user(db)
     )
-    # The operator's own clicking is not traffic. Only in multi-user mode —
-    # locally everyone is the owner, and excluding them would leave the
-    # dashboard permanently empty on the machine it is developed on.
+    # The operator's own clicks are not traffic. This applies only in
+    # multi-user mode. Locally every user is the owner, and excluding them would
+    # leave the dashboard empty on the machine the app is developed on.
     if auth.MULTI_USER and user is not None and auth.is_owner(user):
         return Response(status_code=204)
 
@@ -95,8 +96,10 @@ def summary(
     db: Session = Depends(get_db),
     _user: models.User = Owner,
 ) -> dict:
-    """The whole dashboard in one aggregate response — a few kilobytes however
-    much traffic sits behind it."""
+    """Returns the whole dashboard in one aggregate response.
+
+    The response is a few kilobytes however much traffic is behind it.
+    """
     return analytics.summary(db, days)
 
 
@@ -111,9 +114,9 @@ def access_log(
 ) -> dict:
     """A page of the access log, newest first.
 
-    Unlike /summary this returns rows about people, which is the whole point of
-    it — so it is behind the same owner gate, paged rather than dumped, and has
-    no counterpart the people it describes can reach.
+    Unlike `/summary`, this returns rows about people, which is what it is for.
+    It is therefore behind the same owner gate, it is paged rather than returned
+    in full, and the people it describes have no endpoint that reaches it.
     """
     page = accesslog.recent(
         db, limit=limit, before_id=before_id, kind=kind, query=q

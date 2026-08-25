@@ -10,8 +10,11 @@ router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 
 def get_settings(db: Session, user: models.User) -> models.Settings:
-    """Per-user settings row, created on first access (Phase 8: settings —
-    endpoint, key, models, memory config — are per user, not global)."""
+    """Returns the user's settings row, creating it on first access.
+
+    Phase 8 made settings per user rather than global. They cover the endpoint,
+    the key, the models, and the memory configuration.
+    """
     settings = (
         db.query(models.Settings).filter(models.Settings.user_id == user.id).first()
     )
@@ -50,14 +53,16 @@ def update_settings(
     if embedding_model_changed:
         # Vectors from the old model have a different dimensionality/space;
         # clear them so the post-turn task re-embeds with the new model.
-        # (This user's adventures only — settings are per-user now.)
+        # This covers only this user's adventures, because settings are per
+        # user now.
         #
         # Both columns, and the flag. This is the one place that clears vectors
         # in bulk rather than through memorybank.set_vector, and when the
         # vectors moved to embedding_blob it kept nulling the old JSON column
-        # alone: the blob survived, `embedded` stayed true, and _embed_pending
-        # — which looks for embedded IS FALSE — never picked the rows up. The
-        # bank went on ranking against the previous model's vectors forever.
+        # alone. The blob survived, `embedded` stayed true, and
+        # `_embed_pending`, which selects rows where `embedded IS FALSE`, never
+        # found the rows. The bank kept ranking against the previous model's
+        # vectors.
         owned = (
             db.query(models.Adventure.id)
             .filter(models.Adventure.user_id == user.id)
@@ -70,15 +75,18 @@ def update_settings(
         # `embedded` drops these rows out of the catalogue query, so retrieval
         # stops asking for them, and by the time _embed_pending puts one back
         # it has gone through set_vector, which evicts that entry. The rule
-        # holds — anything that removes a memory from play self-corrects.
+        # holds: anything that removes a memory from play corrects itself.
     db.commit()
     return settings
 
 
 async def list_endpoint_models(cfg: auth.ProviderConfig) -> dict:
-    """GET the endpoint's /models listing. Doubles as a connectivity check, so
-    failures come back as {"ok": False, "detail": ...} rather than raising."""
-    # SSRF guard: never probe a non-public address the user pointed us at.
+    """Fetches the endpoint's /models listing.
+
+    The call also serves as a connectivity check, so a failure returns
+    `{"ok": False, "detail": ...}` rather than raising.
+    """
+    # SSRF guard. Never probe a non-public address the user supplied.
     reason = await run_in_threadpool(netguard.endpoint_block_reason, cfg.endpoint_url)
     if reason:
         return {"ok": False, "detail": f"Can't reach that endpoint — {reason}."}
@@ -100,7 +108,8 @@ async def list_endpoint_models(cfg: auth.ProviderConfig) -> dict:
         data = resp.json()
         models_available = [m.get("id", "?") for m in data.get("data", [])]
     except (ValueError, AttributeError, TypeError):
-        pass  # non-JSON or unexpected shape — connectivity is still confirmed
+        pass  # The body is not JSON or has an unexpected shape. The endpoint
+        # is still reachable.
     return {"ok": True, "models": models_available}
 
 
@@ -110,8 +119,11 @@ async def test_connection(
     db: Session = Depends(get_db),
     user: models.User = Depends(auth.get_current_user),
 ):
-    """Cheap connectivity check against whatever the turn engine would actually
-    use — including the shared demo endpoint when the user has no key."""
+    """Runs a cheap connectivity check against whatever the turn engine would use.
+
+    That includes the shared demo endpoint, when the user has no key of their
+    own.
+    """
     limits.rate_limit("connection-test", request, user)
     settings = get_settings(db, user)
     return await list_endpoint_models(auth.resolve_provider_config(settings))
