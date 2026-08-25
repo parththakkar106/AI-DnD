@@ -1,18 +1,19 @@
-"""Phase 8 — user resolution, sessions, and the shared demo key.
+"""Phase 8: user resolution, sessions, and the shared demo key.
 
-Two modes, chosen by the AIDND_MULTI_USER env var:
+The `AIDND_MULTI_USER` environment variable selects one of two modes:
 
-- Local mode (default): every request resolves to one auto-created "local
-  user". No cookies, no login UI — a clone/docker-compose behaves exactly
-  like the pre-Phase-8 single-user app.
-- Multi-user mode (hosted): requests carry a signed session cookie. GET
-  /api/auth/me creates a guest user on first visit; registering upgrades the
-  guest in place so their data survives. Requests without a valid session get
-  401 and the frontend re-establishes via /me.
+* Local mode, the default. Every request resolves to one automatically created
+  local user. There are no cookies and no login UI, so a clone or a
+  docker-compose run behaves like the single-user app from before Phase 8.
+* Multi-user mode, used for hosted deployments. Requests carry a signed session
+  cookie. `GET /api/auth/me` creates a guest user on the first visit, and
+  registering upgrades that guest in place so their data survives. A request
+  without a valid session gets a 401, and the frontend re-establishes the
+  session through `/me`.
 
-The shared demo key (BYOK fallback) is also configured here: users whose
-settings have no API key are routed to a server-funded endpoint with a model
-whitelist and a per-day turn cap.
+The shared demo key, which is the fallback when a user brings no key of their
+own, is also configured here. A user whose settings hold no API key is routed to
+a server-funded endpoint with a model allowlist and a per-day turn cap.
 """
 
 import os
@@ -33,9 +34,10 @@ def _env_flag(name: str) -> bool:
 MULTI_USER = _env_flag("AIDND_MULTI_USER")
 
 SESSION_COOKIE = "aidnd_session"
-# Secure cookies default on in multi-user (hosted = HTTPS; browsers also
-# accept Secure on http://localhost). AIDND_COOKIE_SECURE=0/1 overrides —
-# e.g. 0 when testing multi-user over plain http on a LAN address.
+# Secure cookies are on by default in multi-user mode, because a hosted
+# deployment serves HTTPS and browsers also accept Secure on http://localhost.
+# `AIDND_COOKIE_SECURE` overrides the default with 0 or 1. Use 0 when testing
+# multi-user mode over plain HTTP on a LAN address.
 _cookie_secure_env = os.environ.get("AIDND_COOKIE_SECURE", "").strip().lower()
 COOKIE_SECURE = (
     _cookie_secure_env in ("1", "true", "yes", "on")
@@ -58,18 +60,19 @@ DEMO_MODELS = [
 ] or ["google/gemma-4-26b-a4b-it:free"]
 DEMO_TURNS_PER_DAY = int(os.environ.get("AIDND_DEMO_TURNS_PER_DAY", "20") or 20)
 
-# Trusted testers (by email) who bypass the daily demo cap — unmetered turns on
-# the shared demo key. Comma-separated emails; matched case-insensitively.
+# Trusted testers, listed by email, who bypass the daily demo cap and take
+# unmetered turns on the shared demo key. The list is comma-separated, and the
+# match ignores case.
 POWER_USERS = {
     e.strip().lower()
     for e in os.environ.get("AIDND_POWER_USERS", "").split(",")
     if e.strip()
 }
 
-# Who can see the visit analytics. Deliberately its own list rather than
-# POWER_USERS: a trusted tester gets unmetered turns and the AI Chat page,
-# which is not a reason to hand them the site's traffic numbers. Empty (the
-# default) means nobody sees the dashboard in a hosted deployment.
+# Who can see the visit analytics. This is a separate list from `POWER_USERS` on
+# purpose. A trusted tester gets unmetered turns and the AI Chat page, which is
+# not a reason to give them the site's traffic numbers. An empty list, which is
+# the default, means nobody sees the dashboard in a hosted deployment.
 ANALYTICS_EMAILS = {
     e.strip().lower()
     for e in os.environ.get("AIDND_ANALYTICS_EMAILS", "").split(",")
@@ -83,15 +86,19 @@ DEMO_CAP_MESSAGE = (
 
 
 def demo_enabled() -> bool:
-    # The demo key is a hosted-deployment feature; local installs talk to
-    # whatever endpoint Settings points at, even with no API key (Ollama).
+    # The demo key is a hosted-deployment feature. A local install talks to
+    # whatever endpoint Settings points at, even with no API key, such as
+    # Ollama.
     return MULTI_USER and bool(DEMO_API_KEY)
 
 
 @dataclass
 class ProviderConfig:
-    """What the turn engine should actually connect with, after the
-    BYOK-vs-demo decision. Build these with resolve_provider_config()."""
+    """What the turn engine connects with, after the decision between a
+    user-supplied key and the demo key.
+
+    Build one of these with `resolve_provider_config()`.
+    """
 
     endpoint_url: str
     api_key: str
@@ -99,19 +106,20 @@ class ProviderConfig:
     using_demo: bool
 
     def __post_init__(self) -> None:
-        # Belt and braces around server-funded turns: resolve_provider_config()
-        # already pins the model, and this makes it a property of the config
-        # object too, so a future caller can't construct an unpinned one.
-        # Unreachable by design — a raise here means a new code path bypassed
-        # the pinning, which is worth failing loudly rather than billing.
+        # A second guard around server-funded turns. `resolve_provider_config()`
+        # already pins the model, and this makes the pin a property of the config
+        # object too, so a later caller cannot construct an unpinned one. This
+        # raise is unreachable by design. Reaching it means a new code path
+        # bypassed the pinning, which is worth failing on rather than billing
+        # for.
         #
-        # The test is `using_demo`, NOT `api_key == DEMO_API_KEY`. Keying it on
-        # the key value looks stricter but is wrong: the demo key is a normal
+        # The test is `using_demo`, not `api_key == DEMO_API_KEY`. Keying on the
+        # key value looks stricter and is wrong. The demo key is an ordinary
         # OpenRouter key, so a user can legitimately paste that same key into
-        # their own Settings as BYOK — and then every resolution raised, 500ing
-        # even GET /auth/me and taking the whole SPA down with it. `using_demo`
-        # is what actually means "the server is paying", and only the demo
-        # branch below sets it.
+        # their own Settings. Every resolution then raised, which returned a 500
+        # even from `GET /auth/me` and took the whole SPA down. `using_demo` is
+        # what means the server is paying, and only the demo branch below sets
+        # it.
         if self.using_demo and self.model not in DEMO_MODELS:
             raise ValueError(
                 f"Refusing to use the shared demo key with non-whitelisted model {self.model!r}"
@@ -121,20 +129,23 @@ class ProviderConfig:
 def resolve_provider_config(
     settings: models.Settings, *, model_override: str | None = None
 ) -> ProviderConfig:
-    """BYOK when the user has their own key, the shared demo key otherwise.
+    """Returns the user's own key when they have one, and the shared demo key
+    otherwise.
 
-    THE security-relevant branch is the demo one, and it is the only place the
-    whitelist rule lives — every caller must come through here rather than
-    building a ProviderConfig itself. On the demo key:
+    The demo branch is the security-relevant one, and it is the only place the
+    allowlist rule lives. Every caller has to come through this function rather
+    than build a `ProviderConfig` itself. On the demo key:
 
-    - the model is pinned to DEMO_MODELS, so a caller-supplied override (the AI
-      Chat page) or a hand-edited Settings row cannot aim a server-funded key at
-      a paid model; anything unrecognised falls back to DEMO_MODELS[0];
-    - the endpoint is pinned to DEMO_ENDPOINT_URL, so the key itself can't be
-      redirected to a URL the user controls and harvested.
+    * The model is pinned to `DEMO_MODELS`, so a caller-supplied override from
+      the AI Chat page, or a hand-edited Settings row, cannot point a
+      server-funded key at a paid model. An unrecognized model falls back to
+      `DEMO_MODELS[0]`.
+    * The endpoint is pinned to `DEMO_ENDPOINT_URL`, so the key cannot be
+      redirected to a URL the user controls and captured there.
 
-    `model_override` is a per-request preference (never a grant): it's honoured
-    verbatim under BYOK, and only if whitelisted on the demo key.
+    `model_override` is a per-request preference and never a grant. It is used
+    verbatim with the user's own key, and on the demo key only when the model is
+    on the allowlist.
     """
     key = settings.api_key_plain
     requested = (model_override or "").strip() or settings.model
@@ -149,27 +160,33 @@ def _today() -> str:
 
 
 def is_power_user(user: models.User) -> bool:
-    """Trusted testers: unmetered demo turns, plus tooling that isn't part of
-    the game (the AI Chat scratchpad). Local installs are always trusted — it's
-    the operator's own machine and their own API key, same reasoning as the
-    provider debug log being local-only."""
+    """Returns whether this user is a trusted tester.
+
+    A trusted tester gets unmetered demo turns, plus tooling that is not part of
+    the game, such as the AI Chat scratchpad. A local install is always trusted,
+    because it runs on the operator's own machine with their own API key. The
+    provider debug log is local-only for the same reason.
+    """
     if not MULTI_USER:
         return True
     return bool(user.email) and user.email.lower() in POWER_USERS
 
 
 def is_owner(user: models.User) -> bool:
-    """May this user see the visit analytics? Local installs always can — it is
-    the operator's own machine and their own visits, same reasoning as the
-    provider debug log; hosted deployments check AIDND_ANALYTICS_EMAILS."""
+    """Returns whether this user may see the visit analytics.
+
+    A local install always may, because it runs on the operator's own machine and
+    shows their own visits. The provider debug log follows the same reasoning. A
+    hosted deployment checks `AIDND_ANALYTICS_EMAILS`.
+    """
     if not MULTI_USER:
         return True
     return bool(user.email) and user.email.lower() in ANALYTICS_EMAILS
 
 
 def demo_turns_left(user: models.User) -> int:
-    # Power users are never capped; report the full cap so the banner reads
-    # "N of N" rather than a decrementing count.
+    # A power user is never capped, so report the full cap and let the banner
+    # read "N of N" rather than count down.
     if is_power_user(user):
         return DEMO_TURNS_PER_DAY
     used = user.demo_turns_used if user.demo_turns_date == _today() else 0
@@ -177,9 +194,9 @@ def demo_turns_left(user: models.User) -> int:
 
 
 def count_demo_turn(user: models.User) -> None:
-    """Record one demo turn; the caller's commit persists it."""
+    """Records one demo turn. The caller's commit stores it."""
     if is_power_user(user):
-        return  # unmetered — power users don't count against the cap
+        return  # A power user's turns do not count against the cap.
     today = _today()
     if user.demo_turns_date != today:
         user.demo_turns_date = today
@@ -190,8 +207,11 @@ def count_demo_turn(user: models.User) -> None:
 # ---------- User resolution ----------
 
 def local_user(db: Session) -> models.User:
-    """The single implicit user in local mode (owns pre-Phase-8 data via
-    migration; created lazily on a fresh database)."""
+    """Returns the single implicit user used in local mode.
+
+    A migration gives this user ownership of data written before Phase 8. On a
+    fresh database the user is created on first use.
+    """
     user = (
         db.query(models.User)
         .filter(models.User.email.is_(None), models.User.is_guest.is_(False))
@@ -209,7 +229,8 @@ def _touch(user: models.User, db: Session) -> None:
     now = models.utcnow()
     last = user.last_seen_at
     if last is not None and last.tzinfo is None:
-        # SQLite hands DateTime columns back naive; they were stored as UTC.
+        # SQLite returns DateTime columns without a timezone. They were stored
+        # as UTC.
         last = last.replace(tzinfo=timezone.utc)
     if last is None or (now - last).total_seconds() > 3600:
         user.last_seen_at = now
@@ -227,8 +248,11 @@ def resolve_session_user(request: Request, db: Session) -> models.User | None:
 
 
 def get_current_user(request: Request, db: Session = Depends(get_db)) -> models.User:
-    """Dependency used by every router. 401 in multi-user mode means the
-    frontend must (re)establish a session via GET /api/auth/me."""
+    """The dependency every router uses to resolve the current user.
+
+    In multi-user mode a 401 means the frontend has to establish a session again
+    through `GET /api/auth/me`.
+    """
     if not MULTI_USER:
         user = local_user(db)
     else:
