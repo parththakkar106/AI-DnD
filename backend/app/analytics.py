@@ -1,34 +1,38 @@
 """Visit analytics for the hosted demo.
 
-A small self-hosted counter answering "did anyone visit, and did they play?",
-built into the app rather than bolted on with a third-party script: the CSP in
-main.py allows scripts from 'self' only, adblockers eat the popular trackers,
-and none of them can see the things actually worth knowing here (turns taken,
-demo-key spend, which seeded scenario people pick).
+This is a small self-hosted counter that answers whether anyone visited and
+whether they played. It is built into the app rather than added with a
+third-party script, because the CSP in `main.py` allows scripts from 'self'
+only, ad blockers block the popular trackers, and none of those trackers can see
+what is worth knowing here: turns taken, demo-key spend, and which seeded
+scenario people pick.
 
-Three rules shaped it:
+Three rules shape the design:
 
-1. **Nothing personal is stored.** No IP addresses, no user agents, no user
-   ids, no title of anything a player wrote. A visitor appears only as an HMAC
-   of their user id — one-way and salted with the app's secret key, so these
-   tables cannot be joined back to an account even by someone holding the
-   database. Story content never reaches this module at all. What a *specific*
-   person did is deliberately unanswerable; only totals are.
-2. **Egress is the budget.** Neon bills for bytes leaving the database and this
-   project has already paid for forgetting that once. So counts are aggregated
-   in memory and flushed as UPSERTs — a visit is a write, never a read — and
-   every dashboard query is a GROUP BY returning tens of rows, never per-visit
-   rows. A month of traffic costs a few kilobytes to read back.
-3. **The numbers are the server's, not the browser's.** The client reports one
-   thing: which page was viewed. Everything that *means* something ("a turn
-   happened", "an account was created") is recorded by the code that does it,
-   where it can be neither faked by a stranger nor blocked by an extension.
+1. It stores nothing personal. It records no IP addresses, no user agents, no
+   user ids, and no title of anything a player wrote. A visitor appears only as
+   an HMAC of their user id, which is one-way and salted with the app's secret
+   key, so these tables cannot be joined back to an account even by someone
+   holding the database. Story content never reaches this module. What one
+   specific person did is unanswerable by design, and only totals are
+   available.
+2. Egress is the budget. Neon bills for bytes leaving the database, and this
+   project has already paid for forgetting that once. Counts are therefore
+   aggregated in memory and flushed as UPSERTs, so a visit is a write and never
+   a read, and every dashboard query is a GROUP BY that returns tens of rows
+   rather than per-visit rows. A month of traffic costs a few kilobytes to read
+   back.
+3. The numbers come from the server, not from the browser. The client reports
+   one thing, which is the page that was viewed. Everything with meaning, such
+   as a turn happening or an account being created, is recorded by the code that
+   performs it, where a stranger cannot fake it and an extension cannot block
+   it.
 
-Storage is two tables, both bounded. `analytics_daily` is one row per (day,
-metric, label) counter — a few dozen a day. `analytics_visitor_days` is one row
-per visitor per day carrying the funnel flags, which is what makes the funnel
-count *people* rather than clicks; it is the only table that grows with traffic
-and cleanup ages it out.
+Storage is two tables, both bounded. `analytics_daily` holds one counter row per
+day, metric, and label, which is a few dozen rows a day.
+`analytics_visitor_days` holds one row per visitor per day carrying the funnel
+flags, which is what makes the funnel count people rather than clicks. It is the
+only table that grows with traffic, and cleanup ages it out.
 """
 
 import hmac
@@ -50,31 +54,31 @@ from . import models, security
 logger = logging.getLogger(__name__)
 
 # ---------- Metrics ----------
-# `metric` is the family, `label` the bucket within it. One generic counter
-# table beats a column per thing measured: adding a new question later is a
-# constant, not a migration.
+# `metric` is the family, and `label` is the bucket within it. One generic
+# counter table is better than a column per measurement, because adding a new
+# question later costs nothing rather than a migration.
 
 M_PAGE = "pageview"
 M_EVENT = "event"
 M_REFERRER = "referrer"
 M_DEVICE = "device"
 M_COUNTRY = "country"
-M_SCENARIO = "scenario"      # which seeded/public scenario got played
-M_ERROR = "error"            # "<status> <route>" for 4xx/5xx on /api
+M_SCENARIO = "scenario"      # Which seeded or public scenario was played.
+M_ERROR = "error"            # "<status> <route>" for a 4xx or 5xx on /api.
 
 EV_SCENARIO_OPEN = "scenario_opened"
 EV_ADVENTURE = "adventure_created"
 EV_IMPORT = "adventure_imported"
 EV_TURN = "turn"
-EV_DEMO_TURN = "demo_turn"   # a turn billed to the shared demo key
+EV_DEMO_TURN = "demo_turn"   # A turn billed to the shared demo key.
 EV_TURN_ERROR = "turn_error"
 EV_SIGNUP = "signup"
 EV_LOGIN = "login"
 
-# Events that are also funnel steps: recording one flips a flag on the
-# visitor's row for the day, so the funnel counts distinct people-days instead
-# of repeat clicks. The name -> column map is the whole definition of the
-# funnel; the dashboard reads it back in this order.
+# Events that are also funnel steps. Recording one sets a flag on the visitor's
+# row for the day, so the funnel counts distinct visitor-days rather than repeat
+# clicks. This name-to-column map is the whole definition of the funnel, and the
+# dashboard reads it back in this order.
 FUNNEL_FLAGS = {
     EV_SCENARIO_OPEN: "opened",
     EV_ADVENTURE: "created",
@@ -87,44 +91,45 @@ NONE_LABEL = "(direct)"
 UNKNOWN = "(unknown)"
 
 # ---------- Bounds ----------
-# Everything below exists so a hostile visitor can add rows to these tables no
+# These bounds exist so that a hostile visitor can add rows to these tables no
 # faster than an honest one. The only label a client can influence is the
-# referrer, and these caps together mean the worst it can do is fill one day's
-# referrer list with junk and then be folded into "(other)".
+# referrer, and together these caps mean the worst it can do is fill one day's
+# referrer list and then be folded into "(other)".
 
 MAX_LABEL_LEN = 80
-MAX_LABELS_PER_METRIC = 200   # distinct labels per metric per day, then OTHER
-MAX_PENDING = 4000            # buffered entries before an inline flush
+MAX_LABELS_PER_METRIC = 200   # Distinct labels per metric per day, then OTHER.
+MAX_PENDING = 4000            # Buffered entries before an inline flush.
 FLUSH_INTERVAL_SECONDS = 60
 
-# How long the per-visitor-day rows are kept. The daily counters are tiny and
-# kept forever; these are the ones that scale with traffic. A visitor whose
-# last visit falls off the end counts as new again — a fair trade at this
-# horizon, and it keeps the table from being a permanent record of anyone.
+# How long the per-visitor-day rows are kept. The daily counters are small and
+# are kept indefinitely. These rows are the ones that scale with traffic. A
+# visitor whose last visit ages out counts as new again, which is an acceptable
+# trade at this horizon and keeps the table from being a permanent record of
+# anyone.
 RETENTION_DAYS = int(os.environ.get("AIDND_ANALYTICS_RETENTION_DAYS", "400") or 400)
 
 _HOST_OK = re.compile(r"^[a-z0-9.-]+$")
 _COUNTRY_OK = re.compile(r"^[A-Z]{2}$")
 _NUMERIC_SEGMENT = re.compile(r"^\d+$")
 
-# SPA routes, in the shape the dashboard should show them. Anything else a
-# client claims to have viewed becomes OTHER, so the page list can neither be
-# polluted nor accidentally record which adventure someone is reading.
+# SPA routes, in the form the dashboard shows them. Any other path a client
+# reports becomes OTHER, so the page list cannot be filled with junk and cannot
+# record which adventure someone is reading.
 KNOWN_ROUTES = {
     "/", "/adventures", "/scenarios", "/scenarios/:id", "/play/:id",
     "/scripts", "/scripts/:id", "/settings", "/chat", "/analytics",
 }
 
 # ---------- In-process buffer ----------
-# Single-process deployment (same assumption as limits.py), so a plain dict
-# under a lock is the whole design. Losing up to a minute of counts to a hard
-# restart is acceptable for traffic numbers, and the flusher also runs on
-# shutdown; on Render's free tier the service is idle when it sleeps, so the
-# buffer it sleeps on is empty anyway.
+# The deployment is a single process, which is the same assumption `limits.py`
+# makes, so a plain dict under a lock is the whole design. Losing up to a minute
+# of counts to a hard restart is acceptable for traffic numbers, and the flusher
+# also runs on shutdown. On Render's free tier the service is idle when it
+# sleeps, so the buffer it sleeps on is empty.
 
 _counts: dict[tuple[str, str, str], int] = {}
-_visits: dict[tuple[str, str], set[str]] = {}       # (day, visitor) -> flags
-_labels_seen: dict[tuple[str, str], set[str]] = {}  # (day, metric) -> labels
+_visits: dict[tuple[str, str], set[str]] = {}       # (day, visitor) -> flags.
+_labels_seen: dict[tuple[str, str], set[str]] = {}  # (day, metric) -> labels.
 _guard = threading.Lock()
 
 
@@ -133,8 +138,11 @@ def _today() -> str:
 
 
 def record(metric: str, label: str = "", *, n: int = 1) -> None:
-    """Add `n` to one counter. Never raises: analytics must not be able to
-    fail a request it is only watching."""
+    """Adds `n` to one counter.
+
+    This function never raises. Analytics must not fail a request that it is
+    only observing.
+    """
     try:
         day = _today()
         label = (label or "").strip()[:MAX_LABEL_LEN]
@@ -156,22 +164,26 @@ def record(metric: str, label: str = "", *, n: int = 1) -> None:
 
 
 def visitor_id(user: models.User) -> str:
-    """A stable but one-way handle for one visitor.
+    """Returns a stable, one-way handle for one visitor.
 
-    HMAC of the user id under the app's secret key. Stable, so a returning
-    visitor can be told from a new one; one-way, so nothing in the analytics
-    tables points back at an account; keyed, so a client cannot compute one and
-    claim to be somebody else. One consequence worth knowing: rotating
-    AIDND_SECRET_KEY makes every returning visitor look new again.
+    The handle is an HMAC of the user id under the app's secret key. It is
+    stable, so a returning visitor can be distinguished from a new one. It is
+    one-way, so nothing in the analytics tables points back at an account. It is
+    keyed, so a client cannot compute one and claim to be someone else. One
+    consequence follows: rotating `AIDND_SECRET_KEY` makes every returning
+    visitor look new.
     """
     digest = hmac.new(security.SECRET_KEY, f"visitor:{user.id}".encode(), sha256)
     return digest.hexdigest()[:32]
 
 
 def record_visit(user: models.User | None, *, flag: str | None = None) -> None:
-    """Note that this visitor was here today, optionally flipping one funnel
-    flag. A no-op without a user: a page loaded before a session exists still
-    counts as a pageview, just not as a person."""
+    """Records that this visitor was here today, and optionally sets one funnel
+    flag.
+
+    Without a user the call does nothing. A page loaded before a session exists
+    still counts as a pageview, but not as a person.
+    """
     if user is None:
         return
     try:
@@ -184,8 +196,10 @@ def record_visit(user: models.User | None, *, flag: str | None = None) -> None:
 
 
 def record_event(name: str, user: models.User | None = None) -> None:
-    """One thing that happened: counted, and — if it is a funnel step —
-    credited to the visitor's day. This is the call sites' whole interface."""
+    """Records one event, and credits the visitor's day if it is a funnel step.
+
+    This is the whole interface the call sites use.
+    """
     record(M_EVENT, name)
     record_visit(user, flag=FUNNEL_FLAGS.get(name))
 
@@ -193,10 +207,10 @@ def record_event(name: str, user: models.User | None = None) -> None:
 # ---------- Normalizing what the browser reports ----------
 
 def normalize_route(path: str) -> str:
-    """A client-reported path, reduced to one of KNOWN_ROUTES.
+    """Reduces a client-reported path to one of `KNOWN_ROUTES`.
 
-    Numeric segments become ":id" — both to bound the label count and because
-    *which* adventure someone opened is their business, not a statistic.
+    Numeric segments become ":id". That bounds the label count, and it keeps
+    which adventure someone opened out of the statistics.
     """
     path = (path or "/").split("?")[0].split("#")[0]
     if not path.startswith("/"):
@@ -209,8 +223,11 @@ def normalize_route(path: str) -> str:
 
 
 def normalize_referrer(referrer: str, own_host: str = "") -> str:
-    """The sending site as a bare host. Our own host means an internal
-    navigation, which is not a referral — "" tells the caller to skip it."""
+    """Returns the sending site as a bare host.
+
+    This app's own host means an internal navigation, which is not a referral.
+    In that case the function returns "", which tells the caller to skip it.
+    """
     if not referrer:
         return NONE_LABEL
     host = (urlsplit(referrer).hostname or "").lower().lstrip(".")
@@ -222,21 +239,23 @@ def normalize_referrer(referrer: str, own_host: str = "") -> str:
 
 
 def api_route_label(scope: dict, status: int) -> str:
-    """An error bucket like "500 /api/adventures/{adventure_id}".
+    """Returns an error bucket such as "500 /api/adventures/{adventure_id}".
 
-    The route *template* is used, never the request path: it keeps one bucket
-    per endpoint instead of one per adventure id, and — the reason it is not
-    merely tidier — an unmatched path is entirely attacker-chosen, so labelling
-    by it would let anyone mint rows by requesting nonsense.
+    The label uses the route template, never the request path. That keeps one
+    bucket per endpoint rather than one per adventure id. It also bounds the
+    table: an unmatched path is chosen entirely by the caller, so labeling by it
+    would let anyone create rows by requesting arbitrary paths.
     """
     template = getattr(scope.get("route"), "path", None)
     return f"{status} {template}" if template else f"{status} (unmatched)"
 
 
 def device_of(user_agent: str) -> str:
-    """Mobile / tablet / desktop, and nothing finer. The UA string itself is
-    never stored — it is a fingerprint, and the answer worth having is one
-    word."""
+    """Returns "mobile", "tablet", or "desktop", and nothing more specific.
+
+    The user-agent string itself is never stored, because it is a fingerprint
+    and the useful answer is one word.
+    """
     ua = (user_agent or "").lower()
     if not ua:
         return UNKNOWN
@@ -249,10 +268,10 @@ def device_of(user_agent: str) -> str:
     return "desktop"
 
 
-# Geo headers an edge may add. Render fronts services with a CDN that can set
-# cf-ipcountry; the others cost nothing to look for. A value is trusted only if
-# it looks like an ISO code, since a client can send any header it likes — the
-# worst case is therefore a wrong country, never an unbounded label.
+# Geo headers an edge network may add. Render fronts services with a CDN that
+# can set `cf-ipcountry`, and the others cost nothing to check. A value is
+# trusted only if it looks like an ISO code, because a client can send any
+# header, so the worst case is a wrong country rather than an unbounded label.
 _GEO_HEADERS = ("cf-ipcountry", "x-vercel-ip-country", "x-geo-country", "x-country-code")
 
 
@@ -275,8 +294,8 @@ def _drain() -> tuple[dict, dict]:
         counts, visits = _counts.copy(), _visits.copy()
         _counts.clear()
         _visits.clear()
-        # The label sets only bound cardinality within a day, so let yesterday's
-        # go rather than growing a map that never shrinks.
+        # The label sets bound cardinality within one day, so drop the
+        # previous day's rather than grow a map that never shrinks.
         today = _today()
         for key in [k for k in _labels_seen if k[0] != today]:
             del _labels_seen[key]
@@ -284,7 +303,7 @@ def _drain() -> tuple[dict, dict]:
 
 
 def _restore(counts: dict, visits: dict) -> None:
-    """Put a failed flush's work back so the next one retries it."""
+    """Returns a failed flush's work to the buffer, so the next flush retries it."""
     with _guard:
         for key, n in counts.items():
             _counts[key] = _counts.get(key, 0) + n
@@ -293,7 +312,7 @@ def _restore(counts: dict, visits: dict) -> None:
 
 
 def flush(db: Session | None = None) -> None:
-    """Write the buffer out. Safe to call from anywhere; never raises."""
+    """Writes the buffer out. This is safe to call from anywhere and never raises."""
     counts, visits = _drain()
     if not counts and not visits:
         return
@@ -334,9 +353,9 @@ def _write_visits(db: Session, visits: dict) -> None:
         return
     table = models.AnalyticsVisitorDay.__table__
     ids = {visitor for _, visitor in visits}
-    # One indexed lookup settles new-vs-returning for the whole batch. It is
-    # the only read this module does off the dashboard, and it returns short
-    # hashes for visitors who are active right now — bounded by the batch.
+    # One indexed lookup decides new against returning for the whole batch. It
+    # is the only read this module makes outside the dashboard, and it returns
+    # short hashes for the visitors active right now, so the batch bounds it.
     known = set(db.scalars(
         select(models.AnalyticsVisitorDay.visitor)
         .where(models.AnalyticsVisitorDay.visitor.in_(ids))
@@ -354,8 +373,8 @@ def _write_visits(db: Session, visits: dict) -> None:
     stmt = _insert(db)(table).values(rows)
     db.execute(stmt.on_conflict_do_update(
         index_elements=["day", "visitor"],
-        # Flags only ever turn on, and `is_new` is deliberately absent: the
-        # first write of a visitor's first day is the one that decided it.
+        # Flags only turn on, and `is_new` is absent on purpose. The first
+        # write of a visitor's first day is what decided it.
         set_={
             column: or_(table.c[column], stmt.excluded[column])
             for column in FUNNEL_FLAGS.values()
@@ -364,9 +383,11 @@ def _write_visits(db: Session, visits: dict) -> None:
 
 
 def purge_old_visitor_days(db: Session) -> int:
-    """Drop visitor-day rows past the retention horizon. Called by the cleanup
-    sweeper; the daily counters are never purged — they are aggregate, tiny,
-    and a portfolio project wants to keep its history."""
+    """Deletes visitor-day rows past the retention horizon.
+
+    The cleanup sweeper calls this. The daily counters are never purged, because
+    they are aggregates, they are small, and this project keeps its history.
+    """
     if RETENTION_DAYS <= 0:
         return 0
     cutoff = (models.utcnow().date() - timedelta(days=RETENTION_DAYS)).isoformat()
@@ -378,9 +399,9 @@ def purge_old_visitor_days(db: Session) -> int:
 
 
 # ---------- Reading it back ----------
-# Every query below is an aggregate: the database does the counting and ships
-# back tens of rows, whatever the traffic behind them. Nothing here can return
-# a row that belongs to one visitor.
+# Every query below is an aggregate. The database does the counting and returns
+# tens of rows, however much traffic is behind them. No query here can return a
+# row that belongs to one visitor.
 
 TOP_N = 12
 
@@ -390,17 +411,20 @@ def _top(rows: list[dict], limit: int = TOP_N) -> list[dict]:
 
 
 def summary(db: Session, days: int = 30) -> dict:
-    """Everything the dashboard shows, for the last `days` days (today
-    included). Flushes first so the numbers include the last minute."""
+    """Returns everything the dashboard shows for the last `days` days, including
+    today.
+
+    The function flushes first, so the numbers include the last minute.
+    """
     flush(db)
     today = models.utcnow().date()
     since = (today - timedelta(days=days - 1)).isoformat()
     daily = models.AnalyticsDaily
     visitor = models.AnalyticsVisitorDay
 
-    # 1. Every counter in the window, folded to (metric, label) totals: the
-    #    page/referrer/country/device/scenario/error tables all come from this
-    #    one pass rather than a query each.
+    # 1. Every counter in the window, reduced to (metric, label) totals. The
+    #    page, referrer, country, device, scenario, and error tables all come
+    #    from this one pass rather than from a query each.
     by_metric: dict[str, list[dict]] = {}
     for metric, label, hits in db.execute(
         select(daily.metric, daily.label, func.sum(daily.hits))
@@ -412,7 +436,7 @@ def summary(db: Session, days: int = 30) -> dict:
         rows.sort(key=lambda row: -row["hits"])
     events = {row["label"]: row["hits"] for row in by_metric.get(M_EVENT, [])}
 
-    # 2. Two per-day series worth drawing.
+    # 2. The two per-day series the dashboard draws.
     pageviews_by_day = {
         day: int(hits)
         for day, hits in db.execute(
@@ -430,8 +454,8 @@ def summary(db: Session, days: int = 30) -> dict:
         )
     }
 
-    # 3. People, per day. One row per visitor per day means COUNT(*) is already
-    #    the day's unique visitors — no DISTINCT needed here.
+    # 3. People, per day. There is one row per visitor per day, so COUNT(*) is
+    #    already the day's unique visitors and no DISTINCT is needed.
     visitors_by_day: dict[str, dict] = {}
     for day, total, fresh in db.execute(
         select(
@@ -444,9 +468,9 @@ def summary(db: Session, days: int = 30) -> dict:
     ):
         visitors_by_day[day] = {"visitors": int(total), "new": int(fresh or 0)}
 
-    # 4. The funnel, over the whole window, counting *people* once each:
+    # 4. The funnel over the whole window, counting each person once.
     #    COUNT(DISTINCT CASE WHEN flag THEN visitor END) ignores the NULLs the
-    #    CASE leaves for everyone who didn't reach that step.
+    #    CASE leaves for everyone who did not reach that step.
     unique, unique_new, *reached = db.execute(
         select(
             func.count(func.distinct(visitor.visitor)),
@@ -480,9 +504,9 @@ def summary(db: Session, days: int = 30) -> dict:
         "until": today.isoformat(),
         "generated_at": models.utcnow().isoformat(),
         "totals": {
-            # `visitors` counts each person once for the window; `visits` counts
-            # them once per day they came back, which is the closest honest
-            # thing to "sessions" without tracking sessions.
+            # `visitors` counts each person once for the window. `visits`
+            # counts them once per day they returned, which is the closest
+            # measure to "sessions" that does not track sessions.
             "visitors": int(unique),
             "new_visitors": int(unique_new),
             "visits": visits,
@@ -498,8 +522,8 @@ def summary(db: Session, days: int = 30) -> dict:
             "pages_per_visit": round(pageviews / visits, 1) if visits else 0,
         },
         "series": series,
-        # Step 0 is everyone who showed up, so the drop-off between it and
-        # "Opened a scenario" is visible as a step like any other.
+        # Step 0 is everyone who arrived, so the drop-off between it and
+        # "Opened a scenario" appears as a step like any other.
         "funnel": [{"step": "Visited", "count": int(unique)}] + [
             {"step": step, "count": int(count)}
             for step, count in zip(
@@ -518,8 +542,9 @@ def summary(db: Session, days: int = 30) -> dict:
 
 
 # ---------- Background flusher ----------
-# Mirrors cleanup's start/stop pair so main.py's lifespan reads the same way
-# for both. The interval is what bounds how much a hard restart can lose.
+# This matches the start and stop pair in `cleanup`, so the lifespan in
+# `main.py` reads the same way for both. The interval bounds how much a hard
+# restart can lose.
 
 async def _flush_loop() -> None:
     import asyncio
@@ -528,8 +553,8 @@ async def _flush_loop() -> None:
 
     while True:
         await asyncio.sleep(FLUSH_INTERVAL_SECONDS)
-        # Blocking DB work: keep it off the event loop, which is also serving
-        # SSE turn streams.
+        # This is blocking database work, so keep it off the event loop, which
+        # is also serving SSE turn streams.
         await run_in_threadpool(flush)
 
 
@@ -540,9 +565,11 @@ def start_flusher():
 
 
 async def stop_flusher(task) -> None:
-    """Cancel the loop and write out whatever it was holding — a deploy is the
-    one restart that is both frequent and predictable, so it should not be the
-    thing that loses a minute of counts."""
+    """Cancels the loop and writes out whatever it was holding.
+
+    A deploy is the one restart that is both frequent and predictable, so it
+    should not be what loses a minute of counts.
+    """
     import asyncio
 
     from starlette.concurrency import run_in_threadpool
