@@ -1,33 +1,33 @@
-"""Phase 14, SP4 — the attempts at one turn.
+"""Phase 14, SP4: the attempts at one turn.
 
-A retry used to rewrite the AI action in place and push the discarded take into
-a JSON list on the same row. That is where seven separate bugs came from: the
-row's `text` mirrored one entry of a repeating group, `variant_count` mirrored
-its length, and every reader that touched the story during a retry had to be
-told to pretend the row was not there.
+A retry used to rewrite the AI action in place and append the discarded attempt
+to a JSON list on the same row. Seven separate bugs came from that arrangement.
+The row's `text` duplicated one entry of a repeating group, `variant_count`
+duplicated its length, and every reader that touched the story during a retry
+had to be told to ignore the row.
 
-Now an attempt is a **node**. Retry writes a sibling at the same
-`(branch_id, depth)` and marks it live; the previous one stays exactly as it
-was written, at the same coordinate, `live = False`. Nothing is mirrored, so
-nothing can drift.
+Now an attempt is a node. A retry writes a sibling at the same `(branch_id,
+depth)` and marks it live. The previous attempt stays as it was written, at the
+same coordinate, with `live = False`. Nothing is duplicated, so nothing can
+diverge.
 
 Two invariants hold the arrangement together, and this module is the only place
-that maintains either:
+that maintains either one:
 
-* **Exactly one sibling in a group is live.** `lineage.Path.clause` selects on
-  it, so the losing attempts are invisible to every read of the story without
-  any of those reads knowing that attempts exist.
-* **The assembled prompt is stored once per turn, on the live sibling.**
-  A `context_snapshot` is ~163 kB of prompt that every attempt at a turn
-  shares, plus a few hundred bytes that differ (`ATTEMPT_KEYS`). Giving each
-  sibling its own copy would have made retry a permanent multiplier on the
-  biggest column in the database — the thing the JSON list was invented to
-  avoid. So the prompt moves with the live flag, and a superseded sibling keeps
-  only its own slices.
+* Exactly one sibling in a group is live. `lineage.Path.clause` selects on it, so
+  the other attempts are invisible to every read of the story, and none of those
+  reads has to know that attempts exist.
+* The assembled prompt is stored once per turn, on the live sibling. A
+  `context_snapshot` is about 163 kB of prompt that every attempt at a turn
+  shares, plus a few hundred bytes that differ, listed in `ATTEMPT_KEYS`. Giving
+  each sibling its own copy would make a retry a permanent multiplier on the
+  largest column in the database, which is what the JSON list was invented to
+  avoid. The prompt therefore moves with the live flag, and a superseded sibling
+  keeps only its own slices.
 
-Ordering inside a group is `variant_index`, an explicit ordinal, not
-`created_at`. Two attempts made in the same second must still page in the order
-they were made, and the migration that split the old JSON lists had to be able
+Ordering inside a group comes from `variant_index`, which is an explicit ordinal
+rather than `created_at`. Two attempts made in the same second still have to page
+in the order they were made, and the migration that split the old JSON lists had
 to state the order rather than reconstruct it.
 """
 
@@ -38,41 +38,42 @@ from sqlalchemy.orm import Session, undefer
 from . import models
 from .context import lineage
 
-# The slices of a context snapshot that belong to one attempt rather than to
-# the turn: the world-state delta it proposed and what the referee did with it,
-# the script report, the model's literal reply, and the endpoint's token
-# accounting — each attempt is its own API call, and a retry is precisely the
-# call expected to read the prompt back out of cache. Everything else in a
-# snapshot is the prompt, which is assembled once per turn.
+# The slices of a context snapshot that belong to one attempt rather than to the
+# turn. They are the world-state delta the attempt proposed and what the engine
+# did with it, the script report, the model's literal reply, and the endpoint's
+# token accounting. Each attempt is its own API call, and a retry is the call
+# most likely to read the prompt back out of cache. Everything else in a snapshot
+# is the prompt, which is assembled once per turn.
 ATTEMPT_KEYS = ("world_state", "script", "raw_output", "usage")
 
 
 # ------------------------------------------------------------------ reading
 
 def group(db: Session, action: models.Action) -> list[models.Action]:
-    """Every attempt at `action`'s turn, oldest first.
+    """Returns every attempt at `action`'s turn, oldest first.
 
-    Keyed on the **parent**, not on the coordinate (SP9). The two agree right up
-    until a take is forked onto its own branch: it keeps its parent but leaves
-    the (branch, depth) its siblings are still at, so a coordinate would report
-    it as the only take of its turn — `1/1` where the player is owed `1/3`.
+    The query keys on the parent rather than on the coordinate (SP9). The two
+    agree until an attempt is forked onto its own branch. That attempt keeps its
+    parent but leaves the `(branch, depth)` its siblings are still at, so a
+    coordinate would report it as the only attempt at its turn, showing `1/1`
+    where the player should see `1/3`.
 
-    The parent also gets the nesting right without being asked. Takes under C1
-    and takes under C2 share a depth and, until one of them forks, a branch;
-    only the parent separates them, which is what makes a pager under C2 read
-    `2/2` instead of counting C1's three as well.
+    The parent also nests groups correctly without extra work. Attempts under C1
+    and attempts under C2 share a depth, and until one of them forks they share a
+    branch. Only the parent separates them, which is what makes a pager under C2
+    read `2/2` rather than count C1's three as well.
 
-    Two fallbacks, both meaning "this row predates the key being asked about":
-    a node with no branch is a pre-tree row no path contains, and a node with no
-    parent is a pre-SP9 row the backfill could not place. Both are their own
-    only attempt under the rule they were written with.
+    There are two fallbacks, and both mean the row predates the key being asked
+    about. A node with no branch is a pre-tree row that no path contains, and a
+    node with no parent is a pre-SP9 row the backfill could not place. Under the
+    rule each was written with, both are the only attempt at their turn.
     """
     if action.branch_id is None or action.depth is None:
         return [action]
     if action.parent_id is None:
-        # Pre-SP9, and the coordinate is the key those rows were written under.
-        # Root nodes land here too and are genuinely alone: nothing is a take of
-        # the opening of a story.
+        # This row is pre-SP9, and the coordinate is the key those rows were
+        # written under. A root node also reaches this branch and is genuinely
+        # alone, because nothing is an attempt at the opening of a story.
         return (
             db.query(models.Action)
             .filter(
@@ -96,18 +97,18 @@ def group(db: Session, action: models.Action) -> list[models.Action]:
 
 
 def on_branch(rows: list[models.Action], node: models.Action) -> list[models.Action]:
-    """The takes in `rows` that sit on `node`'s own branch.
+    """Returns the attempts in `rows` that are on `node`'s own branch.
 
-    `group` answers "which takes are of this turn", and since SP9 that spans
-    branches — a take forked onto its own line is still a take of the same turn,
-    which is the whole point of keying on the parent.
+    `group` reports which attempts belong to this turn, and since SP9 that spans
+    branches. An attempt forked onto its own line is still an attempt at the same
+    turn, which is the reason for keying on the parent.
 
-    Deleting is the one caller that must not follow it there. A take on another
-    branch is reachable through that branch and belongs to the story somebody is
-    telling on it; removing it because a turn was undone over here would delete
-    a line nobody asked about. Same parent *and* same branch is the coordinate,
-    which is what "every attempt at this turn" meant before a fork could move
-    one out of it.
+    Deletion is the one caller that must not follow a group across branches. An
+    attempt on another branch is reachable through that branch and belongs to the
+    story someone is telling there. Removing it because a turn was undone here
+    would delete a line nobody asked about. The same parent and the same branch
+    together are the coordinate, which is what every attempt at this turn meant
+    before a fork could move one out of it.
     """
     return [row for row in rows if row.branch_id == node.branch_id]
 
@@ -122,12 +123,12 @@ def live_in(rows: list[models.Action]) -> models.Action | None:
 def preceding(
     db: Session, adventure: models.Adventure, node: models.Action
 ) -> models.Action | None:
-    """The node the story tells immediately before `node`.
+    """Returns the node the story tells immediately before `node`.
 
-    "Before this turn" as a fact about the path rather than as a snapshot taken
-    from inside the turn — which is what makes the after-snapshots enough on
-    their own. Undefers both of them because the only reason to ask for this
-    row is to put back what it left behind.
+    This reads "before this turn" as a fact about the path rather than as a
+    snapshot taken from inside the turn, which is what makes the after-snapshots
+    sufficient on their own. The query undefers both of them, because the only
+    reason to fetch this row is to restore what it left behind.
     """
     if node.depth is None:
         return None
@@ -150,12 +151,12 @@ def preceding(
 # ------------------------------------------------------------------ writing
 
 def restore_state(adventure: models.Adventure, node: models.Action | None) -> None:
-    """Put back the script scoreboard and world state `node` left behind.
+    """Restores the script state and world state that `node` left behind.
 
-    A NULL snapshot means "leave the live state alone", never "reset it": rows
+    A NULL snapshot means leave the live state as it is, never reset it. Rows
     written before SP4 that the migration could not derive an outcome for carry
-    NULLs, and clobbering a running adventure's scoreboard with an empty dict
-    would be a far worse answer than doing nothing.
+    NULLs, and overwriting a running adventure's state with an empty dict would
+    be worse than doing nothing.
     """
     if node is None:
         return
@@ -166,7 +167,7 @@ def restore_state(adventure: models.Adventure, node: models.Action | None) -> No
 
 
 def snapshot_outcome(adventure: models.Adventure, node: models.Action) -> None:
-    """Record on `node` what the adventure looks like now that it has played."""
+    """Records on `node` the state of the adventure now that the node has played."""
     state = adventure.script_state if isinstance(adventure.script_state, dict) else {}
     world = adventure.world_state if isinstance(adventure.world_state, dict) else {}
     node.state_after = copy.deepcopy(state)
@@ -176,7 +177,7 @@ def snapshot_outcome(adventure: models.Adventure, node: models.Action) -> None:
 def roll_back_before(
     db: Session, adventure: models.Adventure, node: models.Action
 ) -> None:
-    """Rewind the shared state to before `node` was played."""
+    """Rewinds the shared state to what it was before `node` was played."""
     restore_state(adventure, preceding(db, adventure, node))
 
 
@@ -186,26 +187,28 @@ def add_attempt(
     previous: models.Action,
     replacement: models.Action,
 ) -> None:
-    """Put `replacement` beside `previous` as the newer attempt at that turn.
+    """Places `replacement` next to `previous` as the newer attempt at that turn.
 
-    Placed by hand rather than through `tree.place_action`, which would read the
-    depth off the legacy `index` and move the head: a sibling is not a new turn,
-    it is another take on the one the head is already standing on.
+    The placement is done here rather than through `tree.place_action`, which
+    would read the depth from the legacy `index` and move the head. A sibling is
+    not a new turn. It is another attempt at the turn the head is already on.
     """
     replacement.branch_id = previous.branch_id
     replacement.depth = previous.depth
-    # Copied, never resolved from the path: a take belongs to the turn it is a
-    # take *of*, and that is what `group` keys on. Resolving it here would ask
-    # what is live one depth back, which is the same node right now and stops
-    # being once this turn is forked away from.
+    # Copy the parent rather than resolve it from the path. An attempt belongs
+    # to the turn it is an attempt at, and that is what `group` keys on.
+    # Resolving it here would ask which node is live one depth back. That is the
+    # same node right now, and it stops being the same node once the story forks
+    # away from this turn.
     replacement.parent_id = previous.parent_id
     replacement.live = True
-    # The end of the group, not one past `previous` — which is only the same
-    # thing when `previous` is the newest take. Switch a three-take turn back to
-    # take 1 and retry, and `previous.variant_index + 1` collides with take 2;
-    # `renumber` then breaks the tie by id and files the new attempt *between*
-    # takes 2 and 3, so the pager walks the takes in an order they were not made
-    # in. `group` is oldest-first, and `replacement` is not in it yet.
+    # Use the end of the group rather than one past `previous`. The two match
+    # only when `previous` is the newest attempt. Switch a three-attempt turn
+    # back to attempt 1 and retry, and `previous.variant_index + 1` collides with
+    # attempt 2. `renumber` then breaks the tie by id and places the new attempt
+    # between attempts 2 and 3, so the pager walks the attempts in an order they
+    # were not made in. `group` returns oldest first, and `replacement` is not in
+    # it yet.
     siblings = group(db, previous)
     replacement.variant_index = 1 + max(
         (s.variant_index for s in siblings if s.variant_index is not None),
@@ -213,18 +216,18 @@ def add_attempt(
     )
     previous.live = False
     # The replacement was assembled with a fresh snapshot, so the prompt for
-    # this turn is now the one it carries; the superseded attempt keeps only
-    # what was its own.
+    # this turn is now the one it carries. The superseded attempt keeps only the
+    # slices that were its own.
     keep_own_slices(previous)
 
 
 def make_live(
     db: Session, adventure: models.Adventure, node: models.Action
 ) -> list[models.Action]:
-    """Make `node` the attempt the story tells, and put its outcome back.
+    """Makes `node` the attempt the story tells, and restores its outcome.
 
-    Returns the group, renumbered, so a caller that wants to report on it does
-    not read it twice.
+    Returns the group, renumbered, so that a caller reporting on it does not read
+    it twice.
     """
     rows = group(db, node)
     previous = live_in(rows)
@@ -238,11 +241,11 @@ def make_live(
 
 
 def renumber(rows: list[models.Action]) -> None:
-    """Refresh the group-shape cache the page response reads.
+    """Refreshes the group-shape cache that the page response reads.
 
     `variant_count` is 0 rather than 1 for a turn nobody retried, because the
-    pager's question is "is there anything to page through?" and the answer for
-    a single attempt is no.
+    pager asks whether there is anything to page through, and for a single
+    attempt the answer is no.
     """
     count = len(rows) if len(rows) > 1 else 0
     for i, row in enumerate(rows):
@@ -253,7 +256,7 @@ def renumber(rows: list[models.Action]) -> None:
 # ------------------------------------------------- the prompt, stored once
 
 def keep_own_slices(node: models.Action) -> None:
-    """Strip `node`'s snapshot back to what is only its own."""
+    """Reduces `node`'s snapshot to the slices that are only its own."""
     snapshot = node.context_snapshot
     if not isinstance(snapshot, dict):
         return
@@ -263,11 +266,11 @@ def keep_own_slices(node: models.Action) -> None:
 
 
 def hand_over_the_prompt(giver: models.Action, taker: models.Action) -> None:
-    """Move the turn's assembled prompt from one attempt to another.
+    """Moves the turn's assembled prompt from one attempt to another.
 
-    Called when the live flag moves, so the row in the story is always the row
-    the Insights viewer can explain. Nothing is copied — the prompt exists once
-    before and once after, on whichever sibling is being read.
+    The caller runs this when the live flag moves, so that the row in the story
+    is always the row the Insights viewer can explain. Nothing is copied. The
+    prompt exists once before and once after, on whichever sibling is being read.
     """
     held = giver.context_snapshot if isinstance(giver.context_snapshot, dict) else {}
     shared = {k: v for k, v in held.items() if k not in ATTEMPT_KEYS}
