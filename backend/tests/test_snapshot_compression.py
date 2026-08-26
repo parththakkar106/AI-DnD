@@ -1,18 +1,18 @@
 """context_snapshot, stored compressed.
 
-The column is 89% of the database and the free tier allows 512 MB. Reads were
-solved by deferring it; this is about the storage ceiling. Postgres already
-TOASTs it and only gets 1.7x, because pglz is tuned for fast decompression of
-data a query might filter on — and nothing ever filters on an assembled
-prompt.
+The column makes up 89% of the database, and the free tier allows only
+512 MB. Deferring the column already solved the read cost, so this is
+about the storage ceiling. Postgres already TOASTs the column and gets
+only a 1.7x ratio, because pglz favors fast decompression for data a query
+might filter on. Nothing ever filters on an assembled prompt.
 
-Three things have to hold, and only the first is obvious:
+Three things must hold, and only the first is obvious:
 
-* what goes in comes back out, exactly, including a snapshot written before
-  the conversion and one that is NULL;
-* the model still hands callers a dict, so no call site changes;
-* migration 44 drops the original column, so the backfill is the one
-  destructive step in this file — it must convert every row or abort.
+* What goes in comes back out exactly, including a snapshot written before
+  the conversion and one that is NULL.
+* The model still hands callers a dict, so no call site changes.
+* Migration 44 drops the original column, so the backfill is the one
+  destructive step in this file. It must convert every row or abort.
 
     python -m pytest tests/test_snapshot_compression.py -v
 """
@@ -147,8 +147,9 @@ def test_null_stays_null(db, adventure):
 
 
 def test_an_unreadable_snapshot_reads_as_none_rather_than_raising(db, adventure):
-    """One corrupt row must not 500 the turn that happens to load it. The
-    snapshot is a debugging view; the story is the thing that matters."""
+    """One corrupt row must not return a 500 error for the turn that loads
+    it. The snapshot is a debugging view. The story is what actually
+    matters."""
     action = models.Action(
         adventure_id=adventure.id, index=0, type="ai", text="t",
         context_snapshot={"a": "b"},
@@ -236,9 +237,9 @@ def test_bootstrap_leaves_the_column_named_context_snapshot(db, adventure):
 def test_the_backfill_aborts_rather_than_dropping_unconvertible_data(
     db, adventure, monkeypatch
 ):
-    """Migration 44 destroys the original. If anything cannot be converted the
-    whole run has to roll back with the column still there — the alternative is
-    losing somebody's prompts to a bug in this file."""
+    """Migration 44 destroys the original column. If anything fails to
+    convert, the whole run must roll back with the column still there.
+    Otherwise a bug in this file could lose someone's prompts."""
     seed_pre_43(db, adventure)
     db.close()
 
