@@ -1,21 +1,23 @@
-"""Phase 14 SP2 — a read sees one story, and knows which one.
+"""Phase 14 SP2: a read sees one story, and knows which one.
 
-These tests build the fork by hand: three branch rows and their nodes, written
-straight to the database, arranged as the design doc's own worked example. That
-was the only way to build one when this file was written (nothing forked until
-SP5) and it stays that way now that `tree.fork` exists — a fixture that agreed
-with the code under test could not catch it being wrong. The two are checked
-against each other in `test_branch_forking.py`.
+These tests build the fork by hand. Three branch rows and their nodes are
+written straight to the database, arranged as the design doc's own worked
+example. That was the only way to build one when this file was written,
+because nothing forked until SP5. It stays that way now that `tree.fork`
+exists, because a fixture built with the same code under test could not
+catch that code being wrong. `test_branch_forking.py` checks the two
+against each other.
 
     branch C, tip at depth 7, lineage [(C, 7), (B, 5), (A, 3)]
-    → A0 A1 A2 A3 B4 B5 C6 C7
+    -> A0 A1 A2 A3 B4 B5 C6 C7
 
-The point of building it by hand is that every read in the app is supposed to
-go through one module, and a forgotten clause does not raise — it quietly shows
-a story assembled out of two different ones. So the fixture deliberately leaves
-nodes lying where a forgotten clause would pick them up: A kept playing past
-the fork (A4, A5), B kept playing past its own (B6), and a second adventure
-holds a whole story of its own. None of them may appear on C.
+The point of building the fixture by hand is that every read in the app
+must go through one module. A forgotten clause does not raise an error. It
+silently shows a story assembled out of two different branches. The
+fixture deliberately leaves nodes where a forgotten clause would pick them
+up: A kept playing past the fork (A4, A5), B kept playing past its own
+(B6), and a second adventure holds a whole story of its own. None of these
+nodes may appear on C.
 
     python -m pytest tests/test_branch_clause.py -v
 """
@@ -46,8 +48,9 @@ from tools import dbmeter
 def make_branch(db, adventure, parent=None, fork_depth=None):
     """A branch row whose lineage is its parent's, capped, plus itself.
 
-    The same computation SP5 will do at fork time; written out here so the
-    fixture cannot pass by agreeing with a bug in the code under test.
+    This function performs the same computation SP5 does at fork time. It
+    is written out here so the fixture cannot pass by repeating a bug in
+    the code under test.
     """
     branch = models.Branch(
         adventure_id=adventure.id,
@@ -89,7 +92,7 @@ def make_adventure(db, user, title):
 
 @pytest.fixture()
 def forked():
-    """The worked example, plus everything a forgotten clause would sweep up."""
+    """The worked example, plus everything a forgotten clause would expose."""
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     user = models.User(is_guest=False, email="branch@example.com")
@@ -158,9 +161,10 @@ def test_the_worked_example_reads_back_as_the_design_doc_says(forked):
 def test_a_siblings_nodes_are_invisible(forked):
     db, adventure, _ = forked
     seen = labels(history.story_actions(adventure))
-    # A4/A5 are A's own continuation past B's fork; B6 is B's past C's.
+    # A4 and A5 are A's own continuation past B's fork. B6 is B's own
+    # continuation past C's fork.
     assert "A4" not in seen and "A5" not in seen and "B6" not in seen
-    # And nothing from the adventure next door.
+    # Nothing from the other adventure appears either.
     assert not [text for text in seen if text.startswith("X")]
 
 
@@ -213,11 +217,12 @@ def test_a_window_that_reaches_past_the_fork_still_reads_in_order(forked):
 # ------------------------------------------- the loaded-collection short cut
 
 def test_an_already_loaded_collection_is_cut_down_to_the_path(forked):
-    """`history._from_memory`'s shortcut, which was the highest-risk line here.
+    """Tests `history._from_memory`'s shortcut, the highest-risk line here.
 
-    `adventure.actions` is every branch's actions. Slicing it without the path
-    would assemble a prompt out of two different stories, and nothing would
-    raise — so load it deliberately and check the answer is the path anyway.
+    `adventure.actions` returns every branch's actions. Slicing it without
+    the path would assemble a prompt out of two different stories, and
+    nothing would raise an error. This test loads the collection
+    deliberately and checks that the answer is still the path.
     """
     db, adventure, _ = forked
     loaded = list(adventure.actions)  # every branch, ordered by index
@@ -230,8 +235,8 @@ def test_an_already_loaded_collection_is_cut_down_to_the_path(forked):
 
 
 def test_user_scripts_are_handed_the_path(forked):
-    """The same trap, one layer up and user-visible: `pipeline._history()` is
-    the documented scripting history API."""
+    """The same risk one layer up, in code visible to users:
+    `pipeline._history()` is the documented scripting history API."""
     db, adventure, _ = forked
     list(adventure.actions)  # the pipeline's caller has usually loaded these
     pipeline = ScriptPipeline(adventure, db)
@@ -268,8 +273,8 @@ def test_the_page_the_reader_opens_is_the_path(client):
     assert [a["text"] for a in body["actions"]] == [
         "A0", "A1", "A2", "A3", "B4", "B5", "C6", "C7"
     ]
-    # `action_count` is what tells the reader there is more above, so it counts
-    # the path too — 8, not the 13 rows the adventure holds.
+    # `action_count` tells the reader whether more actions exist above. It
+    # counts the path too: 8, not the 13 rows the adventure holds.
     assert body["action_count"] == 8
 
 
@@ -324,11 +329,11 @@ def test_the_index_screen_quotes_the_branch_being_played(client):
 # ------------------------------------------------------- the flush guard
 
 def test_a_node_written_without_a_branch_is_placed_anyway(forked):
-    """SP1 wired the writers; from SP2 an unplaced node is an invisible one.
+    """SP1 wired the writers. Since SP2, an unplaced node is an invisible one.
 
-    This is what lets a fixture, a script or a test built straight through the
-    ORM keep working — and it is why the baseline contract still passes with
-    its actions written directly to the database.
+    This behavior lets a fixture, a script, or a test built straight through
+    the ORM keep working. It is also why the baseline contract still passes
+    with its actions written directly to the database.
     """
     db, adventure, ids = forked
     written = models.Action(
@@ -356,11 +361,11 @@ def test_a_memory_written_without_a_branch_is_placed_anyway(forked):
 def test_placing_a_flush_of_nodes_reads_the_branch_once(forked, emitted_sql):
     """The guard resolves the head once per flush, not once per node.
 
-    The identity map holds weak references, so a branch row nobody keeps a
-    strong reference to is collected between two nodes and read back for the
-    next one. Writing two hundred actions in one flush was two hundred SELECTs
-    on `branches` before the head was hoisted out of the loop, and nothing
-    about the result would have told you.
+    The identity map holds weak references. A branch row with no strong
+    reference gets collected between two nodes and read back again for the
+    next one. Writing two hundred actions in one flush ran two hundred
+    SELECTs on `branches` before the head lookup moved outside the loop.
+    The test result alone would not have shown this.
     """
     db, adventure, _ = forked
     emitted_sql.clear()
@@ -376,10 +381,11 @@ def test_placing_a_flush_of_nodes_reads_the_branch_once(forked, emitted_sql):
 
 
 def test_an_adventure_with_no_branch_at_all_reads_as_empty(forked):
-    """The loud version of a missing branch: nothing, rather than everything.
+    """A missing branch must fail loudly: nothing, rather than everything.
 
-    A row with no branch cannot be shown without guessing which story it is
-    on, and a guess here is how a sibling's turns end up in a prompt.
+    A row with no branch cannot be shown without guessing which story it
+    belongs to, and a wrong guess here puts a sibling's turns into a
+    prompt.
     """
     db, adventure, ids = forked
     stray = make_adventure(db, db.get(models.User, ids["user"]), "Stray")
@@ -400,9 +406,9 @@ def test_an_adventure_with_no_branch_at_all_reads_as_empty(forked):
 def deeply_forked():
     """A story forked twenty times, then played forty turns past the last one.
 
-    The shape the design is betting on: reading the tail of this must cost what
-    reading the tail of an unforked story costs, because the window is covered
-    long before the ancestry runs out.
+    This shape tests the design's core assumption: reading the tail of this
+    story must cost the same as reading the tail of an unforked story,
+    because the window is covered long before the ancestry runs out.
     """
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
@@ -477,7 +483,7 @@ def test_a_window_reaching_past_the_forks_names_only_what_it_needs(
     rows = history.tail(adventure, 41)  # 40 on the tip branch, one older
     assert len(rows) == 41
     selects = [s for s in emitted_sql if "FROM actions" in s and branch_terms(s)]
-    # Two lineage entries reach 41 deep (40 + 2); the other twenty stay
+    # Two lineage entries reach 41 deep (40 + 2). The other twenty stay
     # unnamed. Every fork past the window costs the query nothing.
     assert max(branch_terms(s) for s in selects) == 2
 
@@ -495,13 +501,13 @@ def test_the_estimate_is_arithmetic_not_a_query(deeply_forked):
 def test_forking_twenty_times_costs_the_same_bytes_as_never_forking(
     deeply_forked,
 ):
-    """The design's bet, in bytes.
+    """The design's cost assumption, measured in bytes.
 
-    Two stories of the same length, one played straight through and one forked
-    twenty times, read their newest window for the same money — because the
-    window is covered by the newest lineage entry either way, and the ancestry
-    is never named. The forked read pays for one extra row: the branch it read
-    the lineage off.
+    Two stories of the same length, one played straight through and one
+    forked twenty times, cost the same to read their newest window. The
+    window is covered by the newest lineage entry either way, and the
+    ancestry is never named. The forked read pays for one extra row: the
+    branch it reads the lineage from.
     """
     db, forked_adventure = deeply_forked
     flat = make_adventure(db, db.get(models.User, forked_adventure.user_id), "Flat")
@@ -511,10 +517,10 @@ def test_forking_twenty_times_costs_the_same_bytes_as_never_forking(
     flat.head_branch_id = branch.id
     flat.head_depth = 83
     flat_id, forked_id = flat.id, forked_adventure.id
-    # Commit and let go of the connection: the meter wraps the pool's factory,
-    # so a connection checked out before it attaches is a connection it never
-    # sees. Building the fixture is a write path nobody plays, and is not
-    # charged to either scope.
+    # Commit and release the connection. The meter wraps the connection
+    # pool's factory, so a connection checked out before the meter attaches
+    # is never visible to it. Building the fixture is a write path the test
+    # does not measure, and it is not charged to either scope.
     db.commit()
     db.expire_all()
 
@@ -541,8 +547,8 @@ def test_forking_twenty_times_costs_the_same_bytes_as_never_forking(
 def test_a_gap_in_the_story_widens_the_read_rather_than_shortening_it(
     deeply_forked, emitted_sql
 ):
-    """The estimate counts depths, and a deleted action leaves a depth with no
-    row behind it. The read has to notice it came up short and widen."""
+    """The estimate counts depths, and a deleted action leaves a depth with
+    no row behind it. The read must notice it came up short and widen."""
     db, adventure = deeply_forked
     victim = (
         db.query(models.Action)
