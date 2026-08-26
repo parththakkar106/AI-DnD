@@ -1,20 +1,21 @@
-"""Phase 14 SP3 — memories hang off nodes, and the marks are nodes too.
+"""Phase 14 SP3: memories attach to nodes, and the marks are nodes too.
 
-Two claims, and neither of them fails loudly if it is wrong:
+Two claims, and neither fails loudly if it is wrong:
 
-* **A memory belongs to the path that produced it.** A memory made on branch B
+* A memory belongs to the path that produced it. A memory made on branch B
   must be invisible from A, and the memories of a shared ancestor must be
-  visible from both — without anything being copied when a fork happens. The
-  failure mode is a prompt quietly carrying a summary of a story the player
-  abandoned.
-* **Retrieval reads the *whole* lineage, and that stays affordable.** The story
-  is read through a window, but recall is long-range by definition and cannot
-  be — so the clause names every ancestor, and the bet is that memories are
-  sparse enough (one per six actions) for that to be tens of small rows even
-  twenty forks deep. Measured below rather than asserted.
+  visible from both, without anything being copied when a fork happens. The
+  failure mode is a prompt that quietly carries a summary of a story the
+  player abandoned.
+* Retrieval reads the whole lineage, and that stays affordable. The story
+  is read through a window, but recall is long-range by definition and
+  cannot use one. So the clause names every ancestor. The bet is that
+  memories are sparse enough, one per six actions, for that to stay tens of
+  small rows even twenty forks deep. This file measures that bet below
+  rather than asserting it.
 
-Nothing in the product forks yet, so the fork is built by hand, exactly as
-`test_branch_clause.py` builds it.
+Nothing in the product forks yet, so this file builds the fork by hand,
+exactly as `test_branch_clause.py` builds it.
 
     python -m pytest tests/test_memory_nodes.py -v
 """
@@ -50,9 +51,10 @@ class StubEmbedder:
 # --------------------------------------------------------------- the fixture
 
 def make_branch(db, adventure, parent=None, fork_depth=None):
-    """A branch row whose lineage is its parent's, capped, plus itself — the
-    computation SP5 will do at fork time, written out so the fixture cannot
-    pass by agreeing with a bug in the code under test."""
+    """A branch row whose lineage is its parent's lineage, capped, plus
+    itself. This is the computation SP5 performs at fork time. The fixture
+    reimplements it here so it cannot pass by agreeing with a bug in the
+    code under test."""
     branch = models.Branch(
         adventure_id=adventure.id,
         parent_branch_id=parent.id if parent else None,
@@ -106,12 +108,13 @@ def add_memory(db, adventure, text, node, vector=(1.0, 0.0, 0.0), **kwargs):
 
 @pytest.fixture()
 def forked():
-    """A0..A3, then B4 B5 off A3, then C6 C7 off B5 — with a memory hung off
-    one node of each branch, and A playing on past the fork it was left at.
+    """A0..A3, then B4 B5 off A3, then C6 C7 off B5, with a memory attached
+    to one node of each branch. A keeps playing past the fork point where B
+    left it.
 
-    The head is C, so the story is A0 A1 A2 A3 B4 B5 C6 C7 and the memories in
-    play are A's and B's and C's — but not the one on A5, which is on a sibling
-    of B4 and belongs to a story nobody is reading.
+    The head is C, so the story is A0 A1 A2 A3 B4 B5 C6 C7, and the
+    memories in play are A's, B's, and C's. The one on A5 is excluded: it
+    is on a sibling of B4 and belongs to a story nobody is reading.
     """
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
@@ -181,8 +184,9 @@ def retrieved(adventure, settings) -> set[str]:
 # ------------------------------------------------------------- the isolation
 
 def test_a_memory_on_a_sibling_is_not_retrieved(forked):
-    """The whole point. A5 is a node of the story that was abandoned when B
-    forked, and the memory hanging off it must not reach a prompt on C."""
+    """The whole point of this file. A5 is a node of the story that was
+    abandoned when B forked, and the memory attached to it must not reach a
+    prompt on C."""
     db, adventure, settings, ids = forked
     assert retrieved(adventure, settings) == {
         "on the shared trunk", "on B", "on C"
@@ -196,30 +200,30 @@ def test_a_shared_ancestor_is_visible_from_both_branches(forked):
     switch_to(db, adventure, ids["a"], 5)
     from_a = retrieved(adventure, settings)
     assert "on the shared trunk" in from_a
-    # ...and from A, the branches taken off it are the ones out of reach.
+    # From A, the branches taken off it are the ones out of reach.
     assert from_a == {"on the shared trunk", "on A's own continuation"}
 
 
 def test_the_lineage_is_read_whole_not_windowed(forked):
-    """The story is read through a window; recall is not. The trunk memory is
-    four nodes and two forks back, and is still a candidate."""
+    """The story is read through a window. Recall is not. The trunk memory
+    is four nodes and two forks back, and is still a candidate."""
     db, adventure, settings, ids = forked
     path = lineage.path_of(db, adventure)
     assert len(path) == 3
-    # The window a *story* read would use here names one entry. Retrieval names
-    # all three, which is the difference this test exists to pin.
+    # The window a story read would use here names one entry. Retrieval
+    # names all three, which is the difference this test checks.
     assert path.prefix_covering(2) == 1
     assert "on the shared trunk" in retrieved(adventure, settings)
 
 
 def test_a_hand_written_memory_is_anchored_where_it_was_typed(forked):
     """SP7: a typed memory takes the head, so it obeys the same rule as a
-    summarised one.
+    summarized one.
 
     It used to carry no depth, which sounded like "belongs to the whole
-    adventure" and behaved like "cannot be capped at a fork" — it followed the
-    reader onto branches whose story it never described. Anchoring it makes the
-    bank answer one question rather than two.
+    adventure" and behaved like "cannot be capped at a fork." It followed
+    the reader onto branches whose story it never described. Anchoring it
+    makes the bank answer one question instead of two.
     """
     db, adventure, settings, ids = forked
     switch_to(db, adventure, ids["a"], 5)
@@ -228,14 +232,14 @@ def test_a_hand_written_memory_is_anchored_where_it_was_typed(forked):
 
 
 def test_a_typed_memory_survives_a_fork_of_the_ground_it_was_typed_on(forked):
-    """The half of the old behaviour that was right, kept.
+    """The half of the old behavior that was correct, kept.
 
-    Typed on the shared trunk it is still there after forking away — but
-    because the fork's path goes through that node, not because the memory was
-    exempt from being capped.
+    A memory typed on the shared trunk is still there after forking away,
+    but only because the fork's path goes through that node, not because
+    the memory is exempt from being capped.
     """
     db, adventure, settings, ids = forked
-    switch_to(db, adventure, ids["a"], 3)  # the trunk B, and so C, branch from
+    switch_to(db, adventure, ids["a"], 3)  # the node B, and so C, forked from
     add_memory(db, adventure, "typed on the trunk", None)
 
     switch_to(db, adventure, ids["c"], 7)
@@ -243,12 +247,12 @@ def test_a_typed_memory_survives_a_fork_of_the_ground_it_was_typed_on(forked):
 
 
 def test_a_typed_memory_does_not_follow_you_onto_a_path_it_is_not_on(forked):
-    """And the half that was wrong, fixed.
+    """The other half of the old behavior, which was wrong, is now fixed.
 
-    A5 is A's own continuation past the point B left it, so it is a sibling of
-    the story C tells — precisely where the `sibling` memory sits, and excluded
-    for precisely the same reason. Typing rather than summarising buys no
-    exemption from the path.
+    A5 is A's own continuation past the point where B left it, so it is a
+    sibling of the story C tells. This is exactly where the `sibling`
+    memory sits, and it is excluded for the same reason. Typing a memory
+    instead of summarizing it grants no exemption from the path rule.
     """
     db, adventure, settings, ids = forked
     switch_to(db, adventure, ids["a"], 5)
@@ -271,10 +275,10 @@ def test_a_mark_moves_to_the_node_the_memory_covers(forked):
 
 
 def test_a_mark_from_a_sibling_reads_as_nothing_covered(forked):
-    """A mark is a node, so moving to another story has to be answered rather
-    than assumed. Ground this path never travelled is not covered ground, and
-    the fallback for 'I don't know' has to be redoing the work, not skipping
-    it."""
+    """A mark is a node, so switching to another story must resolve the
+    mark's meaning rather than assume it. A path segment this story never
+    took is not covered, and the fallback for "not covered" must be redoing
+    the work, not skipping it."""
     db, adventure, settings, ids = forked
     cursors.MEMORY.anchor_at(adventure, ids["nodes"]["C7"])
     db.commit()
@@ -301,9 +305,10 @@ def test_a_mark_never_moves_forward_on_a_rewind(forked):
 # ---------------------------------------------------- what the passes read
 
 def test_the_summary_folds_in_only_the_path_it_is_on(forked, monkeypatch):
-    """`_update_story_summary` gathers the memories past its mark. On C that is
-    B's and C's — never the one on A's own continuation, whose depth would
-    otherwise put it squarely inside the range."""
+    """`_update_story_summary` gathers the memories past its mark. On C
+    that is B's and C's memories. It never includes the one on A's own
+    continuation, even though that memory's depth would otherwise put it
+    inside the range."""
     db, adventure, settings, ids = forked
     monkeypatch.setattr(memorybank, "SUMMARY_INTERVAL", 1)
 
@@ -360,7 +365,7 @@ def test_a_block_is_summarized_from_the_path_and_hung_off_its_last_node(
     assert ["B4", "B5", "C6", "C7"] == [line for line in second.split() if line[0] in "ABC"]
     made = db.query(models.Memory).filter_by(text="Memory 1.").one()
     assert (made.branch_id, made.depth) == (ids["a"], 3)
-    # The mark ends up on the node the *second* block hangs off — the tip.
+    # The mark ends up on the node the second block attaches to, which is the tip.
     assert cursors.MEMORY.stored(adventure) == (ids["c"], 7)
 
 
@@ -368,8 +373,8 @@ def test_a_block_is_summarized_from_the_path_and_hung_off_its_last_node(
 
 @pytest.fixture()
 def deeply_forked():
-    """A story forked twenty times, with a memory every six actions — the
-    density the post-turn pass actually produces."""
+    """A story forked twenty times, with a memory every six actions. This
+    is the density the post-turn pass actually produces."""
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     user = models.User(is_guest=False, email="deepmem@example.com")
@@ -423,10 +428,11 @@ def deeply_forked():
 
 
 def test_retrieving_from_a_deep_fork_costs_what_a_flat_story_costs(deeply_forked):
-    """The bet, in bytes. Retrieval names all twenty-two branches instead of
-    one — but it is fetching an id and a flag per memory, and there are the
-    same fourteen either way, so the clause is where the difference is and the
-    clause is not what crosses the wire."""
+    """The bet from the module docstring, measured in bytes. Retrieval
+    names all twenty-two branches instead of one, but it fetches only an id
+    and a flag per memory, and both stories return the same fourteen
+    memories. The clause is where the difference shows up, and the clause
+    is not what crosses the wire."""
     db, flat_story, forked_story = deeply_forked
     settings = db.query(models.Settings).one()
     flat_id, forked_id = flat_story.id, forked_story.id
@@ -445,8 +451,8 @@ def test_retrieving_from_a_deep_fork_costs_what_a_flat_story_costs(deeply_forked
     finally:
         meter.detach()
 
-    # Measured 2026-08-18: 1,807 B against 1,823 B — the same fourteen rows,
-    # named through twenty-two branch terms instead of one.
+    # Measured 2026-08-18: 1,807 B against 1,823 B. Both figures cover the
+    # same fourteen rows, named through twenty-two branch terms instead of one.
     assert flat_bytes > 0, "the meter saw nothing; it is measuring the wrong connection"
     assert forked_bytes < flat_bytes * 1.5, (
         f"retrieval on a 20-fork story cost {forked_bytes:,} B against the "
@@ -457,17 +463,19 @@ def test_retrieving_from_a_deep_fork_costs_what_a_flat_story_costs(deeply_forked
 # ------------------------------------------------------- the opening node
 
 def test_a_typed_memory_on_the_opening_node_survives_that_node_going(forked):
-    """The one place a node and its memories part company.
+    """The one exception where a node and its memories are not withdrawn
+    together.
 
-    A memory anchored to a node is withdrawn with the node, which is the rule
-    and is deliberate: it described that turn, and the turn is leaving. But
-    migration 62 parked *every* memory written before memories had coordinates
-    on depth 0 — the only landing spot visible from every branch — so the
-    opening node carries a whole bank it never produced. Withdrawing it would
-    retire all of that in one click, for every adventure predating the tree.
+    A memory anchored to a node is withdrawn with the node. This is the
+    rule, and it is deliberate: the memory described that turn, and the
+    turn is leaving. But migration 62 parked every memory written before
+    memories had coordinates on depth 0, the only landing spot visible from
+    every branch. As a result, the opening node carries a whole bank of
+    memories it never produced. Withdrawing it would delete all of those
+    memories at once, for every adventure that predates the tree.
 
-    A memory with no `source_start` covers no stretch of story, so nothing about
-    it can go stale. It stays.
+    A memory with no `source_start` covers no stretch of story, so nothing
+    about it can go stale. It stays.
     """
     db, adventure, settings, ids = forked
     typed = models.Memory(
@@ -489,9 +497,10 @@ def test_a_typed_memory_on_the_opening_node_survives_that_node_going(forked):
 def test_a_summary_of_the_opening_node_is_still_withdrawn(forked):
     """The exception is about memories that describe nothing, not about depth 0.
 
-    A summary that genuinely ends on the opening node describes text that is
-    going, so it goes too — otherwise the root would collect exactly the
-    dangling rows `forget_node` replaced `prune_dangling_memories` to prevent.
+    A summary that genuinely ends on the opening node describes text that
+    is being removed, so the summary is removed too. Otherwise the root
+    would collect exactly the dangling rows that `forget_node` replaced
+    `prune_dangling_memories` to prevent.
     """
     db, adventure, settings, ids = forked
     derived = add_memory(db, adventure, "the opening, summarised", ids["nodes"]["A0"])
