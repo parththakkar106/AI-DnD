@@ -1,9 +1,9 @@
 """Migration 38: embeddings move from a JSON list to packed float32.
 
-The conversion has to be exact, because nothing re-embeds — a memory whose
-vector shifts is silently ranked wrong forever, with no error anywhere to say
-so. So these tests check the numbers survive the round trip bit for bit, and
-that the migration reaches every row however many there are.
+The conversion has to be exact, because nothing re-embeds. A memory whose
+vector shifts is silently ranked wrong forever, with no error anywhere to
+report it. These tests check that the numbers survive the round trip bit
+for bit, and that the migration reaches every row, however many there are.
 
     python -m pytest tests/test_embedding_blob.py -v
 """
@@ -29,8 +29,8 @@ from tests import schema_rewind
 
 
 def float32(value: float) -> float:
-    """`value` as the double nearest to its float32 truncation — what an
-    embedding endpoint's JSON actually holds."""
+    """`value` as the double nearest to its float32 truncation. This is
+    what an embedding endpoint's JSON actually holds."""
     return struct.unpack("<f", struct.pack("<f", value))[0]
 
 
@@ -71,7 +71,7 @@ def test_pack_round_trips_exactly():
 
 
 def test_packed_vector_is_four_bytes_per_dimension():
-    """The whole point: 1536 dims is 6 KB here against ~31 KB as JSON."""
+    """1536 dims takes 6 KB packed, against about 31 KB as JSON."""
     vector = sample_vector(random.Random(2))
     blob = vectors.pack(vector)
     assert len(blob) == 1536 * 4
@@ -84,9 +84,9 @@ def test_pack_handles_the_extremes():
 
 
 def test_unpack_returns_a_compact_array():
-    """These are held in memory between turns, so the container matters: an
-    array("f") is the 4 bytes a component the column is, a list of Python
-    floats is eight times that."""
+    """These vectors stay in memory between turns, so the container type
+    matters. An array("f") stores each component in 4 bytes, the same width
+    as the column. A list of Python floats uses eight times that."""
     vector = sample_vector(random.Random(9))
     unpacked = vectors.unpack(vectors.pack(vector))
     assert unpacked.typecode == "f"
@@ -95,15 +95,16 @@ def test_unpack_returns_a_compact_array():
 
 
 def test_pack_rounds_a_value_float32_cannot_hold():
-    """The guarantee is exactness for vectors that came from an embedding
-    model, which computes in float32 — not for arbitrary doubles. Worth
-    pinning down, because it is the line the round-trip claim sits on."""
+    """The exactness guarantee applies only to vectors that came from an
+    embedding model, which computes in float32, not to arbitrary doubles.
+    This test pins down that boundary, because it is where the round-trip
+    claim holds."""
     assert vectors.unpack(vectors.pack([1e-38]))[0] != 1e-38
     assert vectors.unpack(vectors.pack([1e-38]))[0] == pytest.approx(1e-38)
 
 
 def test_cosine_moved_but_still_reachable_from_memorybank():
-    """Callers import it from memorybank; the maths lives in vectors."""
+    """Callers import it from memorybank. The math lives in vectors."""
     assert memorybank.cosine is vectors.cosine
     assert vectors.cosine([1.0, 0.0], [1.0, 0.0]) == pytest.approx(1.0)
     assert vectors.cosine([1.0, 0.0], [0.0, 1.0]) == pytest.approx(0.0)
@@ -149,11 +150,11 @@ def test_set_vector_none_clears_both(db, adventure):
 def add_legacy_json_column(db) -> None:
     """Put `memories.embedding` back for the length of a test.
 
-    Migration 42 dropped it and the model no longer declares it, so
-    `create_all` does not produce it — but everything below is testing the
-    upgrade *from* a database that still has it, which is the only state in
-    which the backfill has any work to do. Re-adding it by hand is what keeps
-    these tests honest about the schema they claim to be starting from.
+    Migration 42 dropped it, and the model no longer declares it, so
+    `create_all` does not produce it. Everything below tests the upgrade
+    from a database that still has the column, which is the only state
+    where the backfill has any work to do. Re-adding it by hand keeps these
+    tests honest about the schema they claim to start from.
     """
     db.execute(text("ALTER TABLE memories ADD COLUMN embedding JSON"))
     db.commit()
@@ -193,8 +194,9 @@ def test_backfill_converts_every_existing_vector(db, adventure):
 
 
 def test_backfill_reaches_past_one_batch(db, adventure):
-    """It loops on id, and an off-by-one there would silently leave the tail
-    of a big bank unconverted — which reads as "not embedded yet"."""
+    """It loops on id, and an off-by-one there would silently leave the
+    tail of a big bank unconverted. That failure reads as "not embedded
+    yet"."""
     count = migrations.BACKFILL_BATCH * 2 + 3
     expected = seed_json_only(db, adventure, count=count, dims=4)
 
@@ -237,8 +239,8 @@ def test_backfill_is_idempotent(db, adventure):
 
 
 def test_backfill_skips_a_malformed_row_without_stopping(db, adventure):
-    """One bad row must not strand every row after it — the loop orders by id,
-    so an exception here would leave the rest of the bank unconverted."""
+    """One bad row must not strand every row after it. The loop orders by
+    id, so an exception here would leave the rest of the bank unconverted."""
     expected = seed_json_only(db, adventure, count=2)
     broken = models.Memory(adventure_id=adventure.id, text="broken")
     db.add(broken)
@@ -288,9 +290,9 @@ def test_bootstrap_adds_the_columns_and_backfills_them(db, adventure):
     # embedded must still read as not embedded afterwards.
     assert by_id[unembedded_id] == (None, False)
 
-    # ...and migration 42, at the end of the same run, takes the JSON column
-    # away. Ordering matters: 38 reads it, 42 drops it, and an upgrade that
-    # ran them the other way round would arrive with an empty bank.
+    # Migration 42, at the end of the same run, removes the JSON column.
+    # Ordering matters: 38 reads it, 42 drops it, and an upgrade that ran
+    # them in the other order would arrive with an empty bank.
     with engine.begin() as conn:
         columns = {row[1] for row in conn.execute(text("PRAGMA table_info(memories)"))}
     assert "embedding" not in columns
