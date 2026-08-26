@@ -36,8 +36,9 @@ SCHEMA = {
     "milestones": {"win": {"desc": "Win the fight"}},
 }
 
-# The faked model narrates and appends a delta that exceeds the per-turn cap
-# (so we can see the engine clamp it), flips a flag, and completes a milestone.
+# The faked model narrates and appends a delta that exceeds the per-turn
+# cap, so the test can confirm the engine clamps it. It also flips a flag
+# and completes a milestone.
 AI_REPLY = (
     "The goblin's blade bites deep and Gwen nods at your resolve.\n\n"
     '```state\n{"player.hp": -80, "npc.gwen.trust": 15, "flags.alarm": true, "milestones.win": true}\n```'
@@ -131,7 +132,7 @@ def test_turn_applies_clamped_delta_and_strips_block(client):
     # The state block is not shown to the player.
     assert "```state" not in _last_ai_text(client.adv_id)
     assert "goblin's blade" in _last_ai_text(client.adv_id)
-    # ...but the raw model reply (with the block) is kept for the Insights view.
+    # The raw model reply, including the block, is kept for the Insights view.
     db = SessionLocal()
     try:
         snap = db.get(models.Adventure, client.adv_id).actions[-1].context_snapshot
@@ -175,7 +176,7 @@ def test_override_world_state_endpoint(client):
     # persisted to the DB, not just the response.
     assert _world(client.adv_id)["player"]["hp"] == 5
 
-    # bypasses max_delta_per_turn (30) — a direct correction, not a turn.
+    # This bypasses max_delta_per_turn (30) because it is a direct correction, not a turn.
     r = client.put(f"/api/adventures/{client.adv_id}/world-state", json={"player.hp": 100})
     assert r.json()["state"]["player"]["hp"] == 100
 
