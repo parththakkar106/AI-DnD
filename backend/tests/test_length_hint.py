@@ -1,17 +1,17 @@
 """The turn prompt asks for a turn that fits inside `max_output_tokens`.
 
-`max_output_tokens` is a hard wall the endpoint enforces mid-sentence. The state
-block is emitted *after* the narration, so a long turn hits the wall partway
-through the block and the deltas are lost — silently, since nothing reads
-`finish_reason`. The prompt now carries a word budget derived from the cap so
-the model lands just inside it.
+`max_output_tokens` is a hard limit the endpoint enforces mid-sentence. The
+state block is emitted after the narration, so a long turn hits the limit
+partway through the block, and the deltas are lost. Nothing reads
+`finish_reason`, so this loss happens silently. The prompt now carries a
+word budget derived from the cap, so the model lands just inside it.
 
 Two things are easy to break here:
 
-* the hint must be stated in **words**, not tokens — a model cannot count its
-  own tokens, and a hint it cannot follow is just wasted budget;
-* it must not displace `EMIT_REMINDER` from the last position, which is the
-  whole mechanism keeping the state block emitted at all (see
+* The hint must be stated in words, not tokens. A model cannot count its
+  own tokens, and a hint it cannot follow is wasted budget.
+* The hint must not displace `EMIT_REMINDER` from the last position, which
+  is the whole mechanism that keeps the state block emitted at all (see
   test_worldstate.py and the emit-reliability fix).
 
     python -m pytest tests/test_length_hint.py -v
@@ -100,7 +100,7 @@ def asked_words(cap):
 
 def test_buffer_leaves_room_for_overshoot():
     """The stated number must sit meaningfully under the real ceiling, or an
-    on-target-but-slightly-long turn still hits the wall."""
+    on-target-but-slightly-long turn still hits the limit."""
     for cap in (400, 800, 1500, 2400):
         asked = asked_words(cap)
         ceiling = (cap - builder.LENGTH_HEADROOM) * builder.WORDS_PER_TOKEN
@@ -109,9 +109,10 @@ def test_buffer_leaves_room_for_overshoot():
 
 
 def test_hint_is_phrased_as_a_ceiling_not_a_budget():
-    """Measured: budget phrasing ("keep this turn under about N words") reads as a
-    target to fill and moved the mean turn from 174 to 246 words — toward the wall
-    it exists to avoid. The limit framing must survive future prompt edits."""
+    """Measured: budget phrasing ("keep this turn under about N words")
+    reads as a target to fill. It moved the mean turn from 174 to 246
+    words, toward the limit it exists to avoid. The limit framing must
+    survive future prompt edits."""
     hint = builder.length_hint(800, has_ws=True)
     assert "must not exceed" in hint
     assert "under about" not in hint
@@ -119,15 +120,15 @@ def test_hint_is_phrased_as_a_ceiling_not_a_budget():
 
 
 def test_hint_states_a_floor_as_well_as_a_ceiling():
-    """A ceiling alone is one-sided: a terse model has nothing to act on but the
-    "only as much as the moment needs" clause and collapses to two paragraphs.
-    The floor is what makes the same prompt land in the same place across models
-    that lean opposite ways."""
+    """A ceiling alone is one-sided: a terse model has nothing to act on but
+    the "only as much as the moment needs" clause and produces only two
+    paragraphs. The floor is what makes the same prompt produce a similar
+    length across models with different tendencies."""
     hint = builder.length_hint(800, has_ws=True)
     assert "506" in hint and "177" in hint
     assert "should not stop short of" in hint
-    # Asymmetric on purpose: the wall is a wall, the floor is a floor, and neither
-    # is phrased as a number to hit.
+    # Asymmetric on purpose: the ceiling is a hard limit and the floor is a
+    # soft target, and neither is phrased as a specific number to reach.
     assert hint.index("must not exceed") < hint.index("should not stop short of")
 
 
@@ -139,9 +140,10 @@ def test_floor_stays_well_under_the_ceiling():
 
 
 def test_floor_is_dropped_when_the_cap_is_too_tight_for_one():
-    """At a tight cap a short turn is the correct turn, and the tight-cap wording
-    is the one measured to keep the state block alive (0/6 truncations at cap 250
-    against 2/6 unhinted) — so it is left exactly as it was."""
+    """At a tight cap a short turn is the correct turn. The tight-cap
+    wording is the one measured to keep the state block from being
+    truncated (0/6 truncations at cap 250, against 2/6 unhinted), so it
+    is left exactly as it was."""
     hint = builder.length_hint(250, has_ws=True)
     assert "should not stop short of" not in hint
     assert "much shorter" in hint
@@ -199,13 +201,15 @@ def test_emit_reminder_keeps_the_last_word(story):
 
 
 def test_prompt_stays_inside_the_budget_on_a_long_story(story):
-    """Regression guard: the hint is appended after history has already spent
-    the budget, so it must be reserved up front like EMIT_REMINDER is.
+    """Regression guard: the hint is appended after history has already
+    spent the budget, so it must be reserved up front like `EMIT_REMINDER`
+    is.
 
-    Weak on purpose — the history loop stops *before* crossing its budget, so it
-    leaves about one action of slack and the ~30-token hint hides inside it.
-    This catches a hint that grows large, not a missing reservation; the
-    reservation itself is not observable from the outside."""
+    This check is weak on purpose. The history loop stops before crossing
+    its budget, so it leaves about one action of slack, and the roughly
+    30-token hint fits inside that slack. This catches a hint that grows
+    large, not a missing reservation. The reservation itself is not
+    observable from the outside."""
     db, adventure, settings, _ = story
     for i in range(4, 120):
         db.add(models.Action(
@@ -225,8 +229,9 @@ def test_prompt_stays_inside_the_budget_on_a_long_story(story):
 
 
 def test_hint_is_counted_in_the_reported_totals(story):
-    """Insights reports what the turn actually costs; a section that reaches the
-    model but not the accounting makes that number a lie."""
+    """Insights reports what the turn actually costs. A section that
+    reaches the model but not the accounting makes that reported cost
+    inaccurate."""
     db, adventure, settings, _ = story
     settings.max_output_tokens = 800
 
