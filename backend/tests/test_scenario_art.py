@@ -1,9 +1,10 @@
-"""Scenario cover art + the Continue-card snippet.
+"""Scenario cover art and the Continue-card snippet.
 
-Unit tests for the data-URI handling in app/images.py, then HTTP tests that the
-list endpoints advertise a cacheable `image_url` (never the inline base64), that
-the image route serves real bytes, and that an adventure's snippet comes from
-the latest *narration* rather than the player's last line.
+Unit tests for the data-URI handling in app/images.py. Then HTTP tests
+confirm that the list endpoints advertise a cacheable `image_url` instead
+of the inline base64, that the image route serves real bytes, and that an
+adventure's snippet comes from the latest narration rather than the
+player's last line.
 
     python -m pytest tests/test_scenario_art.py -v
 """
@@ -41,13 +42,14 @@ def test_decode_returns_bytes_and_content_type():
 
 
 def test_decode_tolerates_wrapped_base64():
-    """A hand-pasted URI can carry newlines; b64decode(validate=True) won't."""
+    """A hand-pasted URI can carry newlines. `b64decode(validate=True)` rejects them."""
     wrapped = "data:image/png;base64," + "\n".join(
         base64.b64encode(PNG_BYTES).decode()[i:i + 24] for i in range(0, 100, 24)
     )
-    # Only asserting it doesn't raise and doesn't silently return a partial
-    # decode of a truncated payload — the wrapped prefix here is not the whole
-    # image, so a None result is also acceptable; what matters is no exception.
+    # This test only confirms that the call does not raise and does not
+    # silently return a partial decode of a truncated payload. The wrapped
+    # prefix here is not the whole image, so a None result is also
+    # acceptable. What matters is that no exception occurs.
     images.decode(wrapped)
 
 
@@ -59,7 +61,7 @@ def test_decode_rejects_non_data_uris_and_garbage():
 
 
 def test_decode_rejects_svg():
-    """SVG can carry script and these bytes are served from our own origin."""
+    """SVG can carry script, and the app serves these bytes from its own origin."""
     svg = "data:image/svg+xml;base64," + base64.b64encode(b"<svg/>").decode()
     assert images.decode(svg) is None
 
@@ -151,7 +153,7 @@ def test_scenario_list_advertises_a_url_and_hides_the_base64(client):
 
     pictured = rows["Pictured"]
     assert pictured["image_url"].startswith(f"/api/scenarios/{client.ids['scenario']}/image?v=")
-    # The whole point: a list response must never carry the inline image.
+    # A list response must never carry the inline image.
     assert "image" not in pictured
 
     assert rows["Emoji"]["image_url"] == ""
@@ -180,7 +182,7 @@ def test_single_scenario_still_returns_the_raw_uri_for_editing(client):
 def test_adventure_list_carries_snippet_and_inherited_art(client):
     row = next(r for r in client.get("/api/adventures").json()
                if r["id"] == client.ids["adventure"])
-    # Latest narration, whitespace collapsed — not the player's "I draw my sword."
+    # Latest narration, whitespace collapsed. Not the player's line, "I draw my sword."
     assert row["snippet"] == "Steel rings. The corridor answers."
     assert row["image_url"].startswith(f"/api/scenarios/{client.ids['scenario']}/image?v=")
     assert row["action_count"] == 3

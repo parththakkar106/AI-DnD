@@ -53,15 +53,19 @@ def me_payload(user: models.User, db: Session) -> dict:
 
 @router.get("/me")
 def me(request: Request, response: Response, db: Session = Depends(get_db)):
-    """Who am I? In multi-user mode this also bootstraps the session: with no
-    (or an invalid) cookie it creates a guest user and sets one — the
-    frontend calls this on load and after any 401."""
+    """Returns the current user.
+
+    In multi-user mode this also establishes the session. If the cookie is
+    missing or invalid, the endpoint creates a guest user and sets a cookie. The
+    frontend calls it on load and after any 401.
+    """
     if not auth.MULTI_USER:
         user = auth.local_user(db)
     else:
         user = auth.resolve_session_user(request, db)
         if user is None:
-            # Each new guest is a database row — cap how fast one IP can mint them.
+            # Each new guest is a database row, so cap how fast one IP can
+            # create them.
             limits.rate_limit("guest", request)
             user = models.User(is_guest=True)
             db.add(user)
@@ -80,8 +84,11 @@ def register(
     db: Session = Depends(get_db),
     user: models.User = Depends(auth.get_current_user),
 ):
-    """Upgrade the current guest in place — same user_id, so every adventure,
-    scenario, script and setting they created as a guest is kept."""
+    """Upgrades the current guest in place.
+
+    The `user_id` does not change, so every adventure, scenario, script, and
+    setting they created as a guest is kept.
+    """
     if not auth.MULTI_USER:
         raise HTTPException(400, "Accounts are disabled in local mode.")
     limits.rate_limit("auth", request)

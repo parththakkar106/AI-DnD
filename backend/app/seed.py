@@ -8,11 +8,11 @@ adventure copies the scenario's story cards and scripts into the adventure, so
 the seeded scripts run for guests too.
 
 Seed files are the source of truth for demo content: a scenario is inserted if
-missing, and reconciled in place when a seed file's content changes (so edits
-ship on the next deploy). When a seed already matches, nothing is written, so
-this stays cheap to run on every boot. Existing adventures already started from
-a demo keep their own copied cards/scripts and are unaffected — only new
-adventures pick up the updated content.
+missing, and reconciled in place when a seed file's content changes, so an edit
+ships on the next deploy. When a seed already matches, nothing is written, so
+this stays cheap to run on every boot. An adventure already started from a demo
+keeps its own copied cards and scripts and is unchanged. Only a new adventure
+picks up the updated content.
 """
 
 import json
@@ -122,8 +122,9 @@ def _insert_scenario(db, data: dict) -> None:
 
 def _update_scenario(db, scenario: models.Scenario, data: dict) -> None:
     _apply_scalars(scenario, data)
-    # Replace child content wholesale — demo content is server-owned and cheap
-    # to rebuild, and this keeps the scenario row (and adventure FKs) intact.
+    # Replace the child content in full. Demo content is owned by the server and
+    # cheap to rebuild, and replacing it this way keeps the scenario row, and the
+    # adventure foreign keys that point at it, intact.
     for card in list(scenario.story_cards):
         db.delete(card)
     for script in list(scenario.scripts):

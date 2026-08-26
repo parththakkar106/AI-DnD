@@ -1,8 +1,8 @@
 """Build a bootable adventure that has actually gone two ways (Phase 14, SP7).
 
-`tools.stress_session --keep` answers the scroll question and nothing else: its
-world state and script state are both empty, so it cannot show whether a branch
-switch puts the scoreboard back. This builds the small counterpart — a stat
+`tools.stress_session --keep` answers the scrolling question and nothing else.
+Its world state and script state are both empty, so it cannot show whether a
+branch switch restores them. This script builds the small counterpart: a stat
 schema, a script that counts gold, two attempts at one turn that do visibly
 different damage, a fork, and a hand-written memory on each branch.
 
@@ -17,9 +17,10 @@ branches apart, and then four of them went on showing the branch just left.
     AIDND_DB_PATH=/tmp/branches.db .venv/Scripts/python.exe \\
         -m uvicorn app.main:app --port 8010
 
-Then open http://127.0.0.1:8010/ — the SPA is served out of `frontend/dist`, so
-run `npm run build` first if it is stale. Expect hp 60 on "The hard way down"
-and hp 95 on the fork, and expect both to move the moment you switch.
+Then open http://127.0.0.1:8010/. The SPA is served out of `frontend/dist`, so
+run `npm run build` first if that directory is stale. Expect hp 60 on "The hard
+way down" and hp 95 on the fork, and expect both to change as soon as you
+switch.
 
 No LLM is called: the provider is scripted and its replies carry their own
 fenced `state` blocks.
@@ -119,9 +120,9 @@ def play(text):
     assert r.status_code == 200, r.text
 
 
-# Turn one: a scratch. Retried into a beating. The story continues from the
-# beating, so the scratch is the attempt left behind — and the two differ by 35
-# hit points, which is the number a switch has to put back.
+# Turn one is a scratch, retried into a beating. The story continues from the
+# beating, so the scratch is the attempt left behind. The two differ by 35 hit
+# points, which is the number a switch has to restore.
 ScriptedProvider.replies = [
     "You ease the door open and a nail catches your wrist.\n"
     "```state\n{\"player.hp\": -5}\n```",

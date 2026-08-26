@@ -15,9 +15,10 @@ DB_PATH = (
     else Path(__file__).resolve().parent.parent / "data.db"
 )
 
-# AIDND_DATABASE_URL (or the platform-conventional DATABASE_URL) switches the
-# app to a server database — any SQLAlchemy URL works, but Postgres is what
-# hosted deploys use (Phase 9 decision: Neon). Unset = SQLite, as always.
+# `AIDND_DATABASE_URL`, or the conventional `DATABASE_URL`, switches the app to
+# a server database. Any SQLAlchemy URL works, and hosted deploys use Postgres,
+# which Phase 9 settled on Neon for. If neither variable is set, the app uses
+# SQLite.
 DATABASE_URL = (
     os.environ.get("AIDND_DATABASE_URL", "").strip()
     or os.environ.get("DATABASE_URL", "").strip()

@@ -1,20 +1,22 @@
-"""Tests for undo/retry rolling back the shared script_state scoreboard
+"""Tests for undo and retry rolling back the shared `script_state`
 (plan/11-state-revert-and-retry-fix.md).
 
-Phase 14 SP4 turned the snapshots around. An action used to carry the state as
-it stood *before* it ran, and rolling back read the snapshot off the action
-being removed. It carries what it left *behind* now, and rolling back reads it
-off the node in front — which is the same number arrived at from the other
-side, and the only version a retry can use: attempts at one turn share a
-starting position and differ precisely in their outcome.
+Phase 14 SP4 reversed the snapshots. An action used to carry the state as
+it stood before it ran, and rolling back read the snapshot off the action
+being removed. Now it carries the state it left behind, and rolling back
+reads that state off the node in front of it. This is the same value
+reached from the other direction, and it is the only version a retry can
+use, because attempts at one turn share a starting position and differ
+only in their outcome.
 
 Run from the backend dir:  python -m pytest tests/test_state_revert.py -v
 """
 import os
 import tempfile
 
-# Point the app at a throwaway SQLite file BEFORE importing anything that binds
-# the engine at import time (app.database reads AIDND_DB_PATH on import).
+# Point the app at a throwaway SQLite file before importing anything that
+# binds the engine at import time. `app.database` reads `AIDND_DB_PATH`
+# on import.
 _tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
 _tmp.close()
 os.environ["AIDND_DB_PATH"] = _tmp.name
@@ -77,9 +79,9 @@ def _forget_snapshots(db, adv):
 # ---------------------------------------------------------------- undo
 
 def test_undo_reverts_state_to_before_the_turn(db):
-    # A turn took the scoreboard from {gold:0} -> {gold:10}. The node in front
-    # of the turn is what says where it started; current state is the mutated
-    # one.
+    # A turn moved script_state from {gold:0} to {gold:10}. The node in
+    # front of the turn records where it started. The current state is
+    # the mutated one.
     user, adv = _make_adventure(db, {"gold": 10})
     _add(db, adv, 0, "start", state_after={"gold": 0})
     _add(db, adv, 1, "do", state_after={"gold": 0})
@@ -165,9 +167,9 @@ def test_undo_prunes_memory_covering_removed_actions(db):
 # -------------------------------------------------------- withdrawing a node
 
 def test_forget_node_withdraws_only_what_that_node_produced(db):
-    """Phase 14 SP3: a memory hangs off the node its block ends on, so removing
-    a node is a lookup rather than a scan for memories that have fallen off the
-    end of the story."""
+    """Phase 14 SP3: a memory attaches to the node where its block ends, so
+    removing a node is a lookup rather than a scan for memories that
+    reference actions the story no longer has."""
     user, adv = _make_adventure(db, {})
     _add(db, adv, 0, "do")
     second = _add(db, adv, 1, "ai")
@@ -216,9 +218,9 @@ def test_restore_state_ignores_a_node_with_no_outcome(db):
 # ---------------------------------------------------------------- retry
 
 def test_retry_restores_the_state_the_turn_started_from(db, monkeypatch):
-    # Retry must roll the scoreboard back to what the node in front of the AI
-    # action left behind, so regeneration doesn't stack output mutations on top
-    # of the attempt being replaced.
+    # Retry must roll script_state back to what the node in front of the AI
+    # action left behind, so regeneration does not stack output mutations
+    # on top of the attempt being replaced.
     user, adv = _make_adventure(db, {"gold": 20})  # 20 = double-applied bug value
     _add(db, adv, 0, "start", state_after={"gold": 0})
     _add(db, adv, 1, "do", state_after={"gold": 10})

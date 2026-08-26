@@ -1,8 +1,9 @@
-"""End-to-end HTTP tests for undo/retry state revert, driving real turns through
-the actual routes + scripting engine with only the LLM provider mocked.
+"""End-to-end HTTP tests for undo and retry state revert. These tests drive
+real turns through the actual routes and scripting engine, with only the LLM
+provider mocked.
 
-A script's output hook adds 10 gold each turn; we assert the shared scoreboard
-behaves correctly across play / undo / retry.
+A script's output hook adds 10 gold each turn. These tests confirm that the
+adventure's stored gold total stays correct across play, undo, and retry.
 
     python -m pytest tests/test_turn_flow_integration.py -v
 """
@@ -64,7 +65,7 @@ def client(monkeypatch):
     adv_id, user_id = adv.id, user.id
     setup.close()
 
-    # Force a real (non-demo) turn that uses our fake provider.
+    # Force a real, non-demo turn that uses the fake provider.
     monkeypatch.setattr(adventures, "OpenAICompatibleProvider", FakeProvider)
     monkeypatch.setattr(auth, "resolve_provider_config", lambda s: auth.ProviderConfig(
         "http://fake", "k", "test-model", False))
@@ -107,7 +108,7 @@ def test_play_then_undo_reverts_gold(client):
 
     r = client.post(f"/api/adventures/{client.adv_id}/undo")
     assert r.status_code == 200, r.text
-    assert _state(client.adv_id) == {}  # scoreboard rolled back
+    assert _state(client.adv_id) == {}  # gold reverted to zero
 
 
 def test_two_turns_then_undo_reverts_only_last(client):
@@ -123,7 +124,8 @@ def test_retry_does_not_double_apply_gold(client):
     _play(client)
     assert _state(client.adv_id) == {"gold": 10}
 
-    # Before the fix this produced 20 (output hook ran twice); now it stays 10.
+    # Before the fix, this produced 20 because the output hook ran twice.
+    # Now it stays 10.
     r = client.post(f"/api/adventures/{client.adv_id}/retry")
     assert r.status_code == 200, r.text
     assert _state(client.adv_id) == {"gold": 10}

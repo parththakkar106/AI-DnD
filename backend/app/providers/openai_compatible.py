@@ -6,32 +6,33 @@ import httpx
 from .. import debuglog, netguard
 from .base import PromptParts, Provider, ProviderError
 
-# Framing appended after the story text in chat mode, so chat-tuned models keep
-# continuing prose instead of replying conversationally.
+# Appended after the story text in chat mode, so a chat-tuned model continues
+# the prose rather than replying conversationally.
 CHAT_CONTINUE_HINT = "\n\n[Continue the story directly. Output only story text.]"
 
 # OpenRouter serves one model from whichever upstream is available, and every
-# upstream holds its own prompt cache — so a request that lands somewhere new
-# starts cold however stable the prompt is. Naming a preferred upstream makes
-# routing deterministic, which is what lets a cache be hit at all.
+# upstream holds its own prompt cache, so a request routed somewhere new starts
+# with a cold cache however stable the prompt is. Naming a preferred upstream
+# makes routing deterministic, which is what allows a cache hit at all.
 #
-# `allow_fallbacks` is deliberately left at its default of true: this is a
-# preference, not a restriction. If the named upstream is down the request
-# still goes through somewhere else and merely misses the cache, which is the
-# behaviour we had anyway.
+# `allow_fallbacks` stays at its default of true on purpose, because this is a
+# preference rather than a restriction. If the named upstream is down, the
+# request still goes elsewhere and only misses the cache, which is the behavior
+# without this setting.
 #
-# A whitelist rather than a derivation from the model slug. The vendor half of
-# a slug is *usually* the provider slug ("deepseek/..." -> "deepseek", verified
-# against /api/v1/providers) but not reliably: Google's models are served by
-# "google-ai-studio" and "google-vertex", and there is no "google". Look a
-# vendor up on the model's Providers tab before adding it here — a slug that
-# does not exist is a routing preference that silently does nothing at best.
+# This is a list rather than a value derived from the model slug. The vendor half
+# of a slug is usually the provider slug, such as "deepseek/..." mapping to
+# "deepseek", which was verified against /api/v1/providers, but not reliably.
+# Google's models are served by "google-ai-studio" and "google-vertex", and there
+# is no "google". Look a vendor up on the model's Providers tab before adding it
+# here. A slug that does not exist is a routing preference that, at best, does
+# nothing.
 _OPENROUTER_HOST = "openrouter.ai"
 _PREFERRED_UPSTREAM = {"deepseek": "deepseek"}
 
 
-# Completion endpoints have no roles, so a plain chat has to be flattened into
-# one labelled transcript that trails off on "Assistant:" for the model to continue.
+# Completion endpoints have no roles, so a chat has to be flattened into one
+# labeled transcript that ends on "Assistant:" for the model to continue.
 _ROLE_LABELS = {"system": "System", "user": "User", "assistant": "Assistant"}
 
 
@@ -43,7 +44,11 @@ def flatten_messages(messages: list[dict]) -> str:
 
 
 class OpenAICompatibleProvider(Provider):
-    """Adapter for any /v1-style endpoint: Ollama, LM Studio, OpenAI, OpenRouter, vLLM, Groq…"""
+    """Adapter for any /v1-style endpoint.
+
+    This covers Ollama, LM Studio, OpenAI, OpenRouter, vLLM, and Groq, among
+    others.
+    """
 
     def __init__(
         self,
@@ -56,17 +61,18 @@ class OpenAICompatibleProvider(Provider):
         self.base_url = endpoint_url.rstrip("/")
         self.api_key = api_key
         self.model = model
-        self.api_mode = api_mode  # "chat" | "completion"
-        # Thinking budget for reasoning models, on top of max_tokens. 0 = the
-        # `reasoning` param is not sent (endpoints that don't know it may
-        # reject unknown fields); negative = explicitly ask the endpoint to
-        # turn reasoning off.
+        self.api_mode = api_mode  # Either "chat" or "completion".
+        # The thinking budget for reasoning models, on top of `max_tokens`. A
+        # value of 0 means the `reasoning` parameter is not sent, because an
+        # endpoint that does not know the field may reject it. A negative value
+        # asks the endpoint to turn reasoning off.
         self.reasoning_max_tokens = reasoning_max_tokens
-        # Token accounting from the last call, when the endpoint reported any:
-        # prompt/completion counts plus, on OpenRouter, `prompt_tokens_details.
-        # cached_tokens` — the number of prompt tokens read from cache instead
-        # of billed in full. Written by every request method, so a caller reads
-        # it after the call it made; one provider is built per request.
+        # The token accounting from the last call, when the endpoint reported
+        # any. It holds the prompt and completion counts, plus, on OpenRouter,
+        # `prompt_tokens_details.cached_tokens`, which is the number of prompt
+        # tokens read from cache rather than billed in full. Every request method
+        # writes it, so a caller reads it after the call it made. One provider is
+        # built per request.
         self.last_usage: dict | None = None
 
     def _headers(self) -> dict:
@@ -76,14 +82,16 @@ class OpenAICompatibleProvider(Provider):
         return headers
 
     def _apply_reasoning_budget(self, body: dict) -> None:
-        """Give reasoning models their own thinking budget (OpenRouter-style),
-        raising max_tokens so the actual output keeps its full budget.
+        """Gives reasoning models their own thinking budget, in the OpenRouter style.
 
-        A negative budget means the opposite: send `effort: "none"` to switch
-        reasoning off on models that do it by default (DeepSeek V4 Flash, say).
-        That's distinct from `exclude: true`, which still thinks — and bills —
-        but hides the trace. Zero stays "send nothing at all" so endpoints that
-        reject unknown fields (Ollama) keep working."""
+        The method raises `max_tokens`, so the output keeps its full budget.
+
+        A negative budget does the opposite. It sends `effort: "none"` to turn
+        reasoning off on a model that reasons by default, such as DeepSeek V4
+        Flash. That differs from `exclude: true`, which still reasons and still
+        bills for it while hiding the trace. Zero still means send nothing, so an
+        endpoint that rejects unknown fields, such as Ollama, keeps working.
+        """
         if self.api_mode != "chat":
             return
         if self.reasoning_max_tokens < 0:
@@ -93,11 +101,12 @@ class OpenAICompatibleProvider(Provider):
             body["max_tokens"] += self.reasoning_max_tokens
 
     def _apply_provider_routing(self, body: dict) -> None:
-        """Prefer one upstream on OpenRouter, so the prompt cache is warm.
+        """Prefers one upstream on OpenRouter, so the prompt cache stays warm.
 
-        Silent no-op everywhere else: `provider` is an OpenRouter extension and
-        Ollama and friends reject fields they do not know — the same trap the
-        `reasoning` param above is written around."""
+        The method does nothing anywhere else. `provider` is an OpenRouter
+        extension, and Ollama and similar servers reject fields they do not know.
+        The `reasoning` parameter above is written around the same constraint.
+        """
         if _OPENROUTER_HOST not in self.base_url:
             return
         upstream = _PREFERRED_UPSTREAM.get(self.model.split("/", 1)[0].lower())
@@ -105,12 +114,13 @@ class OpenAICompatibleProvider(Provider):
             body["provider"] = {"order": [upstream]}
 
     def _record_usage(self, payload: dict) -> None:
-        """Record the endpoint's own token accounting, if it reported any.
+        """Records the endpoint's own token accounting, if it reported any.
 
-        OpenRouter always reports usage now (`usage: {include: true}` and
-        `stream_options` are deprecated no-ops), and in a stream it rides on a
-        final chunk that carries no choices — which is why this is read
-        separately from the text extraction rather than beside it."""
+        OpenRouter now always reports usage, and `usage: {include: true}` and
+        `stream_options` are deprecated and do nothing. In a stream the usage
+        arrives on a final chunk that carries no choices, which is why this is
+        read separately from the text extraction.
+        """
         usage = payload.get("usage")
         if isinstance(usage, dict) and usage:
             self.last_usage = usage
@@ -147,8 +157,8 @@ class OpenAICompatibleProvider(Provider):
         if not choices:
             return ""
         choice = choices[0]
-        # chat stream → delta.content; completion stream → text;
-        # non-stream fallbacks → message.content / text
+        # A chat stream uses `delta.content`, and a completion stream uses
+        # `text`. The non-stream fallbacks are `message.content` and `text`.
         delta = choice.get("delta") or {}
         return (
             delta.get("content")
@@ -159,8 +169,11 @@ class OpenAICompatibleProvider(Provider):
 
     @staticmethod
     def _extract_reasoning(payload: dict) -> str:
-        """Reasoning-model thinking: OpenRouter normalizes to `reasoning`;
-        DeepSeek-style servers use `reasoning_content`."""
+        """Returns a reasoning model's thinking text.
+
+        OpenRouter normalizes it to `reasoning`, and DeepSeek-style servers use
+        `reasoning_content`.
+        """
         choices = payload.get("choices") or []
         if not choices:
             return ""
@@ -178,7 +191,7 @@ class OpenAICompatibleProvider(Provider):
     async def generate(
         self, parts: PromptParts, *, temperature: float, max_tokens: int
     ) -> AsyncIterator[tuple[str, str]]:
-        """Yields ("text" | "reasoning", chunk) pairs."""
+        """Yields `("text", chunk)` and `("reasoning", chunk)` pairs."""
         if not self.model:
             raise ProviderError("No model configured — set one in Settings.")
         url, body = self._request(parts, temperature, max_tokens)
@@ -188,9 +201,12 @@ class OpenAICompatibleProvider(Provider):
     async def chat(
         self, messages: list[dict], *, temperature: float, max_tokens: int
     ) -> AsyncIterator[tuple[str, str]]:
-        """Plain multi-turn chat — no story framing, no context assembly. Takes
-        [{"role", "content"}, ...] straight to the endpoint. Used by the AI Chat
-        scratchpad; the turn engine uses generate()."""
+        """Runs a plain multi-turn chat, with no story framing and no context
+        assembly.
+
+        The method sends `[{"role", "content"}, ...]` straight to the endpoint.
+        The AI Chat scratchpad uses it, and the turn engine uses `generate()`.
+        """
         if not self.model:
             raise ProviderError("No model configured — set one in Settings.")
         if self.api_mode == "completion":
@@ -217,10 +233,14 @@ class OpenAICompatibleProvider(Provider):
             yield event
 
     async def _stream(self, url: str, body: dict) -> AsyncIterator[tuple[str, str]]:
-        """Shared SSE plumbing for generate()/chat(): POST a streaming request
-        and yield ("text" | "reasoning", chunk) pairs, logging the exchange."""
-        # SSRF guard (hosted mode): a user-supplied endpoint_url must not point
-        # at an internal/metadata address. No-op for local installs.
+        """Runs the shared SSE request for `generate()` and `chat()`.
+
+        The method POSTs a streaming request, yields `("text", chunk)` and
+        `("reasoning", chunk)` pairs, and logs the exchange.
+        """
+        # SSRF guard for hosted mode. A user-supplied `endpoint_url` must not
+        # point at an internal or metadata address. This does nothing for a
+        # local install.
         reason = netguard.endpoint_block_reason(url)
         if reason:
             raise ProviderError(f"This endpoint can't be used — {reason}.")
@@ -232,8 +252,8 @@ class OpenAICompatibleProvider(Provider):
                     if resp.status_code != 200:
                         detail = (await resp.aread()).decode(errors="replace")[:500]
                         raise ProviderError(self._friendly_http_error(resp.status_code, detail))
-                    # Some servers ignore stream=true and return one plain JSON
-                    # body; buffer non-SSE lines so we can fall back to it.
+                    # Some servers ignore `stream=true` and return one plain
+                    # JSON body, so buffer the non-SSE lines to fall back to.
                     saw_sse = False
                     raw_lines: list[str] = []
                     async for line in resp.aiter_lines():
@@ -301,8 +321,11 @@ class OpenAICompatibleProvider(Provider):
     async def complete(
         self, system: str, user: str, *, temperature: float = 0.3, max_tokens: int = 400
     ) -> str:
-        """Single non-streaming completion for background calls (summarization).
-        Unlike generate(), no story-continuation framing is added."""
+        """Runs a single non-streaming completion, for background calls such as
+        summarization.
+
+        Unlike `generate()`, this adds no story-continuation framing.
+        """
         if not self.model:
             raise ProviderError("No model configured — set one in Settings.")
         if self.api_mode == "completion":
@@ -351,7 +374,7 @@ class OpenAICompatibleProvider(Provider):
         return text.strip()
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
-        """POST /v1/embeddings; self.model is the embedding model here."""
+        """POSTs to /v1/embeddings. Here `self.model` is the embedding model."""
         if not self.model:
             raise ProviderError("No embedding model configured — set one in Settings.")
         url = f"{self.base_url}/embeddings"
@@ -388,8 +411,9 @@ class OpenAICompatibleProvider(Provider):
                 f"model '{self.model}' exists. {detail}"
             )
         if status == 429:
-            # OpenRouter's shared free tier has a per-day cap; distinguish it
-            # from a short-term burst limit so the message is actionable.
+            # OpenRouter's shared free tier has a per-day cap. Distinguish it
+            # from a short-term burst limit, so the message tells the reader what
+            # to do.
             if "free-models-per-day" in detail:
                 return (
                     "The free demo has hit its daily request limit (resets at "

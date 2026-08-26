@@ -22,7 +22,7 @@ def hosted(monkeypatch):
 
 
 def _resolves_to(monkeypatch, ip: str):
-    """Pin getaddrinfo so we test the address decision, not real DNS."""
+    """Pin `getaddrinfo` so the test exercises the address decision, not real DNS."""
     monkeypatch.setattr(
         netguard.socket, "getaddrinfo",
         lambda *a, **k: [(2, 1, 6, "", (ip, 443))],
@@ -64,6 +64,6 @@ def test_unresolvable_host_is_blocked(hosted, monkeypatch):
 
 def test_noop_in_local_mode(monkeypatch):
     monkeypatch.setattr(auth, "MULTI_USER", False)
-    # Local installs legitimately reach localhost (Ollama) — never blocked.
+    # Local installs must reach localhost (Ollama). The guard never blocks local mode.
     assert netguard.endpoint_block_reason("http://localhost:11434/v1") is None
     assert netguard.endpoint_block_reason("http://127.0.0.1:11434/v1") is None

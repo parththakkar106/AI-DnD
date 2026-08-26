@@ -75,12 +75,13 @@ def make_scenario(client, **kwargs):
 
 
 def edit_scenario(scenario_id, cards=None, **fields):
-    """Author-side edit, straight to the DB (the scenario API is tested elsewhere).
+    """Author-side edit, straight to the database. The scenario API is
+    tested elsewhere.
 
-    `cards` is the scenario's full card list afterwards. Cards are matched to
-    existing rows by name and edited in place, exactly as ScenarioEditor does
-    (PATCH /story-cards/{id}) — card ids are stable across authoring, which is
-    what source_ref tracking relies on.
+    `cards` is the scenario's full card list afterwards. Cards are matched
+    to existing rows by name and edited in place, exactly as ScenarioEditor
+    does (PATCH /story-cards/{id}). Card ids stay stable across authoring,
+    which is what source_ref tracking relies on.
     """
     db = SessionLocal()
     try:

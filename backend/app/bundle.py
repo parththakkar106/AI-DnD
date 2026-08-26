@@ -1,51 +1,52 @@
-"""Phase 14, SP6 — the export bundle, as a tree.
+"""Phase 14, SP6: the export bundle, as a tree.
 
 A bundle is the one place a story leaves the database, and the only part of the
-tree no migration can ever reach: a file downloaded today has to still import
-into a build shipped next year. So the format is versioned, both versions live
-here, and nothing else in the app knows either of them.
+tree no migration can reach. A file downloaded today has to still import into a
+build shipped next year. The format is therefore versioned, both versions are
+defined here, and nothing else in the app knows either of them.
 
-**v1** is a flat list of turns, each with an optional `variants` array — the
-repeating group SP4 unpacked into rows. Nothing writes that shape any more.
-The *reader* stays, because bundles already on people's disks still have it and
-a backup that stops importing is not a backup.
+Version 1 is a flat list of turns, each with an optional `variants` array, which
+is the repeating group SP4 unpacked into rows. Nothing writes that shape now.
+The reader stays, because bundles already on people's disks still use it, and a
+backup that stops importing is not a backup.
 
-**v2** carries the tree. Three things it holds that v1 could not, each
-load-bearing:
+Version 2 carries the tree. It holds three things version 1 could not, and each
+one is required:
 
-* **the branches**, because a forked adventure is two stories and a flat list
-  can hold one — v1 export interleaved them by `index`, which read as a mangled
-  story rather than as lost data;
-* **`live`**, because a coordinate can hold several attempts at one turn and
-  exactly one of them is the story;
-* **both after-snapshots**, because they are what a branch switch and an undo
-  put back. A bundle carrying the actions but not the outcomes would import a
+* The branches, because a forked adventure is two stories and a flat list holds
+  one. A version 1 export interleaved them by `index`, which read as a garbled
+  story rather than as lost data.
+* `live`, because a coordinate can hold several attempts at one turn and exactly
+  one of them is the story.
+* Both after-snapshots, because they are what a branch switch and an undo
+  restore. A bundle carrying the actions but not the outcomes would import a
   tree nobody could switch inside.
 
 ## The rule about what a bundle carries
 
-**What was chosen, never what is derived.** The head *branch*, the fork points,
-the live flags and the anchors are decisions somebody made; they are in the
-file. `lineage`, the head *depth*, `index` and the variant ordinals are all
-computed from those, and they are recomputed on import instead:
+A bundle carries what was chosen, never what is derived. The head branch, the
+fork points, the live flags, and the anchors are decisions somebody made, so
+they are in the file. `lineage`, the head depth, `index`, and the variant
+ordinals are all computed from those, and the import recomputes them:
 
-* `lineage` is a cache of `parent` + `fork_depth`. Shipping it too would put a
-  second source of truth for one fact in a file anybody can hand-edit, and the
-  two could then disagree in a way no read would ever report.
-* the head depth is the tip of the head branch, which is a fact about the nodes
+* `lineage` is a cache of `parent` plus `fork_depth`. Shipping it as well would
+  put a second source of truth for one fact into a file anyone can hand-edit,
+  and the two could then disagree without any read reporting it.
+* The head depth is the tip of the head branch, which is a fact about the nodes
   that arrived with it.
-* `index` is the legacy column SP8 drops. Its one remaining job is to hand the
-  next row a number nothing else holds — a fact about the *adventure*, not
-  about a path — so `depth` cannot be it: two branches have a node at depth 4.
-  The import allocates one per turn instead, which keeps `max_action_index`
-  honest and keeps siblings sharing an index the way SP4 leaves them.
-* the variant ordinals are `attempts.renumber`'s to maintain, and it is the
-  only place allowed to.
+* `index` is the legacy column SP8 drops. Its one remaining job is to give the
+  next row a number nothing else holds, which is a fact about the adventure
+  rather than about a path, so `depth` cannot serve: two branches each have a
+  node at depth 4. The import allocates one index per turn instead, which keeps
+  `max_action_index` correct and keeps siblings sharing an index the way SP4
+  leaves them.
+* `attempts.renumber` maintains the variant ordinals, and it is the only place
+  allowed to.
 
-Every hand-editable coordinate is therefore checked before a row is written
-(`plan`), not fixed up afterwards: an import that fails halfway leaves an
-adventure holding half a tree, and a tree missing a branch is a story that
-silently stops rather than one that reports.
+Every hand-editable coordinate is therefore checked before a row is written, in
+`plan`, rather than repaired afterwards. An import that fails partway leaves an
+adventure holding half a tree, and a tree missing a branch is a story that stops
+without reporting anything.
 """
 
 from datetime import datetime
@@ -60,24 +61,24 @@ from .context import cursors, lineage
 FORMAT = "ai-dnd-adventure-v2"
 LEGACY_FORMAT = "ai-dnd-adventure-v1"
 
-# VARCHAR(20) on `actions.type`; a raw-dict import bypasses the schemas.
+# `actions.type` is VARCHAR(20), and a raw-dict import bypasses the schemas.
 TYPE_MAX = 20
 
 
 # ---------------------------------------------------------------- exporting
 
 def export(db: Session, adventure: models.Adventure) -> dict:
-    """The whole adventure as a v2 bundle.
+    """Returns the whole adventure as a version 2 bundle.
 
-    Deliberately un-pathed: a backup wants the entire tree, not the branch its
-    owner happens to be standing on. Both after-snapshots are undeferred in the
-    one query — they are per-node columns nothing else reads in bulk, and asking
-    for them a row at a time would be a query per turn.
+    The export is not scoped to a path. A backup holds the entire tree, not the
+    branch its owner is currently reading. Both after-snapshots are undeferred in
+    the one query, because they are per-node columns nothing else reads in bulk
+    and requesting them a row at a time would cost one query per turn.
 
-    No context snapshots. A bundle has never carried the assembled prompts and
-    still does not: they are ~163 kB a turn, they are an explanation of a
-    generation rather than part of the story, and the Insights viewer they feed
-    is reading the adventure it came from.
+    The bundle carries no context snapshots. It has never carried the assembled
+    prompts, and it still does not. They run about 163 kB per turn, they explain
+    a generation rather than form part of the story, and the Insights viewer they
+    feed reads the adventure they came from.
     """
     branches = (
         db.query(models.Branch)
@@ -85,8 +86,9 @@ def export(db: Session, adventure: models.Adventure) -> dict:
         .order_by(models.Branch.id)
         .all()
     )
-    # Branch ids are local to the file — positions in this list — because the
-    # database ids they had here are already taken over there.
+    # Branch ids are local to the file and are positions in this list, because
+    # the database ids they hold here are already in use on the importing
+    # side.
     local = {branch.id: i for i, branch in enumerate(branches)}
     nodes = (
         db.query(models.Action)
@@ -112,9 +114,9 @@ def export(db: Session, adventure: models.Adventure) -> dict:
         "worldState": adventure.world_state,
         "autoSummarize": adventure.auto_summarize,
         "memoryBankEnabled": adventure.memory_bank_enabled,
-        # A root entry even for an adventure whose branch row was never created
-        # — a story with no branch is a pre-tree one, and the tree it belongs to
-        # is the root. `_local` puts its nodes there.
+        # Write a root entry even for an adventure whose branch row was never
+        # created. A story with no branch is a pre-tree story, and the tree it
+        # belongs to is the root. `_local` places its nodes there.
         "branches": [_exported_branch(b, local) for b in branches] or [_ROOT],
         "headBranch": local.get(adventure.head_branch_id, 0),
         "memoryCursor": _exported_anchor(adventure, cursors.MEMORY, local),
@@ -154,10 +156,10 @@ def _exported_branch(branch: models.Branch, local: dict[int, int]) -> dict:
         dict(_ROOT) if parent is None
         else {"parent": parent, "forkDepth": branch.fork_depth}
     )
-    # A name is something a player chose, so it travels — the same rule that
-    # puts the fork points in the file and leaves `lineage` out. An unnamed
-    # branch omits the key rather than carrying a null, which keeps the file
-    # for a tree nobody has named byte-identical to the one SP6 wrote.
+    # A player chose the name, so it goes into the file. That is the same rule
+    # that puts the fork points in the file and leaves `lineage` out. An unnamed
+    # branch omits the key rather than carry a null, which keeps the file for an
+    # unnamed tree byte-identical to the one SP6 wrote.
     if branch.name:
         out["name"] = branch.name
     return out
@@ -166,7 +168,7 @@ def _exported_branch(branch: models.Branch, local: dict[int, int]) -> dict:
 def _exported_node(action: models.Action, local: dict[int, int]) -> dict:
     node = {
         "branch": _local(action.branch_id, local),
-        # A pre-tree row's depth is the number `index` already held.
+        # A pre-tree row's depth is the number `index` already holds.
         "depth": action.depth if action.depth is not None else action.index,
         "live": bool(action.live),
         "type": action.type,
@@ -175,11 +177,11 @@ def _exported_node(action: models.Action, local: dict[int, int]) -> dict:
     }
     if action.reasoning:
         node["reasoning"] = action.reasoning
-    # `{}` and absent mean different things — "this node left an empty
-    # scoreboard behind" against "nobody knows, leave the live state alone" —
-    # so an empty snapshot is written out rather than trimmed. It costs about
-    # eighteen bytes a row and it is the difference between an undo that clears
-    # a score and one that leaves it standing.
+    # `{}` and an absent key mean different things. `{}` means the node left an
+    # empty state behind, and an absent key means the state is unknown and the
+    # live state stays as it is. An empty snapshot is therefore written rather
+    # than omitted. It costs about eighteen bytes per row, and it decides
+    # whether an undo clears a score or leaves it in place.
     if action.state_after is not None:
         node["stateAfter"] = action.state_after
     if action.world_state_after is not None:
@@ -194,8 +196,9 @@ def _exported_memory(memory: models.Memory, local: dict[int, int]) -> dict:
         "text": memory.text, "pinned": memory.pinned, "forgotten": memory.forgotten,
         "sourceStart": memory.source_start, "sourceEnd": memory.source_end,
         "useCount": memory.use_count,
-        # The node it hangs off. A hand-written memory summarises no node, so it
-        # has a branch and no depth, and keeps that shape here.
+        # The node this memory is attached to. A hand-written memory summarizes
+        # no node, so it has a branch and no depth, and it keeps that shape
+        # here.
         "branch": _local(memory.branch_id, local),
         "depth": memory.depth,
     }
@@ -214,7 +217,7 @@ def _exported_anchor(
 # ---------------------------------------------------------------- importing
 
 def check_format(bundle: dict) -> str:
-    """The bundle's version, or 400."""
+    """Returns the bundle's version, or raises a 400."""
     fmt = bundle.get("format")
     if fmt in (FORMAT, LEGACY_FORMAT):
         return fmt
@@ -225,16 +228,16 @@ def check_format(bundle: dict) -> str:
 
 
 def plan(bundle: dict, version: str) -> dict:
-    """The bundle's tree, checked and normalised, before a row is written.
+    """Returns the bundle's tree, checked and normalized, before a row is written.
 
-    Pure: no session, no adventure, nothing created. Everything a hand-edited
-    file can get wrong about the *shape* of a tree is caught here, because the
-    alternative is an import that fails partway and leaves an adventure holding
-    a story with a hole in it.
+    The function has no side effects. It opens no session, needs no adventure,
+    and creates nothing. It catches everything a hand-edited file can get wrong
+    about the shape of a tree, because the alternative is an import that fails
+    partway and leaves an adventure holding a story with a gap in it.
 
-    Both versions land in the same shape, so `write` never learns there are two
-    formats: a v1 bundle is a linear story, which is a tree with one branch, and
-    its `variants` array is a sibling group written the old way.
+    Both versions produce the same shape, so `write` never learns that there are
+    two formats. A version 1 bundle is a linear story, which is a tree with one
+    branch, and its `variants` array is a sibling group written the old way.
     """
     branches = (
         _planned_branches(bundle) if version == FORMAT else [dict(_ROOT)]
@@ -248,8 +251,9 @@ def plan(bundle: dict, version: str) -> dict:
         "nodes": nodes,
         "memories": _planned_memories(bundle, len(branches)),
         "head": _as_index(bundle.get("headBranch"), len(branches), default=0),
-        # v2 knows where the derived work got to; v1 counted it, and a count
-        # cannot be turned into a node until the nodes exist (see `settle`).
+        # Version 2 records where the derived work reached. Version 1 counted
+        # it, and a count cannot become a node until the nodes exist. See
+        # `settle`.
         "anchors": _planned_anchors(bundle, len(branches)) if version == FORMAT else None,
         "positions": None if version == FORMAT else {
             "memory": _as_int(bundle.get("memoryCursor"), 0),
@@ -270,11 +274,12 @@ def _planned_branches(bundle: dict) -> list[dict]:
         if parent is None:
             specs.append(dict(_ROOT, **({"name": name} if name else {})))
             continue
-        # A branch may only fork from one listed before it. That is how the
-        # export writes them — branches are numbered in creation order and a
-        # parent always exists first — and requiring it here buys acyclicity for
-        # the price of a comparison: a lineage is computed by walking to the
-        # parent, and a cycle would be an import that never returns.
+        # A branch may fork only from a branch listed before it. The export
+        # writes them that way, because branches are numbered in creation order
+        # and a parent always exists first. Requiring it here guarantees the
+        # graph is acyclic for the cost of one comparison. A lineage is computed
+        # by walking to the parent, so a cycle would be an import that never
+        # returns.
         if not _is_int(parent) or not 0 <= parent < i:
             raise HTTPException(
                 400,
@@ -296,11 +301,12 @@ def _planned_branches(bundle: dict) -> list[dict]:
 
 
 def _planned_branch_name(entry: dict, i: int) -> str | None:
-    """The name a branch entry carries, or None for one nobody named.
+    """Returns the name a branch entry carries, or `None` if nobody named it.
 
-    Checked before the row is created rather than left to the column, for the
-    reason the whole planner exists: a 400 from a pure function beats a half
-    written adventure and a database error from three branches in.
+    The check runs before the row is created rather than being left to the
+    column, for the reason the planner exists. A 400 from a function with no side
+    effects is better than a half-written adventure and a database error three
+    branches in.
     """
     raw = entry.get("name")
     if raw is None:
@@ -351,15 +357,16 @@ def _planned_nodes(bundle: dict, branches: int) -> list[dict]:
 
 
 def _planned_v1_nodes(bundle: dict) -> list[dict]:
-    """A v1 bundle's turns as the nodes they describe: one per attempt.
+    """Returns a version 1 bundle's turns as nodes, one node per attempt.
 
-    The `variants` array is the repeating group SP4 unpacked, so reading one is
-    the same split migration 60 does — every attempt becomes a row at the turn's
-    coordinate and `variantIndex` picks which is live. Clamped, because a
-    hand-edited bundle can name an attempt its own list does not have, and a
-    turn with no live node is a turn no read can see.
+    The `variants` array is the repeating group SP4 unpacked, so reading one
+    performs the same split that migration 60 does. Every attempt becomes a row
+    at the turn's coordinate, and `variantIndex` selects the live one. The index
+    is clamped, because a hand-edited bundle can name an attempt its own list
+    does not contain, and a turn with no live node is a turn no read can see.
 
-    The depth is the bundle's `index`: v1 is one branch, where the two agree.
+    The depth is the bundle's `index`. A version 1 bundle has one branch, where
+    the two numbers agree.
     """
     raw = bundle.get("actions")
     nodes: list[dict] = []
@@ -404,9 +411,10 @@ def _planned_memories(bundle: dict, branches: int) -> list[dict]:
             "sourceStart": entry.get("sourceStart"),
             "sourceEnd": entry.get("sourceEnd"),
             "useCount": _as_int(entry.get("useCount"), 0),
-            # Out of range rather than absent means a file that disagrees with
-            # itself; the root is the safe reading, because a memory on a branch
-            # nothing can see is a memory that never reaches a prompt again.
+            # A value that is out of range, rather than absent, means the file
+            # disagrees with itself. The root is the safe reading, because a
+            # memory on a branch nothing can see never reaches a prompt
+            # again.
             "branch": _as_index(entry.get("branch"), branches, default=0),
             "depth": entry.get("depth") if _is_int(entry.get("depth")) else None,
         })
@@ -429,10 +437,10 @@ def _planned_anchors(bundle: dict, branches: int) -> dict:
 # ------------------------------------------------------------------ writing
 
 def write(db: Session, adventure: models.Adventure, story: dict) -> None:
-    """Write a planned tree onto a freshly created adventure.
+    """Writes a planned tree onto a newly created adventure.
 
-    Order matters and is not negotiable: branches first, because a node needs an
-    id to hang off; then the nodes, because the head and the anchors name one.
+    The order is fixed. Branches come first, because a node needs a branch id.
+    The nodes come next, because the head and the anchors name a node.
     """
     ids = _write_branches(db, adventure, story["branches"])
     _write_nodes(db, adventure, story["nodes"], ids)
@@ -444,13 +452,13 @@ def write(db: Session, adventure: models.Adventure, story: dict) -> None:
 def _write_branches(
     db: Session, adventure: models.Adventure, specs: list[dict]
 ) -> list[int]:
-    """One row per branch, lineage computed rather than read.
+    """Writes one row per branch, computing the lineage rather than reading it.
 
-    Inserted through Core and the lineage written second, for the reason
-    `tree.root_branch` spells out: the lineage names the row's own id. The
-    parent's cached ancestry is capped at this fork, which is the same
-    arithmetic `tree.fork` does — a fork made now and a fork made a year ago and
-    exported must produce the same rows.
+    The rows are inserted through Core and the lineage is written second, for the
+    reason `tree.root_branch` gives: the lineage names the row's own id. The
+    parent's cached ancestry is capped at this fork, which is the arithmetic
+    `tree.fork` performs. A fork made now and a fork made a year ago and then
+    exported have to produce the same rows.
     """
     ids: list[int] = []
     lineages: list[list[list]] = []
@@ -486,14 +494,14 @@ def _write_branches(
 def _write_nodes(
     db: Session, adventure: models.Adventure, specs: list[dict], ids: list[int]
 ) -> None:
-    """The nodes, grouped into the turns they are attempts at.
+    """Writes the nodes, grouped into the turns they are attempts at.
 
-    Two things are allocated here rather than trusted from the file. `index` is
-    handed out one per *turn*, in the order the bundle lists them, so siblings
-    share one and no two coordinates do — which is what `max_action_index` needs
-    to keep issuing numbers nothing holds. And exactly one attempt in each group
-    is made live: a file can name none or several, and a turn with no live node
-    is a turn that vanishes from the story.
+    Two values are allocated here rather than read from the file. `index` is
+    issued once per turn, in the order the bundle lists them, so siblings share
+    one index and no two coordinates do. `max_action_index` needs that to keep
+    issuing numbers nothing holds. Exactly one attempt in each group is also made
+    live, because a file can name none or several, and a turn with no live node
+    disappears from the story.
     """
     groups: dict[tuple[int, int], list[models.Action]] = {}
     indices: dict[tuple[int, int], int] = {}
@@ -541,18 +549,19 @@ def _write_memories(
             branch_id=ids[spec["branch"]],
             depth=spec["depth"],
         )
-        # A v1 memory has no depth of its own; `source_end` is the index of the
-        # last action it summarises, which on one branch is that node's depth.
+        # A version 1 memory has no depth of its own. `source_end` is the index
+        # of the last action it summarizes, which on one branch is that node's
+        # depth.
         if memory.depth is None and memory.source_end is not None:
             memory.depth = memory.source_end
-        # A v1 memory that summarises nothing — one the player typed — has no
-        # depth to derive, and leaving it NULL here would rebuild by import the
-        # exact state migration 62 exists to end: `Path._entry_clause` compares
-        # `depth <= max_depth`, which a NULL fails, so the memory would vanish
-        # from every branch the moment the imported adventure was forked. The
-        # root is the same answer the migration gives, and for the same reason
-        # — 0 is at or before every fork point, so it is visible from every
-        # path this adventure can grow.
+        # A version 1 memory that summarizes nothing, which means one the player
+        # typed, has no depth to derive. Leaving it NULL here would recreate on
+        # import the state migration 62 exists to end. `Path._entry_clause`
+        # compares `depth <= max_depth`, which a NULL fails, so the memory would
+        # disappear from every branch as soon as the imported adventure was
+        # forked. The root is the answer the migration gives, for the same
+        # reason: 0 is at or before every fork point, so the memory is visible
+        # from every path this adventure can grow.
         if memory.depth is None:
             memory.depth = lineage.ROOT_DEPTH
         db.add(memory)
@@ -561,12 +570,13 @@ def _write_memories(
 def _point_the_head(
     adventure: models.Adventure, story: dict, ids: list[int]
 ) -> None:
-    """Where the story is being played, and how deep it goes.
+    """Sets which branch the story is played on, and how deep it goes.
 
-    The branch comes from the file and the depth does not: the tip of a branch
-    is whatever arrived on it, and a branch with nothing of its own sits at its
-    fork point — the last node its story contains, borrowed but the tip all the
-    same. The same rule as `tree.refresh_head`, applied before a flush.
+    The branch comes from the file and the depth does not. The tip of a branch is
+    whatever arrived on it, and a branch with no nodes of its own sits at its
+    fork point, which is the last node its story contains. That node is borrowed
+    but it is still the tip. This is the rule `tree.refresh_head` applies, run
+    here before a flush.
     """
     head = story["head"]
     adventure.head_branch_id = ids[head]
@@ -581,10 +591,11 @@ def _point_the_head(
 def _write_anchors(
     adventure: models.Adventure, story: dict, ids: list[int]
 ) -> None:
-    """How far the memories and the summary have read — v2 only.
+    """Records how far the memories and the summary have read. Version 2 only.
 
-    A v1 bundle counts instead, and a count cannot be resolved to a node until
-    the nodes are in the database; `settle` does that half afterwards.
+    A version 1 bundle stores a count instead, and a count cannot be resolved to
+    a node until the nodes are in the database. `settle` does that part
+    afterwards.
     """
     anchors = story["anchors"]
     if anchors is None:
@@ -595,15 +606,17 @@ def _write_anchors(
 
 
 def settle(db: Session, adventure: models.Adventure, story: dict) -> None:
-    """Line up the two coordinate systems, once the nodes exist.
+    """Aligns the two coordinate systems, once the nodes exist.
 
     The anchors and the legacy counts describe the same boundary in different
-    words, and each version of the bundle brings one of them. A v1 file brings
-    the count, so the anchor is found by counting that far along the story; a v2
-    file brings the anchor, so the count is read back off it. The legacy columns
-    are still written either way — they are what a rolled-back build reads.
+    terms, and each version of the bundle carries one of them. A version 1 file
+    carries the count, so the anchor is found by counting that far along the
+    story. A version 2 file carries the anchor, so the count is read back from
+    it. The legacy columns are written either way, because a rolled-back build
+    reads them.
 
-    Called after the flush, because both directions need the actions queryable.
+    The caller runs this after the flush, because both directions need the
+    actions to be queryable.
     """
     positions = story["positions"]
     for cursor in cursors.ALL:
@@ -618,11 +631,12 @@ def settle(db: Session, adventure: models.Adventure, story: dict) -> None:
 
 
 # ------------------------------------------------------------------ reading
-# Small coercions. A raw-dict import bypasses the schemas entirely, so
-# everything out of a bundle is whatever JSON happened to hold.
+# Small coercions. A raw-dict import bypasses the schemas, so every value from a
+# bundle is whatever the JSON held.
 
 def _is_int(value) -> bool:
-    """`True` is an `int` in Python, and is not one in a coordinate."""
+    """Returns whether `value` is an integer. Python counts `True` as an `int`,
+    and a coordinate does not."""
     return isinstance(value, int) and not isinstance(value, bool)
 
 
@@ -631,9 +645,12 @@ def _as_int(value, default: int) -> int:
 
 
 def _as_index(value, count: int, default: int | None = None) -> int | None:
-    """A local branch number, or `default` when the file names one that is not
-    there. Out of range is a file disagreeing with itself, not a shape a read
-    can be handed."""
+    """Returns a local branch number, or `default` when the file names a branch
+    that is not present.
+
+    An out-of-range value means the file disagrees with itself, and it is not a
+    value any read can be given.
+    """
     return value if _is_int(value) and 0 <= value < count else default
 
 

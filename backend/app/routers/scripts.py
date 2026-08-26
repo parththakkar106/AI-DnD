@@ -84,7 +84,7 @@ def test_script(
     db: Session = Depends(get_db),
     user: models.User = Depends(auth.get_current_user),
 ):
-    """Dry-run one hook against sample text — no AI call, no persistence."""
+    """Runs one hook against sample text, making no AI call and storing nothing."""
     script = get_script_or_404(script_id, db, user)
     limits.rate_limit("script-test", request, user)
     result = run_hook(
@@ -145,7 +145,8 @@ def import_script(
 
     script = models.Script(
         user_id=user.id,
-        # Raw-dict import bypasses the schemas — clamp to the VARCHAR width.
+        # A raw-dict import bypasses the schemas, so truncate to the VARCHAR
+        # width.
         name=(pick("name") or "Imported Script")[:schemas.NAME_MAX],
         description=pick("description"),
         library_js=pick("library", "library_js", "sharedLibrary"),

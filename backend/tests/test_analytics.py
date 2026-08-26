@@ -1,11 +1,11 @@
-"""Visit analytics — app/analytics.py and the two endpoints in front of it.
+"""Visit analytics: app/analytics.py and the two endpoints in front of it.
 
-Three things are worth testing here and the rest is arithmetic. That the
-counters survive the buffer/UPSERT round trip (a flush must add to what is
-already stored, not replace it, or every number is only ever the last minute).
-That the funnel counts *people* rather than clicks, which is the only reason
-the visitor-day table exists. And that the gate holds: a stranger cannot read
-the dashboard, and cannot inflate what it says beyond hitting the page.
+This file tests three things, and the rest is arithmetic. The counters must
+survive the buffer/UPSERT round trip: a flush adds to what is already
+stored instead of replacing it, or every number would show only the last
+minute. The funnel counts people rather than clicks, which is the only
+reason the visitor-day table exists. The gate holds: a stranger cannot read
+the dashboard, and cannot inflate what it reports beyond hitting the page.
 
     python -m pytest tests/test_analytics.py -v
 """
@@ -102,7 +102,7 @@ def test_label_cardinality_is_capped(db):
     analytics.flush(db)
     labels = db.query(models.AnalyticsDaily).filter_by(metric=analytics.M_REFERRER).count()
     # Everything past the cap is folded into one bucket, so a referrer flood
-    # cannot mint rows without limit.
+    # cannot create unlimited rows.
     assert labels == analytics.MAX_LABELS_PER_METRIC + 1
     assert counter(db, analytics.M_REFERRER, analytics.OTHER) == 25
 
@@ -115,8 +115,9 @@ def test_visitor_id_is_stable_and_keyed(db, monkeypatch):
     assert handle == analytics.visitor_id(user)               # a returning visitor
     assert handle != analytics.visitor_id(make_user(db))      # is still one visitor
     assert len(handle) == 32 and int(handle, 16) >= 0         # opaque hex, not an id
-    # Keyed on the app secret, not a bare hash of the user id: otherwise anyone
-    # holding this table could rebuild the mapping by hashing 1, 2, 3, …
+    # Keyed on the app secret, not a bare hash of the user id. Otherwise
+    # anyone holding this table could rebuild the mapping by hashing
+    # sequential ids.
     monkeypatch.setattr(analytics.security, "SECRET_KEY", b"a-different-secret")
     assert analytics.visitor_id(user) != handle
 
@@ -128,8 +129,8 @@ def test_a_repeat_visitor_is_new_only_once(db):
     rows = db.query(models.AnalyticsVisitorDay).all()
     assert len(rows) == 1 and rows[0].is_new
 
-    # Same visitor, a later day: seen before, so not new — and not merged into
-    # the first day's row either.
+    # Same visitor, a later day: seen before, so not new. The row is not
+    # merged into the first day's row either.
     tomorrow = (models.utcnow().date() + timedelta(days=1)).isoformat()
     analytics._visits[(tomorrow, analytics.visitor_id(user))] = set()
     analytics.flush(db)
@@ -234,7 +235,7 @@ def test_summary_counts_people_once_per_step(db):
     steps = {row["step"]: row["count"] for row in result["funnel"]}
     assert steps["Visited"] == 2
     assert steps["Opened a scenario"] == 2
-    assert steps["Played a turn"] == 1      # not 3 — one person, three turns
+    assert steps["Played a turn"] == 1      # not 3, because one person made three turns
     assert steps["Signed up"] == 0
     # Raw event totals still count every occurrence.
     assert result["totals"]["turns"] == 3
@@ -361,10 +362,11 @@ def test_api_errors_are_counted_by_route(client):
 # ---------- The dialect the tests never run on ----------
 
 def test_the_upserts_compile_for_postgres():
-    """Prod is Neon; these tests are SQLite, and a failed flush is caught and
-    logged rather than raised. A dialect mistake would therefore be invisible
-    until the dashboard quietly stayed empty — so compile both statements
-    against Postgres without ever connecting to one.
+    """Prod runs on Neon, but these tests run on SQLite, and a failed flush
+    is caught and logged instead of raised. A dialect mistake would
+    therefore stay invisible until the dashboard quietly stayed empty. This
+    test compiles both statements against Postgres without connecting to
+    one.
     """
     from sqlalchemy import create_engine
     from sqlalchemy.dialects import postgresql

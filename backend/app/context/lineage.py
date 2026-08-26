@@ -1,35 +1,35 @@
-"""Phase 14 — which nodes are "this story".
+"""Phase 14: decides which nodes make up one story.
 
-`tree.py` decides where a node is written. This module is the other half: it
-decides which nodes a read can see, and it is the **only** place that knows.
+`tree.py` decides where a node is written. This module decides which nodes a
+read can see, and it is the only place that makes that decision.
 
-A branch owns the nodes played on it and *borrows* everything before its fork
-point from its ancestors, so "the story on branch C" is not a column you can
-filter on — it is an OR of ranges::
+A branch owns the nodes played on it and inherits everything before its fork
+point from its ancestors. "The story on branch C" is therefore not a value you
+can filter a column on. It is an OR of ranges::
 
-    (branch_id = C)                 -- C's own nodes, to the tip
+    (branch_id = C)                 -- C's own nodes, through to the tip
     OR (branch_id = B AND depth <= 5)
     OR (branch_id = A AND depth <= 3)
 
-which is exactly what `branches.lineage` spells out, newest first, computed
-once when the fork happens. Reads never walk parent pointers to rebuild it.
+The `branches.lineage` column records exactly that list, newest first. The fork
+computes it once, so no read walks parent pointers to rebuild it.
 
-Two properties fall out of the shape, and both are load-bearing:
+The shape of the list gives two properties that the windowed reads depend on:
 
-* **The ranges are disjoint and descending.** A branch's own nodes always sit
-  deeper than its fork point, and each lineage entry is capped at the fork
-  depth of the branch beneath it. So ordering the whole clause by `depth`
-  descending is the same as reading entry 0's nodes, then entry 1's, then
-  entry 2's — which is what lets a tail read use only the newest few entries
-  and stop.
-* **Clause count is bounded by the context window, not by fork count.** A
-  200-fork story whose newest branch is 40 turns long reads with one clause,
-  because the window is covered before the second entry is reached. That is
-  `prefix_covering`, and it is why `history.window_covering` can keep its shape.
+- The ranges do not overlap, and they descend. A branch's own nodes always sit
+  deeper than its fork point, and each lineage entry is capped at the fork depth
+  of the branch below it. Ordering the whole clause by `depth` descending
+  therefore reads entry 0's nodes, then entry 1's, then entry 2's. A tail read
+  can use the newest few entries and stop.
+- The number of clauses depends on the size of the context window, not on how
+  many times the story has forked. A story with 200 forks whose newest branch
+  runs 40 turns reads with a single clause, because the window is covered before
+  the second entry is reached. `prefix_covering` implements this, and it is why
+  `history.window_covering` can keep its current shape.
 
-Everything here is a read. Nothing in this module creates a branch or writes a
-row: an adventure with no branch has no story, and healing that is the write
-side's job (`tree.place_action`, and the flush guard in `models.py` behind it).
+Everything in this module reads. Nothing here creates a branch or writes a row.
+An adventure with no branch has no story, and the write side repairs that. See
+`tree.place_action` and the flush listener in `models.py`.
 """
 
 from sqlalchemy import and_, false, or_
@@ -37,31 +37,33 @@ from sqlalchemy.orm import Session
 
 from .. import models
 
-# The depth of an adventure with no actions. Mirrors tree.NO_DEPTH; kept
-# separately so a read never has to import the write half.
+# The depth of an adventure that has no actions. This mirrors `tree.NO_DEPTH`.
+# It is duplicated here so that a read never has to import the write half.
 NO_DEPTH = -1
 
-# The opening node of an adventure. Depth 0 exists only on the root branch — a
-# fork starts its own nodes after the depth it forked at — so this names one
-# node per adventure, not one per branch. It is also where migration 62 parked
-# every memory written before memories had coordinates, which is why the two
-# places that can retire a memory (`memorybank.forget_node`, and a v1 import
-# with no depth to read) both have to say something about it.
+# The opening node of an adventure. Depth 0 exists only on the root branch,
+# because a fork starts its own nodes after the depth it forked at. This
+# constant therefore names one node per adventure rather than one per branch.
+#
+# Migration 62 also placed every memory written before memories had coordinates
+# at depth 0. That is why both places that can retire a memory must handle this
+# depth: `memorybank.forget_node`, and a v1 import that has no depth to read.
 ROOT_DEPTH = 0
 
 
 def entries_of(branch: models.Branch) -> list[tuple[int, int | None]]:
-    """`branch.lineage` as (branch_id, max_depth) pairs, newest first.
+    """Returns `branch.lineage` as (branch_id, max_depth) pairs, newest first.
 
-    An empty lineage reads as "this branch alone, to its tip" rather than as an
-    error. That is what a root branch's lineage means, and it is what a branch
-    row looks like in the moment between being inserted and having its own id
-    to name — so the fallback is the truth, not a guess.
+    An empty lineage means this branch alone, through to its tip. That is not an
+    error. It is what a root branch's lineage means, and it is also what a
+    branch row holds between the moment it is inserted and the moment its own id
+    is written into the column. The fallback is therefore correct rather than a
+    guess.
     """
     raw = branch.lineage if isinstance(branch.lineage, list) else []
     entries: list[tuple[int, int | None]] = []
     for item in raw:
-        # JSON round-trips lists; a hand-written row might hold tuples.
+        # JSON round-trips lists, but a hand-written row might hold tuples.
         if not isinstance(item, (list, tuple)) or not item:
             continue
         branch_id = item[0]
@@ -73,10 +75,10 @@ def entries_of(branch: models.Branch) -> list[tuple[int, int | None]]:
 
 
 class Path:
-    """One story, as a clause and as a predicate.
+    """One story, expressed as a SQL clause and as a Python predicate.
 
-    Holds the lineage entries newest first, plus the depth of the tip, which is
-    only used to estimate how much story each entry covers.
+    The object holds the lineage entries newest first, plus the depth of the
+    tip. The tip is used only to estimate how much story each entry covers.
     """
 
     def __init__(self, entries: list[tuple[int, int | None]], tip: int | None = None):
@@ -96,28 +98,29 @@ class Path:
         model=models.Action,
         count: int | None = None,
     ):
-        """The branch clause, over `model` (`Action` or `Memory`).
+        """Returns the branch clause over `model`, which is `Action` or `Memory`.
 
-        `count` limits it to the newest `count` lineage entries — the windowed
-        read. `None` is the whole lineage, which is what anything counting from
-        the *oldest* end (a slice, a total) has to use.
+        `count` limits the clause to the newest `count` lineage entries, which
+        produces a windowed read. Pass `None` for the whole lineage. Any caller
+        that counts from the oldest end, such as a slice or a total, must pass
+        `None`.
 
-        Every row this reads has a depth. Memories used to be the exception —
-        a hand-written one had a branch and no depth, and needed an escape
-        clause here to survive being capped at a fork. SP7 anchors them at the
-        head instead (`tree.place_memory`), which is a better answer to the same
-        problem: the memory is not exempt from the path, it is *on* one. A row
-        with no depth is now a pre-tree leftover that no read should see.
+        Every row this clause selects has a depth. Memories were once an
+        exception, because a hand-written memory had a branch but no depth and
+        needed an escape clause here to avoid being capped at a fork. SP7
+        anchors those memories at the head instead. See `tree.place_memory`. A
+        memory is now on a path rather than exempt from one, and a row with no
+        depth is a pre-tree leftover that no read should return.
 
-        Actions also have to be *live* (SP4). A coordinate can hold several
-        attempts at the same turn, and the story tells one of them; the losing
-        siblings sit at the same branch and depth and are excluded here, once,
-        so that no read of the story has to know that retries exist. Only
-        `app/attempts.py` looks past this.
+        Actions must also be live, as of SP4. One coordinate can hold several
+        attempts at a turn, and the story uses one of them. The other attempts
+        sit at the same branch and depth, and this clause excludes them once, so
+        that no read of the story has to account for retries. Only
+        `app/attempts.py` looks past this filter.
 
-        An empty path yields `false`, not "no filter": an adventure whose nodes
-        carry no branch has no story, and the loud version of that is an empty
-        page, not every branch at once.
+        An empty path returns `false` rather than no filter at all. An adventure
+        whose nodes carry no branch has no story, and the correct way to show
+        that is an empty page rather than every branch at once.
         """
         entries = self.entries if count is None else self.entries[:count]
         if not entries:
@@ -136,14 +139,16 @@ class Path:
     # ------------------------------------------------------------- Python
 
     def contains(self, node) -> bool:
-        """The Python half of `clause()` — keep the two in step.
+        """Returns whether `node` is on this path.
 
-        Used where the rows are already in memory (the scripting pipeline hands
-        user scripts the whole history), so an already-loaded collection can be
-        cut down to the path without a second read.
+        This is the Python equivalent of `clause()`. Keep the two in step.
 
-        `live` is checked first, and only on rows that have the attribute:
-        memories have no siblings to lose to.
+        Callers use it where the rows are already in memory. The scripting
+        pipeline hands user scripts the whole history, so a loaded collection
+        can be reduced to the path without a second query.
+
+        The method checks `live` first, and only on rows that define the
+        attribute, because memories have no siblings.
         """
         if getattr(node, "live", True) is False:
             return False
@@ -157,22 +162,25 @@ class Path:
         return False
 
     def sort_key(self, node) -> tuple[int, int]:
-        """Oldest-first ordering. `depth` is the ordering key; `id` breaks the
-        tie a pre-tree row (depth NULL) or a future sibling pair would leave."""
+        """Returns a sort key that orders nodes from oldest to newest.
+
+        `depth` is the ordering key. `id` breaks ties, which a pre-tree row with
+        a NULL depth or a pair of siblings can produce.
+        """
         return (node.depth if node.depth is not None else NO_DEPTH, node.id or 0)
 
     # ------------------------------------------------------------ windowing
 
     def prefix_covering(self, rows: int) -> int:
-        """How many lineage entries it takes to hold the newest `rows` nodes.
+        """Returns how many lineage entries hold the newest `rows` nodes.
 
-        An estimate from depth arithmetic, not a query: entry *i* covers the
-        depths between its own cap and the cap of the entry below it, and there
-        is at most one node per depth on a path. So the count it returns is
-        never too many, and is too few only where the story has gaps — an
-        action deleted from the middle. The caller widens to the full lineage
-        if the window comes up short, which costs a second query on a story
-        somebody has deleted from, and nothing at all otherwise.
+        The result is an estimate from depth arithmetic rather than a query.
+        Entry *i* covers the depths between its own cap and the cap of the entry
+        below it, and a path holds at most one node per depth. The estimate is
+        therefore never too large. It is too small only when the story has gaps,
+        which happens after an action is deleted from the middle. In that case
+        the caller widens the read to the whole lineage, which costs one extra
+        query.
         """
         total = len(self.entries)
         if rows <= 0 or total == 0:
@@ -182,9 +190,9 @@ class Path:
             top = self.tip if max_depth is None else max_depth
             below = self.entries[i + 1][1] if i + 1 < total else NO_DEPTH
             if top is None or below is None:
-                # No tip recorded, or a cap missing from a hand-written row:
-                # nothing to estimate from, so read the lot rather than guess
-                # short and hide the older half of the story.
+                # Either no tip was recorded, or a hand-written row is missing a
+                # cap. There is nothing to estimate from, so return every entry.
+                # Guessing low would hide the older half of the story.
                 return total
             covered += max(top - below, 0)
             if covered >= rows:
@@ -192,15 +200,15 @@ class Path:
         return total
 
     def covering_after(self, depth: int) -> int:
-        """How many lineage entries can hold a node deeper than `depth`.
+        """Returns how many lineage entries can hold a node deeper than `depth`.
 
-        The counterpart to `prefix_covering`, and unlike it this is exact
-        rather than an estimate: entry *i* holds nothing deeper than its own
-        cap, and the caps descend, so the first entry capped at or below
-        `depth` ends the search — it and everything older is behind the
-        boundary. Reading "the story after the cursor" therefore names one
-        branch on any story whose cursor is on its newest branch, however
-        often it has forked.
+        This is the counterpart to `prefix_covering`, and it is exact rather than
+        an estimate. Entry *i* holds nothing deeper than its own cap, and the
+        caps descend, so the first entry capped at or below `depth` ends the
+        search. That entry and every older one fall behind the boundary. As a
+        result, reading the story after the cursor touches one branch on any
+        story whose cursor sits on its newest branch, however many times the
+        story has forked.
         """
         for i, (_, max_depth) in enumerate(self.entries):
             if max_depth is not None and max_depth <= depth:
@@ -208,27 +216,28 @@ class Path:
         return len(self.entries)
 
     def depth_on(self, branch_id: int | None, depth: int) -> int:
-        """A stored `(branch_id, depth)` anchor, read as a depth on *this* path.
+        """Reads a stored `(branch_id, depth)` anchor as a depth on this path.
 
-        An anchor is how far along a story some derived work has got — which
-        memories cover, what the summary has folded in. It names a node, so
-        moving to another path has to be answered rather than assumed:
+        An anchor records how far along a story some derived work reached, such
+        as which actions the memories cover or what the summary folded in. The
+        anchor names a node, so moving to a different path needs an explicit
+        answer. There are two cases:
 
-        * the anchor's branch is on this path — the depth stands, capped at the
-          fork the path takes off that branch, because nothing past the fork is
-          on this story;
-        * the branch is not on this path at all — the work was done on ground
-          this story never travelled, so nothing here is covered.
+        - The anchor's branch is on this path. The depth stands, capped at the
+          fork where this path leaves that branch, because nothing past the fork
+          belongs to this story.
+        - The anchor's branch is not on this path. The work was done on a branch
+          this story does not contain, so nothing here counts as covered.
 
-        The second case cannot arise while an adventure has one branch: the
-        anchor is always set from a node on it. It exists because the fallback
-        for "I don't know" must be to redo the work, not to skip it.
+        The second case cannot occur while an adventure has one branch, because
+        the anchor is always set from a node on it. It exists because the safe
+        answer to an unknown anchor is to redo the work rather than skip it.
         """
         if depth <= NO_DEPTH:
             return NO_DEPTH
         if branch_id is None:
-            # A pre-tree anchor, or one set by hand. There is one story, so the
-            # depth is a position in it and means what it says.
+            # The anchor predates the tree, or someone set it by hand. There is
+            # only one story, so the depth is a position in it.
             return depth
         for entry_branch, max_depth in self.entries:
             if entry_branch == branch_id:
@@ -237,18 +246,19 @@ class Path:
 
 
 def branch_of(db: Session, adventure: models.Adventure) -> models.Branch | None:
-    """The branch this adventure is being read at, or None if it has none.
+    """Returns the branch this adventure is read at, or None if it has none.
 
-    Deliberately not `tree.head_branch`, which creates one: a GET must not
-    write. An adventure with no branch row also has no nodes carrying a branch,
-    so the two agree — both say "no story here".
+    This function is deliberately not `tree.head_branch`, which creates a branch.
+    A GET request must not write. An adventure with no branch row also has no
+    nodes that carry a branch, so both answers agree that there is no story.
     """
     if adventure.head_branch_id is not None:
         branch = db.get(models.Branch, adventure.head_branch_id)
         if branch is not None:
             return branch
-        # A head naming a branch that is gone: fall through to the root, the
-        # same recovery `tree.head_branch` makes on the write side.
+        # The head points at a branch that no longer exists. Fall through to the
+        # root, which is the same recovery that `tree.head_branch` performs on
+        # the write side.
     return (
         db.query(models.Branch)
         .filter(
@@ -261,7 +271,7 @@ def branch_of(db: Session, adventure: models.Adventure) -> models.Branch | None:
 
 
 def path_of(db: Session, adventure: models.Adventure) -> Path:
-    """The story the adventure's head is currently on."""
+    """Returns the story that the adventure's head currently sits on."""
     branch = branch_of(db, adventure)
     if branch is None:
         return Path([], adventure.head_depth)

@@ -1,21 +1,21 @@
 """Switching embedding models must re-embed the bank.
 
-Vectors from two different models are not comparable — different space, often
-different width — so changing the model has to throw the stored ones away and
-let the post-turn pass rebuild them.
+Vectors from two different models are not comparable. They live in
+different spaces and often have different widths. Changing the model must
+discard the stored vectors and let the post-turn pass rebuild them.
 
-That worked while the vectors lived in `memories.embedding`: the settings
-route nulled that column and the embed queue picked the rows up. Migration 38
-moved the vectors to `embedding_blob` with an `embedded` flag beside them, and
-the bulk clear kept nulling the old column alone. The blob survived, the flag
-stayed true, `_embed_pending` (which looks for `embedded IS FALSE`) never saw
-the rows, and the bank went on ranking against the previous model's vectors
-for good.
+This worked while the vectors lived in `memories.embedding`. The settings
+route nulled that column, and the embed queue picked up the rows. Migration
+38 moved the vectors to `embedding_blob` and added an `embedded` flag beside
+them, but the bulk clear kept nulling only the old column. The blob
+survived, the flag stayed true, and `_embed_pending` (which filters on
+`embedded IS FALSE`) never saw the rows. The bank kept ranking against the
+previous model's vectors.
 
-Nothing reports this. `cosine` returns 0.0 on a width mismatch, so a
-different-width model scores every memory zero and retrieval quietly returns
-whichever rows sort first; a same-width model scores plausible-looking
-garbage.
+Nothing reports this failure. `cosine` returns 0.0 on a width mismatch, so a
+different-width model scores every memory zero, and retrieval silently
+returns whichever rows sort first. A same-width model scores plausible
+garbage instead.
 
     python -m pytest tests/test_embedding_model_switch.py -v
 """
@@ -114,8 +114,9 @@ def test_changing_the_model_clears_every_vector(client):
 
 
 def test_cleared_memories_are_queued_for_re_embedding(client):
-    """The flag is not cosmetic: it is the only thing `_embed_pending` filters
-    on, so this is the assertion that the bank actually recovers."""
+    """The `embedded` flag is not cosmetic. It is the only condition
+    `_embed_pending` filters on, so this test confirms the bank actually
+    recovers."""
     client.put("/api/settings", json={"embedding_model": "model-b"})
 
     db = SessionLocal()
@@ -155,7 +156,7 @@ def test_retrieval_uses_no_stale_vector_after_the_switch(client, monkeypatch):
 
 
 def test_an_unrelated_settings_change_keeps_the_vectors(client):
-    """Only an embedding-model change may clear the bank — re-embedding costs
+    """Only an embedding-model change may clear the bank. Re-embedding costs
     an API call per memory."""
     r = client.put("/api/settings", json={"model": "some-other-chat-model"})
     assert r.status_code == 200, r.text

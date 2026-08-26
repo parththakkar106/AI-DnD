@@ -94,8 +94,9 @@ def run_hook(
     story_cards: list[dict],
     info: dict,
 ) -> HookResult:
-    """Run one modifier hook. Never raises: failures come back as .error with
-    text/state/cards unchanged, so a bad script can't break a turn."""
+    """Run one modifier hook. This function never raises. Failures return as
+    `.error` with text, state, and cards unchanged, so a bad script cannot
+    break a turn."""
     unchanged = HookResult(text=text, state=state, story_cards=story_cards)
     source = f"{library_js}\n;\n{hook_js}" if library_js.strip() else hook_js
     if not source.strip():

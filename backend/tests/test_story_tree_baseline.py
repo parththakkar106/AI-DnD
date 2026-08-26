@@ -1,20 +1,21 @@
-"""Phase 14 SP0 — the regression contract for the story tree.
+"""Phase 14 SP0: the regression contract for the story tree.
 
-This file exists to answer one question, over and over, as the storage model is
-replaced underneath the app: **do existing adventures still behave exactly as
-they did?**
+This file exists to answer one question repeatedly, as the storage model is
+replaced underneath the app: do existing adventures still behave exactly as
+they did?
 
-So it drives the product the way a player does — over HTTP, asserting only on
-API responses — and never reaches into the ORM to check how something is
+It drives the product the way a player does, over HTTP, asserting only on
+API responses. It never reaches into the ORM to check how something is
 stored. Everything it asserts is true of the linear implementation today and
 must stay true of the tree, because a linear story is a tree with one branch.
 
     python -m pytest tests/test_story_tree_baseline.py -v
 
-**It must pass UNMODIFIED through SP1 (schema), SP2 (branch clause) and SP3
-(memories on nodes).** If a change here looks necessary in one of those
-subphases, the change is wrong, not the test. SP4 is the first subphase allowed
-to move it, and only for the variant-count semantics called out in plan/14.
+This file must pass unmodified through SP1 (schema), SP2 (branch clause),
+and SP3 (memories on nodes). If a change here looks necessary in one of
+those subphases, the change is wrong, not the test. SP4 is the first
+subphase allowed to move it, and only for the variant-count semantics
+called out in plan/14.
 """
 import os
 import tempfile
@@ -73,9 +74,9 @@ class ScriptedProvider:
 
 
 def _make_world(monkeypatch, *, seeded_actions: int = 0):
-    """A user + scenario + adventure, with `seeded_actions` extra story actions
-    written straight to the database (paging wants more turns than it is worth
-    playing one at a time)."""
+    """Create a user, a scenario, and an adventure, with `seeded_actions`
+    extra story actions written straight to the database. Paging tests need
+    more turns than it is practical to play one at a time."""
     Base.metadata.create_all(bind=engine)
     setup = SessionLocal()
     user = models.User(is_guest=False, email="baseline@example.com")
@@ -181,8 +182,8 @@ def _state(adv_id):
 # ------------------------------------------------------- opening the story
 
 def test_adventure_opens_on_a_window_with_a_total(long_client):
-    """The payload is the newest window plus the whole story's length — that is
-    how the client knows there is more above."""
+    """The payload includes the newest window and the whole story's length.
+    That is how the client knows more actions exist above it."""
     payload = _open(long_client)
     seeded = adventures.ACTION_PAGE + 11  # + the start action
     assert payload["action_count"] == seeded
@@ -247,7 +248,7 @@ def test_retry_replaces_the_text_and_keeps_the_attempt(client):
     assert r.status_code == 200, r.text
 
     actions = _actions(client)
-    # Still one AI action for this turn — a retry is a new take, not a new turn.
+    # This turn still has one AI action. A retry creates a new take, not a new turn.
     assert [a["type"] for a in actions] == ["start", "do", "ai"]
     assert actions[-1]["text"] == "Attempt two."
 
@@ -279,14 +280,14 @@ def test_switching_back_to_an_earlier_attempt_restores_it(client):
         json={"index": 0})
     assert r.status_code == 200, r.text
     assert _texts(client)[-1] == "Attempt one."
-    # And the script state that attempt produced comes back with it.
+    # The script state that attempt produced comes back with it.
     script_state, _ = _state(client.adv_id)
     assert script_state["gold"] == 10
 
 
 def test_only_the_newest_turn_can_be_switched(client):
-    """An older turn's alternatives stay readable but not selectable — the
-    story after it was written as a continuation of what is live."""
+    """An older turn's alternatives stay readable but not selectable. The
+    story after it continues from what is live."""
     ScriptedProvider.replies = ["One.", "Again.", "Two."]
     _play(client)
     client.post(f"/api/adventures/{client.adv_id}/retry")
@@ -313,7 +314,7 @@ def test_undo_removes_the_whole_turn_and_rolls_state_back(client):
     # Both the AI action and the player action that prompted it are gone.
     assert [a["type"] for a in page["actions"]] == ["start", "do", "ai"]
     assert page["total"] == 3
-    # ...and the second turn's ten gold went with them.
+    # The second turn's ten gold is also gone.
     script_state, _ = _state(client.adv_id)
     assert script_state["gold"] == 10
 
@@ -338,9 +339,9 @@ def test_the_opening_cannot_be_undone(client):
 # ------------------------------------------------------------------ paging
 
 def test_paging_walks_back_to_the_start_without_gaps_or_repeats(long_client):
-    """The property that matters: page all the way up and you have seen every
-    action exactly once, in order. This is the invariant a tree must preserve —
-    the anchor is an action, never a position."""
+    """The property that matters: paging all the way up must show every
+    action exactly once, in order. A tree must preserve this invariant. The
+    anchor is always an action, never a position."""
     payload = _open(long_client)
     total = payload["action_count"]
     seen = [a["id"] for a in payload["actions"]]
@@ -376,7 +377,7 @@ def test_paging_past_the_start_reports_the_end(long_client):
     r = long_client.get(f"/api/adventures/{long_client.adv_id}/actions",
                         params={"limit": 5})
     oldest = r.json()["actions"][0]["id"]
-    # Walk right off the front.
+    # Continue paging until it reaches the oldest action.
     seen_all = False
     cursor = oldest
     for _ in range(100):
@@ -399,8 +400,9 @@ def test_editing_an_action_sticks(client):
     r = client.patch(f"/api/adventures/{client.adv_id}/actions/{action_id}",
                      json={"text": "Edited."})
     assert r.status_code == 200, r.text
-    # Re-read rather than trusting the response: an edit that only lives in the
-    # response has silently reverted for anyone who reloads.
+    # Re-read from the database instead of trusting the response. An edit
+    # that only appears in the response has already reverted for anyone who
+    # reloads.
     assert _texts(client)[-1] == "Edited."
 
 
@@ -450,13 +452,13 @@ def test_memories_are_created_listed_and_deleted(client):
 # ------------------------------------------------------------------ export
 
 def test_export_carries_the_whole_story(client):
-    """A bundle is a backup: every action, not the window.
+    """A bundle is a backup: it contains every action, not just the window.
 
-    SP6 changed the format assertion below, as this note said it would. It also
-    changed one more line in this file than the note allowed for — the
-    `variants` array in `test_export_keeps_retry_attempts`, which is the same
-    fact seen from the other side: a bundle that has coordinates has no use for
-    a repeating group. Everything else here still passes unmodified.
+    SP6 changed the format assertion below, as this note said it would. It
+    also changed one more line than the note allowed for: the `variants`
+    array in `test_export_keeps_retry_attempts`. That change reflects the
+    same fact: a bundle that stores coordinates has no use for a repeating
+    group. Everything else here still passes unmodified.
     """
     ScriptedProvider.replies = ["One.", "Two."]
     _play(client, "go north")

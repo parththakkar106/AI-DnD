@@ -1,5 +1,5 @@
 """Unit tests for the RPG world-state engine (Phase 12): delta extraction and
-the clamp/cooldown/milestone referee.
+the code that enforces clamp, cooldown, and milestone rules.
 
     python -m pytest tests/test_worldstate.py -v
 """
@@ -67,7 +67,8 @@ def test_text_stat_noop_when_unchanged():
 def test_per_npc_distinct_stats():
     ws, _ = w.apply_delta(fresh(), SCHEMA, {"npc.drake.ferocity": 20}, 1)
     assert ws["npc"]["drake"]["ferocity"] == 70
-    # gwen has no "ferocity" stat, drake has no "trust" — cross paths are rejected.
+    # gwen has no `ferocity` stat, and drake has no `trust` stat. Cross paths
+    # are rejected.
     ws, report = w.apply_delta(ws, SCHEMA, {"npc.gwen.ferocity": 5, "npc.bogus.trust": 5}, 2)
     reasons = {r["reason"] for r in report["rejected"]}
     assert reasons == {"unknown npc stat", "unknown npc"}
@@ -134,7 +135,8 @@ def test_flags_toggle_both_ways():
     ws, report = w.apply_delta(ws, SCHEMA, {"flags.has_key": True}, 1)
     assert ws["flags"]["has_key"] is True
     assert report["applied"]
-    # flip back off — flags are two-way (unlike sticky milestones).
+    # Setting it back to false works, because flags are two-way, unlike
+    # sticky milestones.
     ws, _ = w.apply_delta(ws, SCHEMA, {"flags.has_key": False}, 2)
     assert ws["flags"]["has_key"] is False
     # setting to the same value is a no-op.
@@ -150,8 +152,9 @@ def test_flag_rejects_non_bool_and_unknown():
 
 
 def test_override_sets_absolute_value_bypassing_cap():
-    # A manual override isn't policed by max_delta_per_turn like a turn is —
-    # it sets the value directly (still clamped to min/max).
+    # A manual override does not obey max_delta_per_turn the way a turn
+    # does. It sets the value directly, though the value is still clamped
+    # to min/max.
     ws, report = w.apply_override(fresh(), SCHEMA, {"player.hp": 10})
     assert ws["player"]["hp"] == 10
     assert report["applied"] == [{"path": "player.hp", "old": 100, "new": 10}]
@@ -202,9 +205,10 @@ def test_override_rejects_unknown_and_bad_type():
 
 def test_reference_includes_desc_and_bands_independently():
     guide = w.render_reference(SCHEMA)
-    # hp has both a description and a band ladder.
+    # hp has both a description and a set of value bands.
     assert "very weak" in guide and "range 0–100" in guide
-    # day (a counter here has no desc/bands) contributes nothing; flags show desc.
+    # A counter like day has no desc or bands, so it contributes nothing
+    # here. Flags do show their desc.
     assert "has_key (flag) — Holds the key." in guide
     # NPCs contribute their own description and per-NPC stat lines.
     assert "NPC Gwen (gwen) — A loyal ranger." in guide
@@ -232,7 +236,8 @@ def test_extract_no_block():
 
 
 def test_extract_prose_ending_in_brace_not_eaten():
-    # A bare object with no dotted keys is not a delta — leave the text alone.
+    # A bare object with no dotted keys is not a delta, so the text stays
+    # as is.
     clean, delta = w.extract_delta('He said {this}')
     assert delta == {}
     assert clean == "He said {this}"

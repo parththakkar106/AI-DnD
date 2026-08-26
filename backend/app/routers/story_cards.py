@@ -6,15 +6,19 @@ from ..database import get_db
 
 router = APIRouter(prefix="/api/story-cards", tags=["story-cards"])
 
-# AI Dungeon world-info / story-card array format. Its field names differ from
-# our columns: value<->entry, title<->name, description<->notes. The extra
-# `useForCharacterCreation` flag has no equivalent here — ignored on import,
-# emitted as false on export so round-tripping through AI Dungeon stays valid.
+# The AI Dungeon world-info and story-card array format. Its field names differ
+# from this app's columns: `value` maps to `entry`, `title` maps to `name`, and
+# `description` maps to `notes`. The extra `useForCharacterCreation` flag has no
+# equivalent here. It is ignored on import and written as false on export, so a
+# round trip through AI Dungeon stays valid.
 
 
 def _visible_owner(scenario_id, adventure_id, db, user):
-    """Resolve the scenario/adventure a caller may *read* cards from (public
-    demo scenarios included), or 404/422."""
+    """Resolves the scenario or adventure a caller may read cards from.
+
+    Public demo scenarios are included. The function raises a 404 or a 422 when
+    it cannot resolve one.
+    """
     if (scenario_id is None) == (adventure_id is None):
         raise HTTPException(422, "Provide exactly one of scenario_id or adventure_id")
     if scenario_id is not None:

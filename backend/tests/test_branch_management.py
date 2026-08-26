@@ -1,21 +1,21 @@
-"""Phase 14 SP7 — naming a branch, and throwing one away.
+"""Phase 14 SP7: renaming a branch and deleting one.
 
-SP5 gave the tree a fork and a switch. Neither of them ever removes anything,
-and nothing in the design prunes a tree on its own, so an adventure that is
-retried and forked enough grows without a ceiling. Delete is what stands
-between the tree and that, which is why it ships with the view that first makes
-a fork reachable rather than in some later subphase.
+SP5 gave the tree a fork and a switch. Neither operation removes anything,
+and nothing in the design prunes a tree automatically, so an adventure that
+is retried and forked enough grows without a limit. Delete is what limits
+that growth. It ships with the same view that first makes a fork reachable,
+rather than in a later subphase.
 
 Two rules carry most of this file:
 
-* **A name is chosen, so it is stored; a label is derived, so it is not.** An
-  unnamed branch keeps NULL and the client draws it from its fork depth. A
-  generated "branch 4" in the column would be a lie the moment branch 3 is
-  deleted.
-* **The delete may never take the ground under the reader.** Refusing the head
-  is the obvious half; refusing an *ancestor* of the head is the same mistake
-  wearing a disguise, and it is the one that would leave `head_branch_id`
-  pointing at a row the cascade removed.
+* A name is chosen, so the database stores it. A label is derived, so the
+  database does not. An unnamed branch keeps NULL, and the client draws the
+  label from its fork depth. A generated label such as "branch 4" stored in
+  the column would become wrong the moment branch 3 is deleted.
+* Delete must never remove a branch the reader depends on. Refusing to
+  delete the head is the obvious case. Refusing to delete an ancestor of the
+  head is the same rule applied one level up: deleting it would leave
+  `head_branch_id` pointing at a row the cascade removed.
 
     python -m pytest tests/test_branch_management.py -v
 """
@@ -136,7 +136,7 @@ def _texts(client) -> list[str]:
 
 
 def _discarded_on(adv_id, branch_id=None) -> int:
-    """An AI attempt nobody built on, optionally restricted to one branch."""
+    """An AI attempt with no turn built on it, optionally restricted to one branch."""
     db = SessionLocal()
     try:
         q = db.query(models.Action).filter(
@@ -152,7 +152,7 @@ def _discarded_on(adv_id, branch_id=None) -> int:
 
 
 def _forked(client):
-    """A story with one fork. Returns (root id, forked id); the fork is head.
+    """A story with one fork. Returns (root id, forked id). The fork is head.
 
         start · do · [attempt one | ATTEMPT TWO] · do · next turn
                           └── forked here
@@ -184,10 +184,10 @@ def _counts(adv_id, branch_ids):
 # ------------------------------------------------------------------ naming
 
 def test_a_branch_starts_unnamed(client):
-    """NULL, not a generated label — the client draws one from the fork depth.
+    """NULL, not a generated label. The client draws a label from the fork depth.
 
-    A name written here would go stale the moment a branch before it is
-    deleted and the ordinals shift under it.
+    A name stored here would go stale the moment a branch before it is
+    deleted and the ordinals shift.
     """
     root, forked = _forked(client)
     assert [b["name"] for b in _branches(client)] == [None, None]
@@ -206,9 +206,8 @@ def test_a_name_is_stored_and_read_back(client):
 def test_a_blank_name_goes_back_to_unnamed(client):
     """A name of spaces is not a name anyone chose.
 
-    Storing one would give the client an empty label to draw where it would
-    otherwise fall back to the fork depth — a branch that looks nameless and
-    reads as broken.
+    Storing it would give the client an empty label instead of falling back
+    to the fork depth. The branch would look nameless and appear broken.
     """
     root, forked = _forked(client)
     _rename(client, forked, "briefly named")
@@ -226,9 +225,10 @@ def test_a_name_longer_than_the_column_is_refused(client):
 def test_a_rename_hands_back_the_row_the_listing_would_give(client):
     """Renaming a branch does not change how many turns are on it.
 
-    `own_actions` was hard-coded to 0 in this response, which only stayed
-    invisible because the panel throws the body away and refetches. Anything
-    that trusted the reply would draw a branch that had just lost its turns.
+    `own_actions` was hard-coded to 0 in this response. That bug stayed
+    invisible because the panel discards the response body and refetches.
+    Anything that trusted the reply would show a branch that had just lost
+    its turns.
     """
     root, forked = _forked(client)
     listed = {b["id"]: b for b in _branches(client)}
@@ -278,10 +278,11 @@ def test_the_branch_being_read_cannot_be_deleted(client):
 
 
 def test_an_ancestor_of_the_branch_being_read_cannot_be_deleted(client):
-    """The same mistake as deleting the head, wearing a disguise.
+    """Deleting an ancestor of the head is the same mistake as deleting the head.
 
-    `parent_branch_id` cascades, so deleting a branch the head was forked from
-    would take the head with it and leave `head_branch_id` pointing at nothing.
+    `parent_branch_id` cascades, so deleting a branch the head was forked
+    from would delete the head too, and leave `head_branch_id` pointing at
+    nothing.
     """
     root, forked = _forked(client)
     # A fork of the fork, so `forked` is an ancestor of the head rather than
@@ -310,7 +311,8 @@ def test_deleting_a_branch_leaves_the_line_it_forked_from_untouched(client):
 
 
 def test_deleting_a_branch_takes_its_nodes_and_its_descendants(client):
-    """One statement, however deep the subtree — the cascade does the walking."""
+    """One statement deletes the whole subtree, regardless of depth. The
+    cascade performs the traversal."""
     root, forked = _forked(client)
     _retry(client)
     _play(client, "press on")
@@ -333,10 +335,11 @@ def test_deleting_a_branch_takes_its_nodes_and_its_descendants(client):
 def test_deleting_a_branch_clears_a_cursor_that_stood_on_it(client):
     """Harmless on Postgres, a real bug on SQLite.
 
-    Postgres never reuses a branch id, so a stale anchor simply never resolves.
-    SQLite hands the freed id to the next fork, at which point the anchor
-    resolves onto a branch it has never seen and reports a stretch of story as
-    already summarized — which loses it from the memories for good.
+    Postgres never reuses a branch id, so a stale anchor simply never
+    resolves. SQLite assigns the freed id to the next fork. The anchor then
+    resolves onto a branch it never saw, and reports a stretch of story as
+    already summarized. That stretch is then permanently excluded from the
+    memories.
     """
     root, forked = _forked(client)
     db = SessionLocal()
@@ -355,7 +358,7 @@ def test_deleting_a_branch_clears_a_cursor_that_stood_on_it(client):
     try:
         adventure = db.get(models.Adventure, client.adv_id)
         assert cursors.MEMORY.stored(adventure) == (None, cursors.NO_DEPTH)
-        # The one standing on ground that survived is left exactly where it was.
+        # The cursor on a branch that still exists is left exactly where it was.
         assert cursors.SUMMARY.stored(adventure) == (root, 1)
     finally:
         db.close()
@@ -398,11 +401,11 @@ def test_a_hand_written_memory_is_anchored_where_it_was_written(client):
 
 
 def test_the_drawer_shows_the_path_being_read_and_nothing_else(client):
-    """The bank you can see is the bank the model can see.
+    """The memories a reader can see match the memories the model can retrieve.
 
-    An adventure-wide list would show memories from branches this story never
-    went down — which are never retrieved — and a reader cannot tell those from
-    the ones actually in play.
+    An adventure-wide list would include memories from branches this story
+    never took. Those memories are never retrieved, and a reader could not
+    distinguish them from the ones actually in play.
     """
     root, forked = _forked(client)
     on_the_fork = _add_memory(client, "Took the other door.")
@@ -412,9 +415,10 @@ def test_the_drawer_shows_the_path_being_read_and_nothing_else(client):
     assert {m["id"] for m in _memories(client)} == {on_the_root}, \
         "the fork's memory is not on this story"
 
-    # Switching to the fork shows its own memory — and the root's, because a
-    # fork borrows its ancestors up to the point it left them. The relationship
-    # is asymmetric on purpose; the parent never went down the fork.
+    # Switching to the fork shows its own memory and the root's. A fork
+    # borrows its ancestors up to the point where it diverged from them.
+    # The relationship is asymmetric on purpose: the parent never took the
+    # fork's path.
     _switch(client, forked)
     listed = {m["id"] for m in _memories(client)}
     assert on_the_fork in listed
@@ -422,8 +426,9 @@ def test_the_drawer_shows_the_path_being_read_and_nothing_else(client):
 
 
 def test_the_drawer_and_retrieval_agree_on_what_is_visible(client):
-    """One predicate, so a memory can never be listed but unretrievable (or the
-    reverse). Two spellings of "on this path" would eventually drift."""
+    """One predicate decides visibility, so a memory can never be listed but
+    unretrievable, or the reverse. Two separate definitions of "on this
+    path" would eventually diverge."""
     root, forked = _forked(client)
     _add_memory(client, "Took the other door.")
     _switch(client, root)
@@ -447,10 +452,11 @@ def test_the_drawer_and_retrieval_agree_on_what_is_visible(client):
 
 
 def test_deleting_a_branch_deletes_the_memories_written_on_it(client):
-    """Not merely out of view — the row goes with the branch, through the
-    cascade. That is what keeps "the drawer shows only your path" from
-    stranding anything: a memory you cannot see is on a branch you can still
-    switch to, and deleting that branch takes it for good."""
+    """Deleting a branch removes its memories from the database, not just
+    from view: the cascade deletes the row along with the branch. This
+    keeps a hidden memory from becoming unreachable in a different way: a
+    memory you cannot currently see is on a branch you can still switch to,
+    and deleting that branch deletes the memory permanently."""
     root, forked = _forked(client)
     doomed = _add_memory(client, "Took the other door.")
     _switch(client, root)
@@ -473,10 +479,12 @@ def test_deleting_a_branch_deletes_the_memories_written_on_it(client):
 # ------------------------------------------------------------------- backup
 
 def test_a_bundle_carries_the_name_a_player_chose(client):
-    """A name is a decision, so it travels — the rule the v2 format is built on.
+    """A name is a decision, so the export includes it. This is the rule the
+    v2 format is built on.
 
-    `lineage` and the head depth stay out because they are computed from what
-    the file already carries; a name is computed from nothing.
+    `lineage` and the head depth stay out of the export because the
+    importer can compute them from what the file already carries. A name
+    is computed from nothing, so the export must carry it.
     """
     root, forked = _forked(client)
     _rename(client, root, "the long way")

@@ -5,12 +5,13 @@ with one stat, because a map only cares about the shape. A screenshot cares
 about everything else: the world-state rail wants a scenario with bands, flags,
 milestones and a named cast, and the story wants prose somebody would read.
 
-So this drives the seeded **Bandit Camp** demo — the same scenario the older
-images were shot on, so the set stays one product — through eight turns of
-written prose and written deltas, and forks three discarded takes onto branches
-of their own — one of them off a branch, so the map has to nest. It leaves the reader on the first telling, on a
-turn that has a second take, so one screen shows the world state, the take
-pager and the branch rail at once.
+So this script drives the seeded Bandit Camp demo through eight turns of written
+prose and written deltas. That is the same scenario the older images were shot
+on, which keeps the set consistent. It then forks three discarded attempts onto
+branches of their own, one of them off a branch, so the map has to nest. It
+leaves the reader on the first telling, on a turn that has a second attempt, so
+one screen shows the world state, the attempt pager, and the branch rail at
+once.
 
     cd backend
     .venv/Scripts/python.exe -m tools.shots_fixture /tmp/shots.db
@@ -123,9 +124,9 @@ TURNS = [
     ),
 ]
 
-# The takes the story did not keep. Each is retried at the turn of the same
-# index below, and then forked onto a branch of its own — a discarded take is
-# the only thing a fork can be made of.
+# The attempts the story did not keep. Each one is retried at the turn with the
+# same index below, and then forked onto a branch of its own. A discarded attempt
+# is the only thing a fork can be made from.
 RETAKES = {
     3: (
         "He passes close enough that you can smell the tar on his coat, and the "
@@ -145,8 +146,11 @@ RETAKES = {
 
 
 class ScriptedProvider:
-    """Serves whatever the driver loaded, so a retry can differ from the take
-    it replaces — which is the whole thing being photographed."""
+    """Serves whatever the driver loaded, so a retry can differ from the attempt
+    it replaces.
+
+    That difference is what the screenshots show.
+    """
 
     next_reply = ("", {})
 
@@ -165,9 +169,9 @@ auth.resolve_provider_config = lambda s: auth.ProviderConfig(
 limits.rate_limit = lambda *a, **k: None
 limits.check_row_cap = lambda *a, **k: None
 
-# `bootstrap()` runs at import and seeds the public demo scenarios, so the
-# Bandit Camp is already here — the point of shooting on it is that it is the
-# scenario a visitor actually meets.
+# `bootstrap()` runs at import and seeds the public demo scenarios, so the Bandit
+# Camp already exists. Shooting on it matters because it is the scenario a
+# visitor meets.
 client = TestClient(app)
 
 db = SessionLocal()
@@ -206,9 +210,11 @@ def retake(i):
 
 
 def retry_last():
-    """Retry whatever is at the tip, with whatever reply is loaded, and hand
-    back the take the story just walked away from — the only thing a fork can
-    be made of."""
+    """Retries whatever is at the tip with whatever reply is loaded.
+
+    Returns the attempt the story just left, which is the only thing a fork can
+    be made from.
+    """
     before = live_ai_ids()
     r = client.post(f"{base}/retry")
     assert r.status_code == 200, r.text
@@ -264,9 +270,9 @@ name([b for b in branches() if b["is_head"]][0]["id"], "Loud, and early")
 
 # ---- and a line that left that one again, so the map has to nest ----
 #
-# Forking the take at the tip only switches to it — the attempts there are
-# still leaves nobody has built on. So the story is moved one turn past it
-# first, and only then is the take it walked away from worth a branch.
+# Forking the attempt at the tip only switches to it, because the attempts there
+# are still leaves that nothing was built on. The story is therefore moved one
+# turn past it first, and only then does the attempt it left deserve a branch.
 ScriptedProvider.next_reply = (
     "Nobody comes. The horn was the wrong horn, or the camp has been empty of "
     "anyone who cares since before you got here.", {"npc.gwen.trust": -4})
@@ -298,8 +304,8 @@ r = client.post(f"{base}/actions", json={"type": "do", "text": "Say nothing and 
 assert r.status_code == 200, r.text
 name([b for b in branches() if b["is_head"]][0]["id"], "Said nothing")
 
-# Leave the reader on the first telling, standing on the turn that has two
-# takes — the one screen that shows the rail, the pager and the branches.
+# Leave the reader on the first telling, on the turn that has two attempts. That
+# is the one screen showing the rail, the pager, and the branches.
 client.post(f"{base}/branches/{root}/switch")
 
 with engine.begin() as conn:

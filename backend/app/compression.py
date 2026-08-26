@@ -1,18 +1,18 @@
 """Storing a JSON column compressed.
 
 `actions.context_snapshot` holds the entire assembled prompt for a turn. It is
-89% of the database — 150.8 MB of JSON across 944 actions on production, and
-232 KB a row on the longest adventure — and the free tier this deploys to
-allows 512 MB. Reads are not the problem: the column is deferred, so a page
-load never touches it and exactly one endpoint fetches one row of it at a
-time. Storage is the problem, and storage has a cliff.
+89% of the database, which is 150.8 MB of JSON across 944 actions in production
+and 232 kB per row on the longest adventure, and the free tier this deploys to
+allows 512 MB. Reads are not the problem. The column is deferred, so a page load
+never touches it and exactly one endpoint fetches one row of it at a time.
+Storage is the problem, and storage has a hard limit.
 
-Postgres already compresses it. TOAST brings 150.8 MB down to ~89 MB, a factor
-of 1.7 — pglz is chosen for decompression speed on data a query might filter
-on, which this never is. Nothing filters on a prompt; it is written once and
-read whole, occasionally, by one screen. zlib at the application layer gets
-three to four times on the same text, and the cost is a decompress on a
-request that already costs an LLM call.
+Postgres already compresses the column. TOAST brings 150.8 MB down to about
+89 MB, a factor of 1.7. Postgres chooses pglz for decompression speed on data a
+query might filter on, and no query filters on this column. A prompt is written
+once and read whole, occasionally, by one screen. zlib at the application layer
+reaches three to four times on the same text, and the cost is one decompression
+on a request that already makes an LLM call.
 
 Doing it as a TypeDecorator rather than a second column keeps every call site
 writing `action.context_snapshot = {...}` and reading a dict back, and keeps
