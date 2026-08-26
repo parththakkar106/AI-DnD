@@ -17,7 +17,7 @@ def _body(reasoning_max_tokens, api_mode="chat", max_tokens=1000):
 
 
 def test_zero_sends_nothing():
-    """Ollama and friends reject unknown fields — 0 must stay silent."""
+    """Ollama and other providers reject unknown fields. Sending 0 must not add a `reasoning` field."""
     assert "reasoning" not in _body(0)
 
 
@@ -36,7 +36,7 @@ def test_negative_turns_reasoning_off():
 
 
 def test_off_is_not_merely_excluded():
-    """`exclude: true` still thinks and still bills; we want it actually off."""
+    """`exclude: true` still generates and bills for reasoning tokens. The off setting must omit the field entirely instead of relying on `exclude`."""
     assert _body(-1)["reasoning"].get("exclude") is None
 
 
