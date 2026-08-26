@@ -1,22 +1,24 @@
 """Memories must never describe narration that is no longer in the story, and
 must never skip a stretch of it.
 
-For six phases the answer was a **holdback**: summarization stopped one action
-short of the newest, because only the last action was retryable and a retry
-rewrote `Action.text` under a mark that had already moved past it. SP4 ended
-that — a retry writes a sibling node and the coordinate's derived work is
-withdrawn as it does, which is the same repair undo and delete already made.
-So the holdback is gone, and the first half of this file now asserts the
-property that replaced it: a block forms as soon as there is a block, and
-changing what a coordinate says takes back what was derived from it.
+For six phases, the answer was a holdback. Summarization stopped one action
+short of the newest, because only the last action was retryable, and a
+retry rewrote `Action.text` under a mark that had already moved past it.
+SP4 ended that: a retry writes a sibling node, and the coordinate's derived
+work is withdrawn as it happens, using the same repair that undo and delete
+already made. The holdback is gone, so the first half of this file now
+asserts the property that replaced it. A block forms as soon as there is a
+block, and changing what a coordinate says takes back what was derived from
+it.
 
-Phase 14 SP3 changed what the mark *is*. It used to be a count of covered story
-actions, and the second half of this file is the price of that: deleting an
-action from in front of a position slid a never-summarized action into the
-covered range, so every delete had to slide the cursors too. The mark is a node
-now — `(branch_id, depth)` — and a node does not move when something in front
-of it is deleted, so those tests assert that nothing happens where they used to
-assert that the right correction happened.
+Phase 14 SP3 changed what the mark is. It used to be a count of covered
+story actions, and the second half of this file is the cost of that.
+Deleting an action from in front of a position slid a never-summarized
+action into the covered range, so every delete had to slide the cursors
+too. The mark is a node now, `(branch_id, depth)`, and a node does not move
+when something in front of it is deleted. Those tests now assert that
+nothing happens, where they used to assert that the right correction
+happened.
 
     python -m pytest tests/test_memory_settling.py -v
 """
@@ -110,13 +112,14 @@ def run_memories(db, adventure, stub, monkeypatch):
 # --------------------------------------------------- no holdback, since SP4
 
 def test_a_block_forms_as_soon_as_the_story_holds_one(db, monkeypatch):
-    """Covered to action 5 with 12 actions: block 6-11 ends on the *newest*
+    """Covered to action 5 with 12 actions: block 6-11 ends on the newest
     action, and is summarized now rather than a turn later.
 
-    This is exactly the case the holdback existed to refuse. What makes it safe
-    is no longer that the block stops short — it is that a retry of node 11
-    would withdraw this memory on its way past (see
-    `test_deleting_a_summarized_node_withdraws_its_memory`, the same repair).
+    This is exactly the case the holdback existed to refuse. What makes it
+    safe is no longer that the block stops short. It is that a retry of
+    node 11 would withdraw this memory on its way past (see
+    `test_deleting_a_summarized_node_withdraws_its_memory`, the same
+    repair).
     """
     adventure = make_adventure(db, 12)
     cover(db, adventure, 6)
@@ -128,8 +131,8 @@ def test_a_block_forms_as_soon_as_the_story_holds_one(db, monkeypatch):
     assert "Action 11." in stub.excerpts[0]
     memory = db.query(models.Memory).one()
     assert (memory.source_start, memory.source_end) == (6, 11)
-    # The mark and the memory name the same node — that is what keeps them from
-    # drifting apart however gappy the depths underneath are.
+    # The mark and the memory name the same node. That is what keeps them
+    # from drifting apart, however gappy the underlying depths are.
     assert (memory.branch_id, memory.depth) == cursors.MEMORY.stored(adventure)
     assert covered_depth(db, adventure) == 11
 
@@ -155,13 +158,13 @@ def test_the_first_memory_lands_at_memory_start(db, monkeypatch):
 
 
 def test_legacy_caught_up_adventure_is_not_rewound(db, monkeypatch):
-    """An adventure summarized under the OLD rule carries a cursor equal to its
-    action count — one past the end of the story. That used to need a clamp on
-    every post-turn pass, and clamping it to the settled count re-covered an
-    action.
+    """An adventure summarized under the old rule carries a cursor equal to
+    its action count, one past the end of the story. That used to require a
+    clamp on every post-turn pass, and clamping it to the settled count
+    re-covered an action.
 
-    A mark that names a node has no such edge: the newest action is the node,
-    and "everything after it" is empty until the story grows.
+    A mark that names a node has no such edge. The newest action is the
+    node, and "everything after it" is empty until the story grows.
     """
     adventure = make_adventure(db, 12)
     db.add(models.Memory(adventure_id=adventure.id, text="A", source_start=0, source_end=5))
@@ -238,9 +241,9 @@ def test_deleting_a_middle_action_leaves_the_mark_where_it_was(db):
     with node 5 gone.
     """
     adventure = summarized_adventure(db)
-    # Node 4 is inside memory A's block but is not the node it hangs off, so
-    # nothing is withdrawn — the same reading the old code had, where only a
-    # memory whose *end* had fallen off the story was pruned.
+    # Node 4 is inside memory A's block but is not the node it hangs off,
+    # so nothing is withdrawn. The old code read it the same way: only a
+    # memory whose end had fallen off the story was pruned.
     victim = db.query(models.Action).filter_by(adventure_id=adventure.id, index=4).one()
 
     assert memorybank.forget_node(db, adventure, victim) == 0
@@ -267,12 +270,13 @@ def test_deleting_a_later_action_leaves_the_mark_alone(db):
 
 
 def test_deleting_a_summarized_node_withdraws_its_memory(db):
-    """Discarding the memory isn't enough — the story it covered is still
-    behind the mark, so the mark has to come back to where that block began.
+    """Discarding the memory is not enough. The story it covered is still
+    behind the mark, so the mark has to move back to where that block began.
 
-    Memory B ends on node 11, so deleting node 11 is what withdraws it. The old
-    code found this by scanning for a memory whose covered range had fallen off
-    the end of the story; the memory hangs off the node now, so it is a lookup.
+    Memory B ends on node 11, so deleting node 11 withdraws it. The old code
+    found this by scanning for a memory whose covered range had fallen off
+    the end of the story. Now the memory hangs off the node, so finding it
+    is a lookup.
     """
     adventure = summarized_adventure(db)
     victim = db.query(models.Action).filter_by(adventure_id=adventure.id, index=11).one()
