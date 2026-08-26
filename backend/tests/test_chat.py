@@ -1,7 +1,8 @@
 """HTTP tests for the AI Chat scratchpad (power users only).
 
-Covers the access gate, the streamed reply, and the demo-key model pinning —
-the part that must not let a public visitor reach paid models through this page.
+Covers the access gate, the streamed reply, and the demo-key model pinning.
+This pinning must not let a public visitor reach paid models through this
+page.
 
     python -m pytest tests/test_chat.py -v
 """
@@ -59,13 +60,14 @@ def client(monkeypatch):
 
     monkeypatch.setattr(chat, "OpenAICompatibleProvider", FakeProvider)
     monkeypatch.setattr(limits, "rate_limit", lambda *a, **k: None)
-    # Multi-user mode is what makes the power-user gate meaningful (local mode
-    # trusts everyone); the allowlist is set per-test.
+    # Multi-user mode is what makes the power-user gate meaningful, because
+    # local mode trusts everyone. The allowlist is set per test.
     monkeypatch.setattr(auth, "MULTI_USER", True)
     monkeypatch.setattr(auth, "POWER_USERS", {"power@example.com"})
-    # These tests deliberately do NOT stub resolve_provider_config: the point is
-    # to exercise the real BYOK-vs-demo decision, since that is what keeps the
-    # shared key off paid models. Each test picks a mode with _byok/_demo below.
+    # These tests deliberately do not stub resolve_provider_config. The
+    # point is to exercise the real BYOK-vs-demo decision, since that
+    # decision is what keeps the shared key off paid models. Each test
+    # picks a mode with _byok/_demo below.
 
     def _current_user(db=Depends(get_db)):
         return db.get(models.User, user_id)
@@ -152,8 +154,9 @@ def test_demo_key_pins_model_to_whitelist(client, monkeypatch):
 
 
 def test_demo_key_ignores_an_off_whitelist_settings_model(client, monkeypatch):
-    """The override isn't the only untrusted input — Settings.model is user-set
-    too, and it must be pinned the same way when there's no BYOK key."""
+    """The override is not the only untrusted input. `Settings.model` is
+    also user-set, and it must be pinned the same way when there is no
+    BYOK key."""
     _demo(monkeypatch)
     db = SessionLocal()
     try:
@@ -167,8 +170,8 @@ def test_demo_key_ignores_an_off_whitelist_settings_model(client, monkeypatch):
 
 
 def test_demo_key_endpoint_cannot_be_redirected(client, monkeypatch):
-    """A user-controlled endpoint_url would leak the key itself, which is worse
-    than spending it — the demo branch pins the URL too."""
+    """A user-controlled `endpoint_url` would leak the key itself, which is
+    worse than spending it. The demo branch pins the URL too."""
     _demo(monkeypatch)
     db = SessionLocal()
     try:
@@ -183,8 +186,8 @@ def test_demo_key_endpoint_cannot_be_redirected(client, monkeypatch):
 
 def test_provider_config_refuses_server_funded_paid_model(monkeypatch):
     """The structural backstop: a hand-built config (a future code path that
-    forgets to go through resolve_provider_config) can't run a server-funded
-    turn on an off-whitelist model."""
+    forgets to go through resolve_provider_config) cannot run a
+    server-funded turn on an off-whitelist model."""
     monkeypatch.setattr(auth, "DEMO_API_KEY", "demo-key")
     monkeypatch.setattr(auth, "DEMO_MODELS", ["free/allowed"])
     with pytest.raises(ValueError):
@@ -196,9 +199,10 @@ def test_provider_config_refuses_server_funded_paid_model(monkeypatch):
 
 def test_byok_user_may_reuse_the_demo_keys_value(client, monkeypatch):
     """Regression: the demo key is just an OpenRouter key, so a user can paste
-    that same value into their own Settings. That's BYOK — they're paying — and
-    it must not trip the guard. It used to raise on every resolution, which
-    500'd GET /auth/me and took the whole SPA down (no nav, no chat)."""
+    that same value into their own Settings. That is still BYOK, because
+    the user is paying, and it must not trip the guard. It used to raise
+    on every resolution, which returned a 500 from `GET /auth/me` and
+    broke the entire SPA (no nav, no chat)."""
     monkeypatch.setattr(auth, "demo_enabled", lambda: True)
     monkeypatch.setattr(auth, "DEMO_API_KEY", "shared-key")
     monkeypatch.setattr(auth, "DEMO_ENDPOINT_URL", "http://demo")
@@ -221,14 +225,15 @@ def test_byok_user_may_reuse_the_demo_keys_value(client, monkeypatch):
 
 
 def test_resolve_provider_config_is_the_single_choke_point(monkeypatch):
-    """Turns, AI Chat and the connection test all resolve through this one
+    """Turns, AI Chat, and the connection test all resolve through this one
     function, so pinning it here pins every caller. No DB or HTTP needed."""
     monkeypatch.setattr(auth, "demo_enabled", lambda: True)
     monkeypatch.setattr(auth, "DEMO_API_KEY", "demo-key")
     monkeypatch.setattr(auth, "DEMO_ENDPOINT_URL", "http://demo")
     monkeypatch.setattr(auth, "DEMO_MODELS", ["free/allowed"])
 
-    # No key of their own: endpoint AND model are pinned, whatever they set.
+    # No key of their own: both endpoint and model are pinned, regardless
+    # of what they set.
     no_key = models.Settings(endpoint_url="http://mine/v1", api_key="", model="expensive/paid")
     assert auth.resolve_provider_config(no_key) == auth.ProviderConfig(
         "http://demo", "demo-key", "free/allowed", True)
