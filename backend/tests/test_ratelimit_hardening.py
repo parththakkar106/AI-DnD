@@ -1,11 +1,11 @@
 """Regression tests for the X-Forwarded-For rate-limit bypass and the
 per-account login throttle added to close it.
 
-Background: uvicorn's --forwarded-allow-ips "*" trusted the LEFTMOST
-X-Forwarded-For entry, which the client controls, so rotating the header
-handed out a fresh rate-limit bucket per request. client_ip now reads the
-hop the trusted edge appends (rightmost), and login has an email-keyed throttle
-that no IP trick can dilute.
+Background: uvicorn's `--forwarded-allow-ips "*"` trusted the leftmost
+`X-Forwarded-For` entry. The client controls that entry, so rotating the
+header issued a fresh rate-limit bucket on every request. `client_ip` now
+reads the hop the trusted edge appends, which is the rightmost one. Login
+also has an email-keyed throttle that no IP trick can weaken.
 
     python -m pytest tests/test_ratelimit_hardening.py -v
 """
@@ -35,15 +35,15 @@ class _Req:
 
 def test_client_ip_takes_appended_rightmost_hop(monkeypatch):
     monkeypatch.setattr(limits, "TRUSTED_PROXY_HOPS", 1)
-    # Attacker prepends a fake IP; the edge appends the real one on the right.
+    # An attacker prepends a fake IP. The edge appends the real one on the right.
     req = _Req("203.0.113.9, 198.51.100.77")
     assert limits.client_ip(req) == "198.51.100.77"
 
 
 def test_client_ip_ignores_spoofed_leftmost(monkeypatch):
     monkeypatch.setattr(limits, "TRUSTED_PROXY_HOPS", 1)
-    # Whatever the client stuffs to the left, the keyed IP stays the real hop —
-    # so rotating it no longer mints a new bucket.
+    # The keyed IP stays the real hop regardless of what the client adds on
+    # the left, so rotating that value no longer creates a new bucket.
     a = limits.client_ip(_Req("1.1.1.1, 198.51.100.77"))
     b = limits.client_ip(_Req("2.2.2.2, 198.51.100.77"))
     c = limits.client_ip(_Req("evil, junk, 198.51.100.77"))
@@ -74,11 +74,11 @@ def _multi_user(monkeypatch):
 
 def test_login_throttle_blocks_after_limit():
     email = "victim@example.com"
-    # Up to the limit: allowed, each a recorded failure.
+    # Each attempt up to the limit is allowed and recorded as a failure.
     for _ in range(limits.LOGIN_FAIL_LIMIT):
         limits.check_login_allowed(email)      # does not raise
         limits.note_login_failure(email)
-    # One more crosses the line.
+    # One more failure exceeds the limit.
     with pytest.raises(limits.HTTPException) as exc:
         limits.check_login_allowed(email)
     assert exc.value.status_code == 429
@@ -89,7 +89,7 @@ def test_login_throttle_is_per_account():
         limits.note_login_failure("a@example.com")
     with pytest.raises(limits.HTTPException):
         limits.check_login_allowed("a@example.com")
-    # A different account is unaffected — this is not an IP bucket.
+    # A different account is unaffected because the throttle keys on email, not IP.
     limits.check_login_allowed("b@example.com")  # must not raise
 
 
@@ -98,7 +98,7 @@ def test_successful_login_clears_the_streak():
     for _ in range(limits.LOGIN_FAIL_LIMIT):
         limits.note_login_failure(email)
     limits.note_login_success(email)
-    limits.check_login_allowed(email)  # streak wiped — must not raise
+    limits.check_login_allowed(email)  # failure streak cleared, must not raise
 
 
 def test_throttle_is_noop_in_local_mode(monkeypatch):
