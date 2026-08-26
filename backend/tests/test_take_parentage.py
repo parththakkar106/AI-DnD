@@ -1,18 +1,21 @@
-"""Phase 14 SP9 — a turn's takes are grouped by their parent, not by where they sit.
+"""Phase 14 SP9: a turn's takes are grouped by their parent, not by where
+they sit.
 
-SP4 made every take a node at the same (branch, depth). That coordinate answers
-"which takes belong to this turn" right up until one of them is forked onto its
-own branch — at which point it *leaves* the coordinate and reads as the only
-take of its turn, with its siblings unreachable from the line it was taken on.
+SP4 made every take a node at the same (branch, depth). That coordinate
+answers "which takes belong to this turn" until one of them forks onto its
+own branch. At that point it leaves the coordinate and reads as the only
+take of its turn, with its siblings unreachable from the line it was taken
+on.
 
-The parent does not move when a branch does, which is the whole of the fix. It
-also gets the nesting right for free: takes under C1 and takes under C2 share a
-depth and, until one forks, a branch. Only the parent separates them.
+The parent does not move when a branch does, which is the whole fix. It
+also gets the nesting right without extra work: takes under C1 and takes
+under C2 share a depth and, until one forks, a branch. Only the parent
+separates them.
 
-And the branch itself is lazy now. Stepping between takes creates nothing —
-looking is free. The fork happens on the first thing *written* below a take the
-story moved past, which is the first moment the player has said which line they
-mean.
+The branch itself is lazy now. Stepping between takes creates nothing:
+looking is free. The fork happens on the first write below a take the
+story moved past, which is the first moment the player has said which line
+they mean.
 
     python -m pytest tests/test_take_parentage.py -v
 """
@@ -124,7 +127,8 @@ def _branch_count(adv_id) -> int:
 
 
 def _ai_rows(adv_id) -> list[models.Action]:
-    """Every AI node ever written, oldest first — live or not, any branch."""
+    """Every AI node ever written, oldest first. Includes both live and
+    discarded nodes, on any branch."""
     db = SessionLocal()
     try:
         return (
@@ -152,7 +156,7 @@ def _group_size(action_id: int) -> int:
 # ------------------------------------------------------------------ tests
 
 def test_retaken_turn_groups_all_its_takes(client):
-    """The baseline the rest of the file leans on: three takes, one turn."""
+    """The baseline the rest of the file relies on: three takes, one turn."""
     _play(client)
     _retry(client)
     _retry(client)
@@ -178,7 +182,7 @@ def test_a_forked_take_keeps_its_siblings(client):
     first_take = _ai_rows(client.adv_id)[0]
     assert first_take.live is False
 
-    # Writing below it is what forks -- see the next test.
+    # Writing below it is what forks. See the next test.
     _play(client, "go back and try this instead", after_id=first_take.id)
 
     assert _group_size(first_take.id) == 3, (
@@ -219,9 +223,9 @@ def test_writing_below_a_passed_take_forks_exactly_once(client):
 def test_takes_under_one_parent_do_not_count_takes_under_its_sibling(client):
     """The player's own example: 3/3 on one line, 2/2 on the other.
 
-    C1 and C2 are takes of the same turn. What is played *below* each of them
-    is a different turn, and the two must not pool -- they share a depth, and
-    until the fork they share a branch too.
+    C1 and C2 are takes of the same turn. What is played below each of them
+    is a different turn, and the two turns must not merge. They share a
+    depth, and until the fork they share a branch too.
     """
     _play(client)
     _retry(client)               # two takes at this turn: C1, C2 (C2 live)
@@ -276,12 +280,12 @@ def _done_action(response) -> dict:
 
 
 def test_the_streamed_action_carries_the_pager_too(client):
-    """Found by driving it, not by testing it.
+    """Found while exercising the app manually, not by a targeted test.
 
-    A retry's reply *is* the second take of its turn, so it arrives needing a
-    pager. The stream builds its own ActionOut and so missed the annotation:
-    the pager appeared only once the page was reloaded, which is exactly the
-    moment nobody reloads.
+    A retry's reply is the second take of its turn, so it arrives needing a
+    pager. The stream builds its own ActionOut and missed the annotation.
+    The pager appeared only once the page was reloaded, which is exactly
+    the moment nobody reloads.
     """
     _play(client)
     r = client.post(f"/api/adventures/{client.adv_id}/retry")
@@ -365,11 +369,12 @@ def test_a_players_own_turn_can_be_played_again(client):
 
 
 def test_a_retaken_player_turn_is_not_formatted_twice(client):
-    """Found by driving it: "> You > You open the door."
+    """Found while exercising the app manually: "> You > You open the door."
 
-    The editor is seeded from the stored text, which is already the formatted
-    form — the same text plain edit puts in the box and writes back verbatim.
-    Running it through the formatter again doubles the prefix.
+    The editor is seeded from the stored text, which is already in the
+    formatted form. Plain edit puts that same text in the box and writes
+    it back verbatim. Running it through the formatter again doubles the
+    prefix.
     """
     _play(client, "open the door")
     _play(client, "press on")
@@ -423,7 +428,7 @@ def test_an_ai_turn_at_the_tip_takes_no_branch(client):
 
 
 def test_an_ai_turn_the_story_moved_past_takes_a_branch(client):
-    """Retry could never reach here at all — it only ever saw the newest turn."""
+    """Retry could never reach this case: it only ever saw the newest turn."""
     _play(client)
     _play(client, "press on")
     before = _branch_count(client.adv_id)
@@ -445,7 +450,7 @@ def test_the_old_line_still_has_its_continuation(client):
     first_ai = _ai_rows(client.adv_id)[0]
     _take(client, first_ai.id, "")
 
-    # The new take is what this branch tells; "press on" belonged to the other.
+    # The new take is what this branch tells. "press on" belonged to the other.
     blob = "\n".join(_path_texts(client))
     assert "press on" not in blob
     kept = "\n".join(a.text for a in _user_rows(client.adv_id))
@@ -471,10 +476,10 @@ def test_the_opening_has_no_other_take(client):
 def test_retaking_even_the_newest_player_turn_forks(client):
     """A player turn is never the tip: the reply to it is.
 
-    Retaking the *last* thing the player typed still has a story to protect —
-    the AI answered it, and that answer was written for the old text. So the
-    branch is owed here too, and the guard against forking for nothing only
-    ever fires for a player action with no reply under it.
+    Retaking the last thing the player typed still puts existing story at
+    risk: the AI answered it, and that answer was written for the old
+    text. So this case must fork too. The guard against forking for
+    nothing only fires for a player action with no reply under it.
     """
     _play(client, "open the door")
     before = _branch_count(client.adv_id)
