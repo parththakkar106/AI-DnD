@@ -1,11 +1,11 @@
-"""The access log — app/accesslog.py and GET /api/analytics/access.
+"""The access log: app/accesslog.py and GET /api/analytics/access.
 
-This is the half of the analytics work that identifies people on purpose, so
-the things worth pinning are the ones that would quietly make it wrong: that
-the address recorded is the hardened one and not a header a client chose, that
-session rows are thinned instead of written per page load, and that a row
-outlives the account it describes — guest cleanup runs on a schedule, and a log
-that deletes itself is not a log.
+This is the half of the analytics work that identifies people on purpose,
+so these tests pin the details that would quietly make it wrong. The
+address recorded must be the hardened one, not a header a client chose.
+Session rows must be thinned instead of written on every page load. And a
+row must outlive the account it describes, because guest cleanup deletes
+accounts on a schedule, and a log that deletes itself is not a log.
 
     python -m pytest tests/test_accesslog.py -v
 """
@@ -57,7 +57,7 @@ def client(monkeypatch):
     monkeypatch.setattr(auth, "ANALYTICS_EMAILS", {"owner@example.com"})
 
     # /auth/me resolves its own session, so the cookie flow below is the real
-    # one; every other endpoint goes through get_current_user, and `act_as`
+    # one. Every other endpoint goes through get_current_user, and `act_as`
     # decides who that is.
     acting = {"id": ids["owner"]}
 
@@ -111,9 +111,9 @@ def test_a_new_session_is_logged(client):
 
 def test_the_address_is_the_hardened_one_not_the_clients(client):
     visit(client)
-    # The client prepended its own value; only the hop the edge appended counts.
-    # Recording the leftmost would make every row forgeable, which for a log is
-    # worse than having no log.
+    # The client prepended its own value. Only the hop the edge appended counts.
+    # Recording the leftmost value would make every row forgeable, which is
+    # worse for a log than having no log at all.
     assert rows()[0].ip == EDGE
 
 
@@ -141,15 +141,16 @@ def test_sign_in_and_failure_are_both_logged(client):
     assert accesslog.LOGIN_FAILED in kinds and accesslog.LOGIN in kinds
 
     failure = rows(accesslog.LOGIN_FAILED)[0]
-    # The address tried, not the account that owns it: a run against an address
-    # with no account behind it is exactly what this row is for.
+    # This records the address that was tried, not the account it belongs to.
+    # A failed attempt against an address with no matching account is
+    # exactly what this row exists to capture.
     assert failure.who == "player@example.com"
     assert failure.user_id is None
     assert rows(accesslog.LOGIN)[0].user_id == client.ids["member"]
 
 
 def test_registering_is_logged_against_the_upgraded_account(client):
-    visit(client)  # mints the guest whose session registers
+    visit(client)  # creates the guest whose session then registers
     client.act_as(rows()[0].user_id)
     client.post("/api/auth/register", json={"email": "new@example.com", "password": "hunter2long"})
     entry = rows(accesslog.REGISTER)[0]
@@ -165,8 +166,9 @@ def test_a_row_outlives_the_account_it_describes(client):
         db.commit()
     finally:
         db.close()
-    # No foreign key, and `who` is a snapshot — guest cleanup deletes accounts
-    # on a schedule, and a log that vanishes with them is not a log.
+    # There is no foreign key, and `who` is a snapshot. Guest cleanup deletes
+    # accounts on a schedule, and a log that vanishes along with them is not
+    # a log.
     survivor = rows()[0]
     assert survivor.who == entry.who and survivor.ip == EDGE
 
@@ -178,7 +180,7 @@ def test_a_long_user_agent_is_truncated(client):
 
 def test_a_logging_failure_does_not_break_the_request(client, monkeypatch):
     monkeypatch.setattr(accesslog, "_client_ip", lambda request: 1 / 0)
-    # The log watches sign-in; it must not be able to stand in its way.
+    # The log observes sign-in. A logging failure must not block the request.
     assert visit(client).status_code == 200
 
 
