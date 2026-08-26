@@ -1,7 +1,8 @@
-"""Guest retention policy — app/cleanup.py.
+"""Guest retention policy: app/cleanup.py.
 
-Covers the two things that matter: that idle guests and their whole data
-graph actually go, and that nothing else ever does.
+These tests cover the two things that matter. Idle guests and their whole
+data graph must actually be deleted, and nothing else must ever be
+deleted.
 
     python -m pytest tests/test_guest_cleanup.py -v
 """
@@ -30,8 +31,8 @@ def db(tmp_path):
 
     @event.listens_for(engine, "connect")
     def _fk(dbapi_connection, _record):
-        # The whole policy leans on ON DELETE CASCADE; SQLite ignores every
-        # one of them unless this is set (same as database.py does).
+        # The whole policy relies on ON DELETE CASCADE. SQLite ignores every
+        # one of them unless this is set, the same as database.py does.
         cur = dbapi_connection.cursor()
         cur.execute("PRAGMA foreign_keys=ON")
         cur.close()
@@ -86,7 +87,7 @@ def test_keeps_guest_inside_the_window(db):
 
 
 def test_boundary_is_not_yet_stale(db):
-    # Exactly 5 days survives; the comparison is strict.
+    # Exactly 5 days survives. The comparison is strict.
     user = make_user(db, days_idle=cleanup.RETENTION_DAYS)
     assert sweep(db) == 0
     assert alive(db, user.id)
@@ -112,8 +113,9 @@ def test_recent_visit_beats_an_old_created_at(db):
 # ---------- what must never go ----------
 
 def test_spares_registered_users(db):
-    """Registering upgrades the guest row in place, so an idle account here is
-    a real user with real data — the whole point of signing up."""
+    """Registering upgrades the guest row in place. An idle account here is
+    a real user with real data, which is what signing up is meant to
+    protect."""
     user = make_user(db, days_idle=400, guest=False, email="a@b.com")
     assert sweep(db) == 0
     assert alive(db, user.id)
@@ -127,7 +129,7 @@ def test_spares_the_local_mode_user(db):
 
 
 def test_spares_a_guest_flagged_row_that_has_an_email(db):
-    # Shouldn't exist, but both clauses are checked so it can't be collected.
+    # This row should not exist, but both clauses are checked so it cannot be collected.
     user = make_user(db, days_idle=400, guest=True, email="odd@b.com")
     assert sweep(db) == 0
     assert alive(db, user.id)
@@ -164,10 +166,10 @@ def test_enabled_requires_multi_user(monkeypatch):
 # ---------- the cascade ----------
 
 def test_deletes_the_whole_data_graph(db):
-    """One DELETE has to take the adventure, its actions and memories, the
-    story cards and the settings row with it — nothing is loaded into Python,
-    so if the FK cascade isn't reaching, rows are silently orphaned (or the
-    statement errors) rather than tidied."""
+    """One DELETE must remove the adventure, its actions and memories, the
+    story cards, and the settings row. Nothing is loaded into Python, so if
+    the FK cascade does not reach a table, its rows are silently orphaned,
+    or the statement fails, instead of being removed."""
     user = make_user(db, days_idle=30)
     scenario = models.Scenario(user_id=user.id, title="S")
     db.add(scenario)
