@@ -1,18 +1,19 @@
-"""Phase 8 — secrets and crypto primitives for optional accounts.
+"""Phase 8: secrets and crypto primitives for optional accounts.
 
-Everything keys off one server-side secret:
-  - session cookies are HMAC-signed with it,
-  - stored LLM API keys are Fernet-encrypted with a key derived from it.
+Everything derives from one server-side secret:
 
-The secret comes from AIDND_SECRET_KEY, or is auto-generated once into
-`secret.key` next to the database so local installs and Docker volumes work
-with zero configuration (losing the file logs everyone out and orphans
-stored API keys — users just re-enter them). Multi-user deploys must set the
-env var: hosted filesystems are ephemeral, and a secret.key regenerated on
-every deploy would silently log out all users each time.
+* Session cookies are HMAC-signed with it.
+* Stored LLM API keys are Fernet-encrypted with a key derived from it.
 
-Passwords use hashlib.scrypt (stdlib, OpenSSL-backed) so we don't need a
-separate hashing dependency.
+The secret comes from `AIDND_SECRET_KEY`, or it is generated once into
+`secret.key` next to the database, so a local install and a Docker volume work
+with no configuration. Losing that file logs everyone out and makes the stored
+API keys unreadable, and users then re-enter them. A multi-user deployment has
+to set the environment variable, because a hosted filesystem is ephemeral and a
+`secret.key` regenerated on every deploy would log out every user each time.
+
+Passwords use `hashlib.scrypt`, which is in the standard library and backed by
+OpenSSL, so this needs no separate hashing dependency.
 """
 
 import base64
@@ -81,7 +82,8 @@ def verify_password(password: str, stored: str) -> bool:
 
 
 # ---------- Session tokens ----------
-# "v1.<user_id>.<hmac>" — no expiry (long-lived guest sessions are the point).
+# The token is "v1.<user_id>.<hmac>". It does not expire, because a long-lived
+# guest session is what this is for.
 
 def sign_session(user_id: int) -> str:
     payload = f"v1.{user_id}"

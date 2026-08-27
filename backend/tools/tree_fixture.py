@@ -1,4 +1,4 @@
-"""A tree with a shape worth drawing — for driving the branch map by hand.
+"""A tree with a shape worth drawing, for driving the branch map by hand.
 
 `tools.branch_fixture` builds two branches of equal length, which is the case
 the panel-refresh bug needed and the smallest tree that proves a switch. A map

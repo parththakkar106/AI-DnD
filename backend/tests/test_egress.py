@@ -1,19 +1,19 @@
 """Guards on how much the database is asked for.
 
-context_snapshot holds the entire assembled prompt for a turn — 163 KB a row
-averaged over production, 232 KB on the longest adventure, and 89% of the
-database. It used to be pulled for every action on every adventure load and
-every turn, to read two tiny things out of it. These tests fail if that
-regresses.
+`context_snapshot` holds the entire assembled prompt for a turn. That is 163 kB
+per row averaged over production, 232 kB on the longest adventure, and 89% of the
+database. It used to be fetched for every action on every adventure load and
+every turn, to read two small values out of it. These tests fail if that
+returns.
 
 Two kinds of guard live here, and both are needed:
 
-* **column guards** assert which columns a statement names. That is the shape
-  both of this project's egress blowouts took — one query quietly carrying a
-  column nobody read.
-* **byte ceilings** assert what a request actually costs. Every column guard
-  would still pass if a response grew tenfold within the columns it is allowed
-  to read, which is what a story that keeps getting longer does.
+* Column guards assert which columns a statement names. That is the shape both
+  of this project's egress regressions took: one query carrying a column nobody
+  read.
+* Byte ceilings assert what a request costs. Every column guard would still pass
+  if a response grew tenfold within the columns it is allowed to read, which is
+  what a story that keeps getting longer does.
 
     python -m pytest tests/test_egress.py -v
 """
@@ -46,10 +46,10 @@ from tools.fakeprose import prose
 # column enormous, plus the small world_state slice the UI actually needs.
 #
 # Varied text, not `"x" * 20_000`. The column is stored compressed now
-# (migration 43), and a repeated character compresses about a thousandfold —
-# which would make the byte ceilings below pass against a fixture that costs
-# nothing, testing nothing. Prose-shaped filler compresses like the prompts
-# this stands in for.
+# by migration 43, and a repeated character compresses about a thousandfold.
+# That would make the byte ceilings below pass against a fixture that costs
+# nothing, which tests nothing. Prose-shaped filler compresses like the prompts
+# it stands in for.
 _SNAPSHOT_RNG = random.Random(20_260_817)
 BIG_SNAPSHOT = {
     "system": prose(_SNAPSHOT_RNG, 20_000),
@@ -149,8 +149,8 @@ def test_the_state_snapshots_are_not_fetched_in_bulk(client, sql_log):
     """All four are rollback snapshots, only ever needed for the single node
     being undone, retried past or switched to.
 
-    The `_after` pair is the live one since SP4 and the `_before` pair is dead
-    weight until SP8 drops it — a page load must pay for neither.
+    The `_after` pair is the live one since SP4, and the `_before` pair is
+    unused until SP8 drops it. A page load must pay for neither.
     """
     client.get(f"/api/adventures/{client.adv_id}")
     selects = action_selects(sql_log)
@@ -195,8 +195,11 @@ def test_variant_count_survives_variants_being_deferred(client):
 
 def test_counting_actions_does_not_name_the_deferred_columns(client, sql_log):
     """A count that wraps the entity select in a subquery names every column in
-    the emitted SQL — no bytes come back, but the database still reads them and
-    the guard above cannot tell it apart from a real bulk fetch."""
+    the emitted SQL.
+
+    No bytes come back, but the database still reads them, and the guard above
+    cannot distinguish that from a real bulk fetch.
+    """
     db = SessionLocal()
     try:
         adventure = db.get(models.Adventure, client.adv_id)
@@ -214,7 +217,8 @@ def test_counting_actions_does_not_name_the_deferred_columns(client, sql_log):
 
 
 def test_snapshot_is_still_reachable_on_demand(client):
-    """Deferred means lazy, not gone — Insights still gets the full thing."""
+    """Deferred means lazy rather than absent. Insights still gets the whole
+    snapshot."""
     r = client.get(f"/api/adventures/{client.adv_id}")
     action_id = r.json()["actions"][0]["id"]
     r = client.get(f"/api/adventures/{client.adv_id}/actions/{action_id}/context")
@@ -231,9 +235,9 @@ def as_json_snapshot_column(db) -> None:
 
     Migration 36 lifts world_delta out of the snapshot with SQL JSON
     functions, so it can only run while the column still *is* JSON. In a real
-    upgrade it always is — 36 runs seven migrations before 43 compresses the
-    column into a BLOB — but `create_all` builds today's schema, so a test
-    calling that backfill has to rebuild the schema it was written against.
+    upgrade it always is, because 36 runs seven migrations before 43 compresses
+    the column into a BLOB. `create_all` builds today's schema, so a test that
+    calls that backfill has to rebuild the schema it was written against.
     """
     db.execute(text("ALTER TABLE actions DROP COLUMN context_snapshot"))
     db.execute(text("ALTER TABLE actions ADD COLUMN context_snapshot JSON"))
@@ -269,9 +273,11 @@ def test_backfill_populates_world_delta_from_existing_snapshots(client):
 
 
 def test_backfill_populates_variant_count_from_existing_variants(client):
-    """Migration 37 counts the lists server-side — reading them into Python to
-    count them would mean pulling the column across the wire once to stop
-    pulling it across forever."""
+    """Migration 37 counts the lists on the server.
+
+    Reading them into Python to count them would fetch the column over the wire
+    once in order to stop fetching it on every request.
+    """
     db = SessionLocal()
     try:
         db.execute(text("UPDATE actions SET variant_count = 0"))
@@ -304,20 +310,20 @@ def test_backfill_leaves_actions_without_world_state_alone(client):
 
 # ---------------------------------------------------------------- byte ceilings
 #
-# The tests above assert which *columns* a statement names, which is the shape
-# both of this project's egress blowouts took. They would all still pass if a
-# response quietly grew tenfold within the columns it is allowed to read — and
-# a story that keeps getting longer does exactly that. These put a number on it.
+# The tests above assert which columns a statement names, which is the shape both
+# of this project's egress regressions took. They would all still pass if a
+# response grew tenfold within the columns it is allowed to read, and a story
+# that keeps getting longer does that. These tests put a number on it.
 #
-# Ceilings are per action rather than absolute, so they mean the same thing
-# whatever size the fixture is set to, and they are generous: the point is to
-# catch a tenfold regression, not to freeze today's byte count.
+# The ceilings are per action rather than absolute, so they mean the same thing
+# whatever size the fixture is, and they are generous. They exist to catch a
+# tenfold regression rather than to freeze today's byte count.
 
 ACTIONS_IN_FIXTURE = 12
 
 # 3 kB an action against a real 994 B, measured on production 2026-08-17.
 # Anything that pulls a deferred column blows past this by two orders of
-# magnitude — see test_the_ceiling_discriminates below.
+# magnitude. See `test_the_ceiling_discriminates` below.
 PAGE_LOAD_BYTES_PER_ACTION = 3_000
 
 
@@ -325,8 +331,9 @@ PAGE_LOAD_BYTES_PER_ACTION = 3_000
 def meter():
     """A byte meter on the shared engine, removed again afterwards.
 
-    Requested *after* `client` in a test's arguments so that building the
-    fixture — a write path nobody plays — is not charged to any scope.
+    A test requests this after `client` in its arguments, so that building the
+    fixture, which is a write path no player takes, is not charged to any
+    scope.
     """
     m = dbmeter.Meter()
     m.attach(engine)
@@ -364,8 +371,8 @@ def test_the_action_list_stays_under_its_byte_ceiling(client, meter):
 
 
 def test_reading_one_action_does_not_cost_the_whole_story(client, meter):
-    """The snapshot is reachable on demand, and that request should pay for
-    one row's worth — not the adventure's."""
+    """The snapshot is reachable on demand, and that request pays for one row
+    rather than for the whole adventure."""
     db = SessionLocal()
     try:
         action_id = db.query(models.Action.id).order_by(models.Action.id).first()[0]
@@ -459,10 +466,10 @@ def test_the_ceiling_discriminates(client, meter):
     budget. If this ever stops exceeding it, the fixture has gone too small for
     the tests above to mean anything.
 
-    The margin used to be a hundredfold and is now about six. That is not the
-    guard weakening — it is migration 43 compressing the column, and the
-    fixture text being prose-shaped so it compresses like a real prompt rather
-    than like a repeated character.
+    The margin used to be a hundredfold and is now about six. The guard has not
+    weakened. Migration 43 compresses the column, and the fixture text is
+    prose-shaped, so it compresses like a real prompt rather than like a repeated
+    character.
     """
     budget = ACTIONS_IN_FIXTURE * PAGE_LOAD_BYTES_PER_ACTION
     db = SessionLocal()

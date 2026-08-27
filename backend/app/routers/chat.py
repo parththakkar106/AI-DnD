@@ -1,14 +1,15 @@
-"""AI Chat — a plain scratchpad for talking to a model directly.
+"""AI Chat: a plain scratchpad for talking to a model directly.
 
-Power users only (the AIDND_POWER_USERS email allowlist). Deliberately thin:
-no story context, no scripts, no world state, and nothing persisted — the
-conversation lives in the browser and is posted up whole on each turn. It
-exists to poke at models, prompts and endpoints without starting an adventure.
+Power users reach it, which means the `AIDND_POWER_USERS` email allowlist. It is
+deliberately thin. It adds no story context, no scripts, and no world state, and
+it persists nothing. The conversation lives in the browser and is posted in full
+on each turn. It exists for testing models, prompts, and endpoints without
+starting an adventure.
 
-Model choice is free-form when the user brought their own API key. On the
-shared demo key it stays pinned to the AIDND_DEMO_MODELS whitelist, exactly as
-turns are: the server funds that key, so it must not be able to reach paid
-models by way of this page.
+Model choice is free when the user brought their own API key. On the shared demo
+key the model stays pinned to the `AIDND_DEMO_MODELS` allowlist, exactly as it is
+for turns. The server funds that key, so this page must not let it reach paid
+models.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -41,10 +42,13 @@ PowerUser = Depends(power_user)
 def _resolve_model(
     settings: models.Settings, requested: str | None
 ) -> tuple[auth.ProviderConfig, str | None]:
-    """Provider config for this chat, plus a note when the requested model was
-    not honoured. The pinning rule itself lives in resolve_provider_config —
-    this only reports the substitution it made, so there is exactly one place
-    that decides what the demo key is allowed to talk to."""
+    """Returns the provider config for this chat, plus a note when the requested
+    model was not used.
+
+    The pinning rule lives in `resolve_provider_config`. This function only
+    reports the substitution that call made, so one place decides what the demo
+    key may talk to.
+    """
     cfg = auth.resolve_provider_config(settings, model_override=requested)
     wanted = (requested or "").strip()
     if wanted and wanted != cfg.model:
@@ -60,9 +64,12 @@ async def chat_config(
     db: Session = Depends(get_db),
     user: models.User = PowerUser,
 ):
-    """What this page can talk to: the resolved endpoint/model, whether model
-    choice is pinned to the demo whitelist, and the endpoint's model listing
-    (best effort — an unreachable endpoint just yields an empty list)."""
+    """Returns what this page can talk to.
+
+    The response holds the resolved endpoint and model, whether model choice is
+    pinned to the demo allowlist, and the endpoint's model listing. The listing
+    is best effort, and an unreachable endpoint returns an empty list.
+    """
     settings = get_settings(db, user)
     cfg = auth.resolve_provider_config(settings)
     listing = await list_endpoint_models(cfg)
@@ -82,8 +89,11 @@ async def chat_config(
 
 async def run_chat(cfg: auth.ProviderConfig, settings: models.Settings, payload: schemas.ChatRequest,
                    note: str | None, db: Session, user: models.User):
-    """SSE generator mirroring the turn stream's event shape: reasoning/chunk
-    while generating, then done — so the frontend reuses the same plumbing."""
+    """Streams the reply as SSE, using the turn stream's event shape.
+
+    The generator emits `reasoning` and `chunk` events while generating and then
+    a `done` event, so the frontend reuses the same code.
+    """
     if note:
         yield sse({"type": "note", "detail": note})
     provider = OpenAICompatibleProvider(

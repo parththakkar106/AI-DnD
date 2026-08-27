@@ -1,10 +1,11 @@
 """Retention policy for throwaway guest accounts.
 
-In multi-user mode every first visit mints a `users` row (GET /api/auth/me),
-so a public demo accumulates one account per curious visitor — most of whom
-never come back, each leaving behind whatever scenarios, adventures, actions
-and memories they generated. This drops guests that have gone quiet for
-AIDND_GUEST_RETENTION_DAYS (default 5) along with everything they made.
+In multi-user mode every first visit creates a `users` row through
+`GET /api/auth/me`, so a public demo accumulates one account per visitor. Most
+of those visitors never return, and each one leaves behind whatever scenarios,
+adventures, actions, and memories they generated. This module deletes guests
+that have been inactive for `AIDND_GUEST_RETENTION_DAYS`, which defaults to 5,
+along with everything they made.
 
 Why this is safe to run unattended:
 
@@ -12,25 +13,26 @@ Why this is safe to run unattended:
   clauses are checked rather than either alone. Registering upgrades the row
   in place (is_guest -> False), so a guest who signs up keeps everything;
   local mode's implicit single user is also is_guest=False.
-- Idle time is COALESCE(last_seen_at, created_at). `auth._touch` only writes
-  last_seen_at once an hour, and a guest minted by /auth/me has NULL until
-  its *second* request, so created_at is the honest floor for a brand-new
-  visitor — without the coalesce those rows look infinitely old.
-- Nothing a guest owns is reachable by anyone else: `is_public` is an
-  output-only field (see schemas.ScenarioBase), so only seeded scenarios —
-  which have user_id NULL and are therefore outside this filter entirely —
-  are shared. Deleting a guest can't take content away from another user.
+- Idle time is `COALESCE(last_seen_at, created_at)`. `auth._touch` writes
+  `last_seen_at` at most once an hour, and a guest created by `/auth/me` has
+  NULL there until its second request, so `created_at` is the correct floor for
+  a new visitor. Without the coalesce, those rows look arbitrarily old.
+- Nothing a guest owns is reachable by anyone else. `is_public` is an
+  output-only field, as `schemas.ScenarioBase` shows, so the only shared
+  scenarios are the seeded ones, which have a NULL `user_id` and are outside
+  this filter. Deleting a guest cannot remove content from another user.
 
-Why one Core DELETE instead of an ORM cascade: `db.delete(user)` would SELECT
-every adventure, action, memory and story card into Python purely to delete
-them, which on Neon is exactly the egress pattern that has already cost this
-project once. Every foreign key from users downwards is ON DELETE CASCADE
-(users -> scenarios/adventures/scripts/settings -> actions/memories/cards), so
-the database does the whole graph in one statement and ships back a row count.
+The sweep uses one Core DELETE rather than an ORM cascade. `db.delete(user)`
+would SELECT every adventure, action, memory, and story card into Python only to
+delete them, which on Neon is the egress pattern that has already cost this
+project once. Every foreign key from `users` downward is ON DELETE CASCADE, from
+users to scenarios, adventures, scripts, and settings, and from those to actions,
+memories, and cards, so the database deletes the whole graph in one statement and
+returns a row count.
 
-No index is added for the scan: the sweep runs a handful of times a day
-against a table with at most a few thousand rows, which is not worth a
-migration and the schema surface that comes with it.
+The scan gets no index. The sweep runs a few times a day against a table holding
+at most a few thousand rows, which does not justify a migration and the schema
+surface it adds.
 """
 
 import asyncio
@@ -56,8 +58,8 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
-# Days of inactivity before a guest account is dropped. 0 or less disables the
-# policy entirely, for a deployment that would rather keep everything.
+# Days of inactivity before a guest account is deleted. A value of 0 or less
+# disables the policy, for a deployment that keeps everything.
 RETENTION_DAYS = _int_env("AIDND_GUEST_RETENTION_DAYS", 5)
 
 # How often a long-lived process re-checks. Hours, not minutes: nothing here is
@@ -86,10 +88,11 @@ def delete_stale_guests(db: Session, *, now: datetime | None = None) -> int:
     """
     if RETENTION_DAYS <= 0:
         return 0
-    # Stored timestamps are naive UTC on both backends (SQLite drops tzinfo;
-    # Postgres columns are TIMESTAMP WITHOUT TIME ZONE with the session pinned
-    # to UTC in database.py). Match that exactly so the comparison can't hinge
-    # on how a given dialect renders an aware value.
+    # Stored timestamps are UTC without a timezone on both backends. SQLite
+    # drops the timezone, and the Postgres columns are TIMESTAMP WITHOUT TIME
+    # ZONE with the session pinned to UTC in `database.py`. Match that, so the
+    # comparison does not depend on how a dialect renders a value that carries a
+    # timezone.
     reference = now or models.utcnow()
     cutoff = reference.replace(tzinfo=None) - timedelta(days=RETENTION_DAYS)
 
@@ -100,9 +103,10 @@ def delete_stale_guests(db: Session, *, now: datetime | None = None) -> int:
             models.User.email.is_(None),
             func.coalesce(models.User.last_seen_at, models.User.created_at) < cutoff,
         )
-        # Without this, "auto" can't evaluate coalesce in Python and falls back
-        # to fetching every matching primary key first — a second round trip
-        # for nothing, since this session holds no User objects to synchronize.
+        # Without this option, the "auto" strategy cannot evaluate coalesce in
+        # Python and falls back to fetching every matching primary key first.
+        # That is a second round trip for no benefit, because this session holds
+        # no User objects to synchronize.
         .execution_options(synchronize_session=False)
     )
     removed = db.execute(stmt).rowcount or 0

@@ -1,17 +1,18 @@
 """The context builder reads a window of the story, not all of it.
 
-Walking `adventure.actions` every turn made a turn cost O(story length), so a
-long adventure read hundreds of KB to use the tail of it — and the cost grew
-with every turn played. `app.context.history` serves tails, slices and counts
-from SQL instead.
+Walking `adventure.actions` every turn made the turn cost O(story length).
+A long adventure read hundreds of KB to use only the tail of it, and the
+cost grew with every turn played. `app.context.history` serves tails,
+slices, and counts from SQL instead.
 
-Two things have to hold, and both are easy to break by accident:
+Two things must hold, and both are easy to break by accident:
 
-* the window must produce **exactly** the prompt the full story produced, or
-  this is a behaviour change wearing an optimization's clothes;
-* the helpers must agree with the old list arithmetic, because memorybank's
-  cursors are *positions* in that list and a cursor off by one silently
-  summarizes the wrong actions.
+* The window must produce exactly the prompt the full story produced.
+  Otherwise, the change alters behavior even though it looks like a pure
+  optimization.
+* The helpers must agree with the old list arithmetic, because
+  memorybank's cursors are positions in that list. A cursor off by one
+  silently summarizes the wrong actions.
 
     python -m pytest tests/test_history_window.py -v
 """
@@ -92,16 +93,16 @@ def story():
 
 
 def full_window(adventure, budget_tokens, token_counter, exclude_action_id=None):
-    """Stand-in for window_covering that hands back the entire story, i.e. the
-    behaviour this module replaced."""
+    """Stand-in for `window_covering` that returns the entire story. This is
+    the behavior this module replaced."""
     return history.story_actions(adventure, exclude_action_id)
 
 
 @pytest.fixture()
 def actions_loaded():
-    """Counts Action rows the ORM materializes, i.e. how much of the story was
-    actually fetched. rowcount is meaningless for SELECT on SQLite, so count
-    the objects the mapper builds instead."""
+    """Counts the `Action` rows the ORM materializes, which shows how much of
+    the story was actually fetched. `rowcount` is meaningless for a SELECT
+    on SQLite, so this counts the objects the mapper builds instead."""
     loaded = {"n": 0}
 
     def on_load(target, context):
@@ -133,7 +134,7 @@ def test_window_builds_the_same_prompt_as_the_whole_story(story, budget, monkeyp
 
 
 def test_window_matches_on_the_retry_shape(story, monkeypatch):
-    """Retry excludes the action being regenerated; the exclusion has to reach
+    """Retry excludes the action being regenerated. The exclusion must reach
     the window query, not just the in-memory filter."""
     db, adventure, settings = story
     last = history.tail(adventure, 1)[0]
@@ -148,7 +149,8 @@ def test_window_matches_on_the_retry_shape(story, monkeypatch):
 
 
 def test_reported_total_is_the_whole_story_not_the_window(story):
-    """Insights says "N of M actions included"; M must not become the window."""
+    """Insights reports "N of M actions included." M must not become the
+    window size."""
     db, adventure, settings = story
     settings.context_token_budget = 4096
     report = builder.build_context(adventure, settings)[2]
@@ -160,7 +162,7 @@ def test_reported_total_is_the_whole_story_not_the_window(story):
 
 def test_building_context_reads_far_less_than_the_whole_story(story, actions_loaded):
     db, adventure, settings = story
-    # Expire first: expiring afterwards would discard the unflushed change and
+    # Expire first. Expiring afterward would discard the unflushed change and
     # silently put the budget back to its default.
     db.expire_all()
     # Small enough that the budget, not the length of the story, decides.
@@ -171,9 +173,10 @@ def test_building_context_reads_far_less_than_the_whole_story(story, actions_loa
     included = report["history"]["included"]
 
     assert included < ACTION_COUNT, "fixture is too short to prove anything"
-    # The window aims a margin past the budget and re-asks if it fell short, so
-    # it reads somewhat more than it includes. What matters is that the read is
-    # a function of the token budget, not of how long the story has got.
+    # The window targets a margin past the budget and requests more if it
+    # falls short, so it reads somewhat more than it includes. What matters
+    # is that the read depends on the token budget, not on the length of
+    # the story.
     assert actions_loaded["n"] < ACTION_COUNT // 2, (
         f"read {actions_loaded['n']} action rows out of {ACTION_COUNT} to "
         f"include {included} — the window is not bounding the read"
@@ -213,13 +216,14 @@ def test_helpers_agree_with_the_full_list(story):
 
 
 def test_a_depth_boundary_survives_a_middle_action_being_deleted(story):
-    """The case that has broken the cursors twice before, and the reason they
-    are depths now.
+    """The case that broke the cursors twice before. This is the reason the
+    cursors are depths now.
 
-    A *position* answers "how much story is past this point?" by counting from
-    the start, so deleting anything in front of the mark changes which action
-    the mark names. A depth names the same node either way — the only thing
-    that changes is the count of what comes after, which is what did change.
+    A position answers "how much story is past this point?" by counting
+    from the start. Deleting anything in front of the mark changes which
+    action the mark names. A depth names the same node either way. The
+    only thing that changes is the count of what comes after, and that
+    count is the one thing that should change here.
     """
     db, adventure, settings = story
     actions = history.story_actions(adventure)
@@ -236,9 +240,9 @@ def test_a_depth_boundary_survives_a_middle_action_being_deleted(story):
     assert history.count_after(adventure, mark) == before, "the mark moved"
     assert [a.id for a in history.after(adventure, mark, 3)] == next_three
 
-    # ...and deleting something *after* it is the one thing that does change
-    # the count, because that is a fact about the story rather than about the
-    # coordinate system.
+    # Deleting something after the mark is the one change that does affect
+    # the count, because that count reflects the story, not the coordinate
+    # system.
     db.delete(history.after(adventure, mark, 1)[0])
     db.commit()
     db.expire(adventure)
@@ -258,7 +262,7 @@ def test_blank_actions_are_excluded_the_same_way_in_sql_and_python(story):
     # SQL path (relationship not loaded)
     from_sql = history.count(adventure)
     # Python path (relationship loaded)
-    adventure.actions  # noqa: B018 — force the collection into memory
+    adventure.actions  # noqa: B018 - force the collection into memory
     from_python = history.count(adventure)
 
     assert from_sql == from_python == ACTION_COUNT

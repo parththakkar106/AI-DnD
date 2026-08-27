@@ -1,15 +1,15 @@
 """Storing and comparing embedding vectors.
 
-A 1536-dimension vector written as a JSON list is about 31 KB, because every
-component is spelled out as a decimal string of seventeen-odd digits. The same
-vector as packed float32 is 6,144 bytes — a straight 5x, and the memory bank is
-read in full on every turn, so those bytes are paid over and over.
+A 1536-dimension vector written as a JSON list is about 31 kB, because every
+component is written as a decimal string of about seventeen digits. The same
+vector as packed float32 is 6,144 bytes, which is five times smaller, and the
+memory bank is read in full on every turn, so those bytes are paid repeatedly.
 
-**Float32 is not an approximation here.** The embedding endpoints return
-vectors computed in float32, rendered into JSON as the shortest decimal string
-that round-trips through a double; converting that back to float32 recovers the
-original bits exactly. Nothing is lost that was ever there, which is why the
-conversion needs no re-embedding and carries no retrieval-quality risk.
+Float32 is not an approximation here. The embedding endpoints return vectors
+computed in float32 and render them into JSON as the shortest decimal string
+that round-trips through a double. Converting that back to float32 recovers the
+original bits exactly. Nothing that was present is lost, which is why the
+conversion needs no re-embedding and carries no risk to retrieval quality.
 
 Dimensions are deliberately unchanged. Dropping to 512 or 768 would have saved
 another 3x and cost an API call per stored memory to re-embed, against a bank

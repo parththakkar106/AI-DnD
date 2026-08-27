@@ -1,5 +1,8 @@
-"""Phase 12 — RPG world state: the AI proposes stat/milestone deltas, this
-module validates and clamps them against a scenario's stat_schema."""
+"""Phase 12: RPG world state.
+
+The AI proposes stat and milestone deltas, and this module validates and clamps
+them against a scenario's `stat_schema`.
+"""
 
 from .engine import (
     EMIT_REMINDER,

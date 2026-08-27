@@ -16,12 +16,12 @@ import json
 import random
 import sys
 
-# `stress_session` FIRST, and it is not a style preference. Importing it is what
-# points `AIDND_DB_PATH` at a throwaway file, and `app.database` reads that at
-# module scope — so an `app` import above this line silently runs the whole
-# fixture against `backend/data.db` instead. It fails by *working*: the first
+# Import `stress_session` first. This is not a style preference. Importing it is
+# what points `AIDND_DB_PATH` at a throwaway file, and `app.database` reads that
+# at module scope, so an `app` import above this line runs the whole fixture
+# against `backend/data.db` instead. The failure looks like success: the first
 # run seeds a synthetic user and adventure into the local database and reports
-# perfectly good numbers, and only the second run trips over the unique email.
+# plausible numbers, and only the second run fails on the unique email.
 from tools import stress_session as stress  # noqa: I001  (see above)
 
 from app import bundle, models, tree
@@ -31,8 +31,9 @@ from app.database import SessionLocal
 def _v1_shape(v2: dict) -> dict:
     """The same story as v1 would have written it, for a like-for-like count.
 
-    One entry per turn, the siblings folded back into a `variants` array, no
-    coordinates and no outcomes — which is exactly what v1 could carry.
+    There is one entry per turn, with the siblings collected back into a
+    `variants` array, no coordinates, and no outcomes. That is what version 1
+    could carry.
     """
     turns: dict[tuple[int, int], list[dict]] = {}
     order: list[tuple[int, int]] = []
@@ -89,11 +90,12 @@ def main(argv=None) -> int:
     try:
         adventure = db.get(models.Adventure, adv_id)
         if forks:
-            # Twenty divergences off one line, each a little deeper — the shape
-            # SP5 measured the fork cost on. The nodes are chosen up front and
-            # the session is flushed after every fork: `fork` moves a row onto
-            # its new branch, and with `autoflush=False` a query issued before
-            # that move is written still finds the node where it used to be.
+            # Twenty divergences off one line, each a little deeper, which is
+            # the shape SP5 measured the fork cost on. The nodes are chosen up
+            # front and the session is flushed after every fork. `fork` moves a
+            # row onto its new branch, and with `autoflush=False` a query issued
+            # before that move is written still finds the node at its old
+            # location.
             root = adventure.head_branch_id
             candidates = [
                 node.id for node in

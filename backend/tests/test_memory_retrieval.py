@@ -1,11 +1,12 @@
 """Ranking the memory bank without reading the memory bank.
 
-Retrieval used to walk `adventure.memories`, which loaded every row *with its
-vector* — 96% of everything a turn read. It now asks SQL which memories are in
-play, holds their vectors in process, and fetches text for the five it picks.
+Retrieval used to walk `adventure.memories`, which loaded every row with
+its vector. That vector data was 96% of everything a turn read. Retrieval
+now asks SQL which memories are in play, holds their vectors in process,
+and fetches text for only the five it picks.
 
 Three things have to stay true for that to be safe, and each is a separate
-failure that no error message would ever report:
+failure that no error message would report:
 
 * the ranking picks the same memories it always did;
 * nothing bulk-reads a vector column again;
@@ -80,8 +81,8 @@ def adventure(db, settings):
     )
     db.add(adv)
     db.flush()
-    # Retrieval builds its query from the newest actions; with none, it returns
-    # before ranking anything.
+    # Retrieval builds its query from the newest actions. With none, it
+    # returns before ranking anything.
     for i in range(2):
         db.add(models.Action(
             adventure_id=adv.id, index=i, type="ai", text=f"Something happened {i}."
@@ -189,8 +190,8 @@ def test_update_stats_bumps_only_the_used(db, adventure, settings, bank):
 
 
 def test_dry_runs_do_not_bump_the_counters(db, adventure, settings, bank):
-    """Insights assembles a context without spending a turn; it must not look
-    like the memories were used."""
+    """Insights assembles a context without spending a turn. It must not
+    look like the memories were used."""
     retrieve(adventure, settings, StubEmbedder(), update_stats=False)
     db.commit()
     db.expire_all()
@@ -207,18 +208,19 @@ def memory_selects(statements):
 
 
 def test_the_json_column_is_gone(db):
-    """`memories.embedding` held the vectors before migration 38 and nothing
-    read it afterwards; migration 42 dropped it. Bringing it back would restore
-    4 MB of dead weight and a second place vectors can be written from — which
-    is how the model-switch bug happened (test_embedding_model_switch.py)."""
+    """`memories.embedding` held the vectors before migration 38, and
+    nothing read it afterward. Migration 42 dropped it. Restoring it would
+    bring back 4 MB of dead weight and a second place vectors can be
+    written from. That second place is how the model-switch bug happened
+    (test_embedding_model_switch.py)."""
     columns = {c["name"] for c in sa_inspect(engine).get_columns("memories")}
     assert "embedding" not in columns
     assert {"embedding_blob", "embedded"} <= columns
 
 
 def test_the_catalogue_query_carries_no_vectors(db, adventure, settings, bank, sql_log):
-    """The query that decides *which* memories are in play must stay tiny —
-    this is the one that used to drag the whole bank across."""
+    """The query that decides which memories are in play must stay tiny.
+    This is the query that used to pull the whole bank across the wire."""
     retrieve(adventure, settings, StubEmbedder())
     catalogue = [s for s in memory_selects(sql_log) if "memories.pinned" in s]
     assert catalogue, "expected a catalogue query"
@@ -261,9 +263,10 @@ def test_only_top_k_texts_are_fetched(db, adventure, settings, bank, sql_log):
 # ---------------------------------------------------------------- staleness
 
 def test_a_rewritten_vector_is_not_served_from_cache(db, adventure, settings, bank):
-    """The cache's one genuine hazard: a memory keeps its id while its vector
-    changes, so an id-set check alone would go on serving the old one. Editing
-    a memory's text and re-embedding it does exactly that.
+    """The cache's one genuine hazard: a memory keeps its id while its
+    vector changes, so an id-set check alone would continue serving the
+    old vector. Editing a memory's text and re-embedding it does exactly
+    that.
     """
     settings.memory_top_k = 1
     db.commit()
@@ -325,9 +328,9 @@ def test_eviction_marks_the_least_recently_used(db, adventure, settings):
 
 
 def test_eviction_breaks_ties_on_use_count(db, adventure, settings):
-    """Two memories last wanted at the same moment: the one the story has
-    leaned on less goes. Only a tiebreak — ranking on the count first is what
-    used to freeze the bank (see below)."""
+    """Two memories last used at the same moment: the one the story has
+    used less is the one that goes. This must be only a tiebreak. Ranking
+    on the count first is what used to freeze the bank (see below)."""
     settings.memory_bank_capacity = 1
     db.commit()
     now = models.utcnow()
@@ -344,12 +347,13 @@ def test_eviction_breaks_ties_on_use_count(db, adventure, settings):
 
 
 def test_a_newborn_is_not_evicted_by_the_bank_it_joins(db, adventure, settings):
-    """The bank used to shut itself. Eviction ranked on use_count first, and a
-    memory written this turn has never been used, so the moment every survivor
-    had been retrieved even once the newborn was the lowest row in the bank and
-    was retired in the same post-turn run that wrote it — before retrieval ever
-    saw it. That state is absorbing: counts only go up, so no memory written
-    after it could ever get in either."""
+    """The bank used to stop accepting new memories. Eviction ranked on
+    use_count first, and a memory written this turn has never been used.
+    Once every existing memory had been retrieved even once, the newborn
+    became the lowest-ranked row in the bank. Eviction then removed it in
+    the same post-turn run that wrote it, before retrieval ever saw it.
+    That state never recovers: counts only go up, so no memory written
+    after it could get in either."""
     settings.memory_bank_capacity = 3
     db.commit()
     now = models.utcnow()
@@ -370,9 +374,9 @@ def test_a_newborn_is_not_evicted_by_the_bank_it_joins(db, adventure, settings):
 
 
 def test_a_full_bank_still_turns_over(db, adventure, settings):
-    """The same failure seen over several turns: a bank at capacity has to keep
-    taking on what the story is doing now, or the adventure stops remembering
-    anything past the point it filled up."""
+    """The same failure seen over several turns: a bank at capacity must
+    keep accepting new memories, or the adventure stops remembering
+    anything past the point where it filled up."""
     settings.memory_bank_capacity = 3
     now = models.utcnow()
     db.commit()

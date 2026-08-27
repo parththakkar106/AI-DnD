@@ -1,16 +1,17 @@
-"""Phase 14 SP1 — every existing adventure becomes a tree with one branch.
+"""Phase 14 SP1: every existing adventure becomes a tree with one branch.
 
-The migration this file watches is the one that cannot be re-run: it reads
-`index` and writes `depth`, and from SP2 on the reads follow `depth`. If it
-mis-maps a row, that row does not error — it *disappears from the story*, which
-is why the assertions here are about every row rather than about a sample.
+The migration this file tests cannot be re-run. It reads `index` and
+writes `depth`, and from SP2 on, the reads follow `depth`. If it mis-maps
+a row, that row does not raise an error. It disappears from the story,
+which is why the assertions here check every row instead of a sample.
 
-The fixture is a genuine **schema 45** database, not a current one with an old
-stamp. `create_all` always builds the current schema, so the three tables the
-tree touches are dropped and rebuilt from frozen pre-tree DDL below; the
-migration then runs its real ALTERs against them, including the one that adds a
-foreign key. A pre-migration database built any other way (stamp rewound,
-columns left in place) would quietly skip the DDL and test half the change.
+The fixture is a genuine schema-45 database, not a current one with an
+old stamp. `create_all` always builds the current schema, so the three
+tables the tree touches are dropped and rebuilt from the frozen pre-tree
+DDL below. The migration then runs its real ALTER statements against
+them, including the one that adds a foreign key. A pre-migration database
+built any other way, such as a rewound stamp with the columns left in
+place, would silently skip the DDL and test only half the change.
 
     python -m pytest tests/test_tree_migration.py -v
 """
@@ -34,10 +35,11 @@ from app.context import history
 from app.database import Base, SessionLocal, engine, get_db
 from app.main import app
 
-# The three tables as they stood at schema 45, frozen. This is a snapshot of a
-# past schema and must NOT be updated to track models.py — the whole point is
-# that it lacks what SP1 adds. SQLite spelling only; the migration's Postgres
-# half is exercised against a real server at deploy time (see plan/14).
+# The three tables as they stood at schema 45, frozen. This is a snapshot
+# of a past schema. It must not be updated to track `models.py`, because
+# the whole point is that it lacks what SP1 adds. This DDL uses SQLite
+# syntax only. The migration's Postgres half is exercised against a real
+# server at deploy time (see plan/14).
 PRE_TREE_DDL = (
     """
     CREATE TABLE adventures (
@@ -96,15 +98,17 @@ PRE_TREE_DDL = (
     """,
 )
 
-# The story of adventure "Gapped": index 3 is missing, because deleting a middle
-# action never renumbered the ones after it. The gap has to survive as a gap.
+# The story of adventure "Gapped": index 3 is missing, because deleting a
+# middle action never renumbered the ones after it. The migration must
+# preserve the gap.
 GAPPED_INDEXES = (0, 1, 2, 4)
 STRAIGHT_INDEXES = (0, 1)
-# "Blank" holds an action whose text is nothing but whitespace. It is a row of
-# the adventure but not of the *story*, so a cursor counting covered actions
-# never counted it — and migration 56 has to skip it the same way, using a
-# frozen copy of the story-text predicate. This is the one duplicated
-# definition in the change, so it gets the one case that can tell.
+# "Blank" holds an action whose text is nothing but whitespace. It is a
+# row of the adventure but not of the story, so a cursor counting covered
+# actions never counted it. Migration 56 must skip it the same way, using
+# a frozen copy of the story-text predicate. This predicate is the one
+# duplicated definition in the change, so this is the one test case that
+# can catch it drifting.
 BLANK_INDEXES = (0, 1, 2, 3)
 BLANK_AT = 2
 
@@ -113,15 +117,16 @@ BLANK_AT = 2
 def pre_tree():
     """A schema-45 database with three adventures in it, returned as the ids
     (gapped, straight, empty) their stories were written under."""
-    # Every test in this module shares one temp file, and a setup that fails
-    # before its yield never reaches a teardown — so start from empty rather
-    # than from whatever the last one left.
+    # Every test in this module shares one temp file, and a setup that
+    # fails before its yield never reaches a teardown. Start from empty
+    # instead of from whatever the previous test left.
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     with engine.begin() as conn:
-        # `branches` and the six new columns never existed at 45. Dropping the
-        # tables is the only way to lose the columns: SQLite refuses to drop a
-        # column a foreign key names, which is exactly the case for branch_id.
+        # `branches` and the six new columns never existed at schema 45.
+        # Dropping the tables is the only way to remove the columns.
+        # SQLite refuses to drop a column that a foreign key references,
+        # and that is exactly the case for `branch_id`.
         for table in ("actions", "memories", "branches", "adventures"):
             conn.execute(text(f"DROP TABLE IF EXISTS {table}"))
         for ddl in PRE_TREE_DDL:
@@ -132,11 +137,12 @@ def pre_tree():
         ))
 
         # The cursors as schema 45 held them: counts of covered story actions.
-        # Gapped's story is 0,1,2,4 — so "3 covered" is the node at depth 2 and
-        # "4 covered" is the node at depth 4, which is the whole reason a count
-        # and a depth are not the same number. Straight is caught up past its
-        # own end (5 covered, 2 actions), which is a state the older rule left
-        # behind and the clamp used to paper over every post-turn pass.
+        # Gapped's story is 0, 1, 2, 4, so "3 covered" is the node at depth
+        # 2 and "4 covered" is the node at depth 4. This is the whole
+        # reason a count and a depth are not the same number. Straight is
+        # caught up past its own end (5 covered, 2 actions), a state the
+        # older rule left behind that a clamp used to mask on every
+        # post-turn pass.
         cursors_at = {"Gapped": (3, 4), "Straight": (5, 0), "Empty": (0, 0),
                       "Blank": (3, 0)}
         ids = {}
@@ -276,18 +282,19 @@ def test_memories_attach_to_the_node_they_summarised(pre_tree):
         assert depth == source_end, "the memory hangs off the last action it covered"
         assert branch_id is not None
 
-    # A hand-written memory summarised no node, so SP7's migration 62 lands it
-    # at depth 0 of its branch. 0 is at or before every fork point, so it stays
-    # visible from exactly the paths it was visible from before — anchoring
-    # takes nothing out of anybody's existing bank.
+    # A hand-written memory summarised no node, so SP7's migration 62
+    # lands it at depth 0 of its branch. Depth 0 is at or before every
+    # fork point, so the memory stays visible from exactly the paths it
+    # was visible from before. Anchoring it this way removes nothing from
+    # anybody's existing memory bank.
     manual = rows("SELECT depth, branch_id FROM memories WHERE source_end IS NULL")
     assert manual and all(depth == 0 and branch is not None for depth, branch in manual)
 
 
 def test_the_cursors_become_the_nodes_they_named(pre_tree):
-    """SP3, migration 56. A count of covered actions and a depth are different
-    numbers the moment the story has a gap in it, which every adventure anyone
-    has ever deleted from does."""
+    """SP3, migration 56. A count of covered actions and a depth become
+    different numbers as soon as the story has a gap in it, and every
+    adventure with a deleted action has one."""
     migrations.bootstrap(engine)
 
     def marks(title):
@@ -298,9 +305,9 @@ def test_the_cursors_become_the_nodes_they_named(pre_tree):
         )
         return row
 
-    # Gapped's story is 0,1,2,4. "3 covered" is the *third* action, at depth 2 —
-    # reading the count as a depth would have handed the summarizer node 3,
-    # which does not exist, and quietly skipped node 4 forever.
+    # Gapped's story is 0, 1, 2, 4. "3 covered" is the third action, at
+    # depth 2. Reading the count as a depth would hand the summarizer node
+    # 3, which does not exist, and silently skip node 4 forever.
     memory_depth, summary_depth, memory_branch, summary_branch = marks("Gapped")
     assert (memory_depth, summary_depth) == (2, 4)
     root = scalar(
@@ -319,10 +326,11 @@ def test_the_cursors_become_the_nodes_they_named(pre_tree):
     # Nothing covered stays nothing covered, and names no branch.
     assert marks("Empty") == (migrations.NO_DEPTH, migrations.NO_DEPTH, None, None)
 
-    # A whitespace-only action is a row but not a story action, so it was never
-    # counted — "3 covered" of 0,1,[blank],3 is the node at depth 3, not 2. The
-    # migration's copy of the story-text predicate is the only place that rule
-    # is written twice, so this is the case that catches it drifting.
+    # A whitespace-only action is a row but not a story action, so it was
+    # never counted. "3 covered" of 0, 1, [blank], 3 is the node at depth
+    # 3, not 2. The migration's copy of the story-text predicate is the
+    # only place that rule is written twice, so this is the test case
+    # that catches it drifting.
     assert marks("Blank")[0] == 3
 
     # The legacy columns are left exactly as they were: a rolled-back build
@@ -333,8 +341,9 @@ def test_the_cursors_become_the_nodes_they_named(pre_tree):
 
 
 def test_the_branch_clause_index_exists(pre_tree):
-    """SP2's reads are only cheap if this exists — and `create_all` does not add
-    an index to a table it did not create, which is what migration 52 is for."""
+    """SP2's reads are only cheap if this index exists. `create_all` does
+    not add an index to a table it did not create, which is what
+    migration 52 handles."""
     migrations.bootstrap(engine)
 
     assert scalar(
@@ -354,10 +363,10 @@ def test_running_it_again_changes_nothing(pre_tree):
         rows("SELECT id, branch_id, depth FROM memories ORDER BY id"),
     )
 
-    # Twice through the deploy path, then the data pass on its own — the stamp
-    # stops the first, the NULL guards stop the second, and a migration that
-    # only survives because of the stamp is one bad rescue away from doubling
-    # every branch.
+    # Run the deploy path twice, then the data pass on its own. The stamp
+    # stops the first run, the NULL guards stop the second, and a
+    # migration that only survives because of the stamp is one bad rescue
+    # away from doubling every branch.
     migrations.bootstrap(engine)
     with engine.begin() as conn:
         migrations._backfill_tree(conn)
@@ -379,8 +388,8 @@ def test_running_it_again_changes_nothing(pre_tree):
 def client(monkeypatch):
     """The app on a migrated database, so new rows go through the real writers.
 
-    Everything the migration fixes is only half the job: no migration will ever
-    visit a row written after it ran, and a row without a branch is a row no
+    Fixing existing rows is only half the job. No migration ever revisits
+    a row written after it ran, and a row without a branch is a row no
     read can see.
     """
     Base.metadata.drop_all(bind=engine)
@@ -442,11 +451,12 @@ def test_a_blank_adventure_has_a_branch_before_anything_is_played(client):
 
 
 def test_a_hand_written_memory_is_anchored_at_the_head(client):
-    """SP7: nothing carries a NULL depth any more.
+    """SP7: nothing carries a NULL depth anymore.
 
-    On an adventure with no story yet the head is NO_DEPTH (-1), which reads as
-    "before the first node" and so is in range of every branch — right for a
-    note written before anything has happened.
+    On an adventure with no story yet, the head is `NO_DEPTH` (-1), which
+    reads as "before the first node" and so falls in range of every
+    branch. This is correct for a note written before anything has
+    happened.
     """
     adventure_id = client.post("/api/adventures", json={}).json()["id"]
 
@@ -466,9 +476,10 @@ def test_a_hand_written_memory_is_anchored_at_the_head(client):
 
 
 def test_deleting_a_branch_takes_its_nodes_with_it(client):
-    """`ON DELETE CASCADE` on both `branch_id` columns, so the database removes a
-    branch's nodes rather than any code remembering to. SP7 ships delete-a-branch
-    on top of exactly this, and nothing else has to load a branch to do it."""
+    """`ON DELETE CASCADE` on both `branch_id` columns means the database
+    removes a branch's nodes instead of relying on application code to
+    remember to. SP7 builds delete-a-branch directly on top of this, and
+    no other code needs to load a branch to do it."""
     adventure_id = client.post(
         "/api/adventures", json={"scenario_id": client.scenario_id}
     ).json()["id"]
@@ -509,8 +520,8 @@ def test_deleting_an_adventure_takes_its_branch_with_it(client):
 
 
 def test_deleting_the_newest_action_moves_the_head_back(client):
-    """The head is a cache, and a cache that only ever moves forward is wrong
-    the first time someone undoes a turn."""
+    """The head is a cache. A cache that only ever moves forward becomes
+    wrong the first time someone undoes a turn."""
     adventure_id = client.post(
         "/api/adventures", json={"scenario_id": client.scenario_id}
     ).json()["id"]
@@ -540,10 +551,11 @@ def test_deleting_the_newest_action_moves_the_head_back(client):
 
 # ---------------------------------------- SP4: variants become sibling rows
 
-# One turn's retry history as schema 45 stored it: a JSON array on the AI row,
-# with `variant_index` naming the entry `text` mirrors. The live one is
-# deliberately not the last written — a migration that assumed it was would
-# look right on every fixture where the player never went back.
+# One turn's retry history as schema 45 stored it: a JSON array on the
+# AI row, with `variant_index` naming the entry `text` mirrors. The live
+# entry is deliberately not the last one written. A migration that
+# assumed it was would still pass on every fixture where the player
+# never paged back.
 RETRY_VARIANTS = [
     {"text": "Attempt one.", "reasoning": None,
      "script_state": {"gold": 10}, "created_at": "2026-01-01T00:00:00",
@@ -563,10 +575,10 @@ RETRY_VARIANTS = [
 ]
 LIVE_VARIANT = 1
 
-# The whole turn's assembled prompt, stored once. The attempts differ only in
-# the three slices above, which is the arrangement SP4 has to preserve — giving
-# each sibling a copy of this would multiply the biggest column in the database
-# by the retry count.
+# The whole turn's assembled prompt, stored once. The attempts differ
+# only in the three slices above, and SP4 must preserve that arrangement.
+# Giving each sibling a copy of this prompt would multiply the largest
+# column in the database by the retry count.
 RETRY_SNAPSHOT = {
     "sections": [{"label": "history", "text": "A long prompt.", "tokens": 4}],
     "prompt": {"system": "S", "story": "A long prompt."},
@@ -578,11 +590,13 @@ RETRY_SNAPSHOT = {
 
 @pytest.fixture()
 def pre_split():
-    """A schema-45 adventure with one retried turn, plus a plain turn each side.
+    """A schema-45 adventure with one retried turn, plus a plain turn on
+    each side.
 
-    Separate from `pre_tree` so SP1's assertions keep counting what they were
-    written to count. The story is: 0 start, 1 do, 2 ai (three attempts), 3 do,
-    and the adventure's live state is the one attempt 1 produced.
+    This fixture is separate from `pre_tree` so SP1's assertions keep
+    counting what they were written to count. The story is: 0 start, 1
+    do, 2 ai (three attempts), 3 do. The adventure's live state is the
+    one attempt 1 produced.
     """
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
@@ -603,8 +617,9 @@ def pre_split():
         adventure_id = conn.execute(
             text("SELECT id FROM adventures WHERE title = 'Retried'")
         ).scalar()
-        # `state_before` on each row: the scoreboard as that action found it.
-        # SP4 reads them one row along to build the `state_after` pair.
+        # `state_before` on each row records the script state as that
+        # action found it. SP4 reads each row's `state_before` from the
+        # next row to build the `state_after` pair.
         for index, kind, before in (
             (0, "start", None), (1, "do", {"gold": 0}),
             (2, "ai", {"gold": 0}), (3, "do", {"gold": 20}),
@@ -653,7 +668,7 @@ def test_each_attempt_becomes_a_row_at_the_turns_coordinate(pre_split):
         'AND "index" = 2', a=pre_split,
     )
     assert len(coordinates) == 1
-    # ...and the rest of the story is untouched, still one row per turn.
+    # The rest of the story is untouched, still one row per turn.
     assert scalar("SELECT count(*) FROM actions WHERE adventure_id = :a", a=pre_split) == 6
 
 
@@ -703,10 +718,11 @@ def test_each_attempt_keeps_the_outcome_it_produced(pre_split):
     ]
     assert parsed[0][2] == {"player": {"hp": 95}}
     assert parsed[1][2] == {"player": {"hp": 60}}
-    # Attempt three recorded no world state — an adventure with no RPG layer,
-    # or a take made before the column existed. It stays NULL rather than
-    # borrowing a neighbour's, and switching to it leaves the RPG layer alone:
-    # exactly what `apply_variant` did with an entry that had no world state.
+    # Attempt three recorded no world state: either an adventure with no
+    # RPG layer, or a take made before the column existed. It stays NULL
+    # instead of borrowing a neighbor's, so switching to it leaves the RPG
+    # layer alone. This matches what `apply_variant` did with an entry
+    # that had no world state.
     assert parsed[2][2] is None
 
 
@@ -739,7 +755,8 @@ def test_the_split_survives_being_run_again(pre_split):
 
 
 def test_the_migrated_story_reads_back_as_one_turn(pre_split):
-    """The point of all of it: the reads see a four-action story, not six."""
+    """This is the point of the whole migration: reads see a four-action
+    story, not six."""
     migrations.bootstrap(engine)
 
     db = SessionLocal()

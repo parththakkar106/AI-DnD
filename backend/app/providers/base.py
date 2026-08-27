@@ -17,10 +17,10 @@ class ProviderError(Exception):
 
 class Provider(ABC):
     # The endpoint's own token accounting for the most recent call, when it
-    # reported any — notably `prompt_tokens_details.cached_tokens`, which is
-    # the only direct read on whether the prompt prefix is being cached.
-    # Callers read it after the call they made; one provider is built per
-    # request, so there is nothing to race.
+    # reported any. It notably carries `prompt_tokens_details.cached_tokens`,
+    # which is the only direct measure of whether the prompt prefix is being
+    # cached. A caller reads it after the call it made, and one provider is built
+    # per request, so nothing races.
     last_usage: dict | None = None
 
     @abstractmethod

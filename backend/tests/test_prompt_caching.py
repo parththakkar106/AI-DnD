@@ -1,25 +1,26 @@
 """Prompt caching: the prompt has to start with the same bytes every turn.
 
-Every endpoint that caches prompts caches a *prefix* — it reuses the request up
-to the first byte that differs from last time and no further. So the cost of a
-turn is decided by layout: one section that changes each turn, placed near the
-top, re-prices everything underneath it, and underneath it is the story
-history, which is most of the prompt.
+Every endpoint that caches prompts caches a prefix. It reuses the request
+up to the first byte that differs from last time, and no further. The cost
+of a turn is therefore decided by layout: one section that changes each
+turn, placed near the top, re-prices everything underneath it, and
+underneath it is the story history, which makes up most of the prompt.
 
-Three things have to hold, and each is easy to undo by accident:
+Three things must hold, and each is easy to undo by accident:
 
-* the static block is byte-identical across turns — adding a section that moves
-  (live stats, retrieved memories, a rewritten summary) to `system_sections` is
-  the mistake this file exists to catch;
-* the sections that move sit *after* the history, but still *before* the tail
-  that is last for its own reasons (front memory, the length hint, and
-  EMIT_REMINDER, which is what keeps the state block emitted at all);
-* moving a section out of the system block does not drop it from the token
-  budget — it is still in the prompt.
+* The static block is byte-identical across turns. Adding a section that
+  moves (live stats, retrieved memories, a rewritten summary) to
+  `system_sections` is the mistake this file exists to catch.
+* The sections that move sit after the history, but still before the tail
+  that is last for its own reasons: front memory, the length hint, and
+  `EMIT_REMINDER`, which is what keeps the state block emitted at all.
+* Moving a section out of the system block does not drop it from the
+  token budget. It is still in the prompt.
 
-Plus the two request-level halves: preferring one OpenRouter upstream, since
-each upstream holds its own cache, and reading back the usage the endpoint
-reports so the hit rate is measurable rather than assumed.
+This file also covers two request-level concerns: preferring one
+OpenRouter upstream, since each upstream holds its own cache, and reading
+back the usage the endpoint reports, so the hit rate is measurable rather
+than assumed.
 
     python -m pytest tests/test_prompt_caching.py -v
 """
@@ -68,8 +69,8 @@ def test_fallbacks_stay_on():
 
 
 def test_non_openrouter_endpoints_get_no_provider_field():
-    """Ollama and friends reject fields they do not know — the same trap the
-    `reasoning` param is written around."""
+    """Ollama and other providers reject fields they do not know. This is
+    the same problem the `reasoning` param works around."""
     body = _routed("http://localhost:11434/v1", "deepseek/deepseek-v4-flash-0731")
     assert "provider" not in body
 
@@ -85,8 +86,9 @@ def test_unknown_vendors_are_left_alone():
 # ------------------------------------------------------ reading usage back
 
 def test_usage_is_recorded_from_a_final_chunk():
-    """In a stream the usage block rides on a last chunk carrying no choices,
-    which is why it is read separately from the text extraction."""
+    """In a stream, the usage block arrives in a final chunk that carries
+    no choices, which is why it is read separately from the text
+    extraction."""
     provider = OpenAICompatibleProvider("https://openrouter.ai/api/v1", "k", "m")
     assert provider.last_usage is None
     provider._record_usage({"choices": [{"delta": {"content": "hi"}}]})
@@ -109,8 +111,8 @@ def test_a_later_chunk_without_usage_does_not_erase_it():
 # ------------------------------------------------------------ prompt layout
 
 def _with_hp(world_state, hp):
-    """`world_state` is nested by group, and the JSON column only notices a
-    whole new object — so build one rather than mutating in place."""
+    """`world_state` is nested by group, and the JSON column only detects a
+    whole new object. Build a new one instead of mutating in place."""
     return {**world_state, "player": {**world_state["player"], "hp": hp}}
 
 
@@ -153,8 +155,9 @@ def story():
 
 
 def test_changing_a_stat_leaves_the_static_block_untouched(story):
-    """The whole point. Live values used to sit third from the top, so a single
-    point of damage re-priced the instructions, the plot and the history."""
+    """The whole point. Live values used to sit third from the top, so a
+    single point of damage re-priced the instructions, the plot, and the
+    history."""
     db, adventure, settings = story
     before, _, _ = builder.build_context(adventure, settings)
     adventure.world_state = _with_hp(adventure.world_state, 40)
@@ -169,8 +172,8 @@ def test_the_static_block_holds_the_things_that_do_not_move(story):
     system_text, story_text, _ = builder.build_context(adventure, settings)
     for fixed in ("Write in second person.", "The hero hunts bandits."):
         assert fixed in system_text
-    # The stat *guide* is derived from the schema and so is fixed; the live
-    # values it describes are not, and belong to the story text.
+    # The stat guide is derived from the schema, so it is fixed. The live
+    # values it describes are not fixed, and belong to the story text.
     assert "Stat guide" in system_text
     for moves in ("The hero left the village.", "hp 100/100"):
         assert moves not in system_text
@@ -186,8 +189,9 @@ def test_volatile_sections_sit_after_the_history(story):
 
 
 def test_the_tail_stays_the_tail(story):
-    """front memory, the length hint and EMIT_REMINDER are last for reasons of
-    their own, and the live sections must not have displaced them."""
+    """Front memory, the length hint, and `EMIT_REMINDER` are last for
+    reasons of their own, and the live sections must not have displaced
+    them."""
     db, adventure, settings = story
     _, story_text, report = builder.build_context(adventure, settings)
     labels = [s["label"] for s in report["sections"]]
@@ -199,8 +203,8 @@ def test_the_tail_stays_the_tail(story):
 
 def test_live_sections_are_still_charged_to_the_budget(story):
     """They moved out of `system_sections`, so it would be easy to stop
-    counting them in `reserved` — and then the history, which is budgeted with
-    what is left over, would quietly overrun."""
+    counting them in `reserved`. If that happened, the history, which is
+    budgeted with what is left over, would quietly overrun."""
     db, adventure, settings = story
     for i in range(6, 90):
         db.add(models.Action(

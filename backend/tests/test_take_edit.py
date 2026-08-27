@@ -1,20 +1,22 @@
-"""Phase 14 SP9 — editing the take you are actually reading.
+"""Phase 14 SP9: editing the take you are actually reading.
 
-The pager can park a turn on take 2 of 4. The transcript row it sits in is
-still keyed by the *live* take, because that is the row the story tells and the
-one the window carries; the take being read is only in the client's hand, by
-its own node id.
+The pager can display a turn on take 2 of 4. The transcript row for that
+turn stays keyed by the live take, because that is the row the transcript
+reports and the one the window carries. The take currently displayed is
+known only to the client, by its own node id.
 
-So "edit this" has two ids to choose from, and the page shipped choosing the
-wrong one: it opened the editor on the live take's text and saved over it, from
-a row that was showing take 2. That is a client bug and it is fixed in
-Play.jsx, but the fix rests on something only the server can promise —
+So "edit this" has two ids to choose from, and the page shipped with the
+wrong one. It opened the editor on the live take's text and saved over it,
+even from a row that was displaying take 2. This is a client bug, and it
+is fixed in Play.jsx. The fix depends on a guarantee only the server can
+make:
 
-  a take is an ordinary row to the edit endpoint, addressed by its own id,
-  whether or not it is the one the path runs through
+  A take is an ordinary row to the edit endpoint, addressed by its own id,
+  whether or not it is the one the path runs through.
 
-— and on the group listing telling the truth about it afterwards. Both are
-asserted here so the client's fix cannot be quietly undermined.
+The fix also depends on the group listing reporting this correctly
+afterward. This file asserts both guarantees, so the client's fix cannot
+be silently broken.
 
     python -m pytest tests/test_take_edit.py -v
 """
@@ -119,7 +121,7 @@ def _edit(client, action_id, text):
 
 
 def _live_ai(client):
-    """The AI row the story currently tells, as the transcript reports it."""
+    """The AI row the transcript currently reports as live."""
     adv = client.get(f"/api/adventures/{client.adv_id}").json()
     return [a for a in adv["actions"] if a["type"] == "ai"][-1]
 
@@ -145,8 +147,9 @@ def test_the_pager_reads_four_distinct_takes(client):
 def test_editing_a_take_that_is_not_live_edits_that_take(client):
     """The bug, at the level the client's fix depends on.
 
-    Saving against take 2's own id must land on take 2 — not be refused for
-    being off the path, and not be redirected onto the live row.
+    Saving against take 2's own id must land on take 2. The request must
+    not be refused for being off the path, and must not be redirected onto
+    the live row.
     """
     row, takes = _four_takes(client)
     second = takes[1]
@@ -171,12 +174,13 @@ def test_editing_a_take_leaves_the_live_one_alone(client):
 
 
 def test_a_take_edit_survives_paging_away_and_back(client):
-    """The listing is the pager's only source, so the edit has to be in it.
+    """The listing is the pager's only source, so the edit must appear in it.
 
-    (The client caches this list per message; the fix drops that cache after an
-    edit. If the server ever started answering from a copy of its own, stepping
-    away and back would show the words before the edit and nobody would see it
-    here — hence the round trip.)
+    The client caches this list per message, and the fix drops that cache
+    after an edit. If the server ever started answering from a stale copy
+    of its own, stepping away and back would show the text before the
+    edit, and this test would not catch it. That is why this test makes
+    the round trip.
     """
     row, takes = _four_takes(client)
     _edit(client, takes[1]["id"], "Take 2, rewritten.")

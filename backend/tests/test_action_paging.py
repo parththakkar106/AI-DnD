@@ -1,12 +1,13 @@
 """Opening an adventure fetches a window, not the whole story.
 
-A story only ever gets longer. Production's longest is 607 actions and 589.5 kB
-in one response, and nothing about that curve bends on its own — so the page
-load returns the newest ACTION_PAGE and the reader pages upward.
+A story only ever gets longer. Production's longest is 607 actions and
+589.5 kB in one response, and that number never decreases on its own. The
+page load returns the newest `ACTION_PAGE` window, and the reader pages
+upward from there.
 
-The paging anchors on an action id rather than an offset, and these tests are
-mostly about why. An offset counted back from the newest shifts every older
-position the moment a turn lands, which is precisely when a reader is likely
+The paging anchors on an action id rather than an offset, and these tests
+cover why. An offset counted back from the newest shifts every older
+position the moment a turn lands, which is exactly when a reader is likely
 to be scrolling. An anchor means the same thing before and after.
 
     python -m pytest tests/test_action_paging.py -v
@@ -104,7 +105,7 @@ def test_the_page_load_returns_only_the_newest_window(client):
     body = r.json()
     assert len(body["actions"]) == ACTION_PAGE
     assert body["action_count"] == TOTAL
-    # ...and it is the *newest* window, ending on the last action.
+    # It is the newest window, ending on the last action.
     assert body["actions"][-1]["index"] == TOTAL - 1
     assert body["actions"][0]["index"] == TOTAL - ACTION_PAGE
 
@@ -123,8 +124,8 @@ def test_a_short_story_is_returned_whole(client):
 
 
 def test_the_page_load_does_not_grow_with_the_story(client):
-    """The point of the change. Whatever the story's length, opening it costs
-    a window."""
+    """Confirm that opening a story costs a window, regardless of the
+    story's length."""
     meter = dbmeter.Meter()
     meter.attach(engine)
     try:
@@ -134,8 +135,9 @@ def test_the_page_load_does_not_grow_with_the_story(client):
     finally:
         meter.detach()
 
-    # Each action carries ~1 kB of text and there are 187 of them; a window is
-    # 60. Generous ceiling, but far below the whole story.
+    # Each action carries about 1 KB of text, and there are 187 of them. A
+    # window holds 60 actions. This ceiling is generous but still far below
+    # the size of the whole story.
     assert windowed < ACTION_PAGE * 2_000, f"{windowed:,} B for one window"
     assert windowed < TOTAL * 500, (
         f"{windowed:,} B — that is the whole story, not a window"
@@ -182,9 +184,10 @@ def test_each_page_is_ordered_oldest_first(client):
 # ------------------------------------------------- the reason for the anchor
 
 def test_a_turn_arriving_mid_scroll_does_not_shift_the_next_page(client):
-    """The failure an offset would have. Read the newest page, let a turn land,
-    then page up: the reader must get exactly what precedes what they hold —
-    no duplicate, no skipped action."""
+    """Reproduce the failure an offset-based scheme would have. Read the
+    newest page, let a turn land, then page up. The reader must get exactly
+    what precedes the actions they already hold, with no duplicate and no
+    skipped action."""
     first = page(client)
     oldest_held = first["actions"][0]
 
@@ -194,13 +197,13 @@ def test_a_turn_arriving_mid_scroll_does_not_shift_the_next_page(client):
     assert older["actions"][-1]["index"] == oldest_held["index"] - 1, \
         "the page shifted when a turn landed"
     assert all(a["index"] < oldest_held["index"] for a in older["actions"])
-    # The new turn moved the total, which is fine — it must not move the window.
+    # The new turn changes the total, which is expected. It must not move the window.
     assert older["total"] == TOTAL + 1
 
 
 def test_a_deleted_anchor_reports_the_end_rather_than_a_duplicate_page(client):
-    """Undo can remove the action a slow scroll was anchored to. Better to stop
-    than to hand back a page the reader already has."""
+    """Undo can remove the action a slow scroll was anchored to. The endpoint
+    must stop instead of returning a page the reader already has."""
     body = page(client)
     anchor = body["actions"][0]
 
@@ -220,7 +223,7 @@ def test_a_deleted_anchor_reports_the_end_rather_than_a_duplicate_page(client):
 
 def test_limit_is_honoured_and_capped(client):
     assert len(page(client, limit=5)["actions"]) == 5
-    # A client asking for the whole story does not get to undo the paging.
+    # A client that asks for the whole story cannot bypass the paging cap.
     assert len(page(client, limit=100_000)["actions"]) <= ACTION_PAGE * 4
 
 

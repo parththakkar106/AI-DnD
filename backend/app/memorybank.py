@@ -1,20 +1,28 @@
-"""Phase 6 — auto summarization + embedding memory bank
-(per help.aidungeon.com/faq/the-memory-system).
+"""Phase 6: automatic summarization and the embedding memory bank.
 
-After each turn, a fire-and-forget task (`run_post_turn`) runs with its own DB
-session:
-  - every MEMORY_INTERVAL actions (starting at MEMORY_START), each uncovered
-    block of actions is summarized into a short "memory";
-  - every SUMMARY_INTERVAL actions, the Story Summary is rewritten folding in
-    the new memories (the user-edited text is always the base, never clobbered);
-  - new memories are embedded (OpenAI-compatible /v1/embeddings) and the bank
-    is evicted down to capacity ("forgotten" memories are kept for the UI).
+This follows AI Dungeon's memory system. See
+help.aidungeon.com/faq/the-memory-system.
 
-At generation time, `retrieve_memories` embeds the recent story text and ranks
-the bank by cosine similarity; the top-K become the "Memories" context section.
+After each turn, `run_post_turn` runs as a fire-and-forget task with its own
+database session. It does three things:
 
-All AI calls here are best-effort: failures are logged (debug page) and retried
-on a later turn because the cursors only advance on success.
+- Every `MEMORY_INTERVAL` actions, starting once the adventure reaches
+  `MEMORY_START` actions, it summarizes each uncovered block of actions into a
+  short memory.
+- Every `SUMMARY_INTERVAL` actions, it rewrites the story summary to include the
+  new memories. The rewrite always starts from the text the user edited and
+  never discards it.
+- It embeds new memories through an OpenAI-compatible `/v1/embeddings` endpoint,
+  then evicts the bank down to its capacity. Evicted memories are marked as
+  forgotten and kept so that the UI can still show them.
+
+When the app generates a turn, `retrieve_memories` embeds the recent story text
+and ranks the bank by cosine similarity. The highest-ranked memories become the
+Memories section of the context.
+
+Every AI call in this module is best-effort. A failure is logged to the debug
+page and retried on a later turn, because the cursors advance only after a call
+succeeds.
 """
 
 import asyncio
@@ -53,17 +61,19 @@ SUMMARY_SYSTEM_PROMPT = (
 
 # Adventures with a post-turn task currently running (single-process app).
 _running: set[int] = set()
-# Strong refs to in-flight tasks — the event loop only keeps weak references,
-# so a fire-and-forget task can otherwise be garbage-collected mid-run.
+# Strong references to tasks that are still running. The event loop holds only
+# weak references, so without this set a fire-and-forget task can be garbage
+# collected before it finishes.
 _tasks: set[asyncio.Task] = set()
 
 
-# BYOK-only by construction: both factories below take the user's own
-# endpoint/key straight from Settings and never auth.DEMO_*, so summarization
-# and embedding can't spend the shared demo key (their call sites are also
-# skipped when using_demo). Don't "fix" this by passing a ProviderConfig in —
-# summary_model/embedding_model are free-form user input and are not on the
-# demo whitelist.
+# Both factories below use the user's own key by construction. They read the
+# endpoint and key from `Settings` and never from `auth.DEMO_*`, so
+# summarization and embedding cannot spend the shared demo key. Their call sites
+# are also skipped when `using_demo` is true.
+#
+# Do not change these to accept a `ProviderConfig`. `summary_model` and
+# `embedding_model` are free-form user input and are not on the demo allowlist.
 def summary_provider(settings: models.Settings) -> OpenAICompatibleProvider:
     return OpenAICompatibleProvider(
         settings.endpoint_url,
@@ -83,15 +93,15 @@ def embedding_provider(settings: models.Settings) -> OpenAICompatibleProvider:
 def set_vector(memory: models.Memory, vector: list[float] | None) -> None:
     """Store (or clear) a memory's embedding.
 
-    Every column that describes the vector moves together: `embedding_blob` is
-    what the ranking reads and `embedded` is the flag everything else reads.
-    Going through one function is what keeps them in step — and it is also the
-    only place a stored vector can change, which is what makes the cache below
-    safe to invalidate here and nowhere else.
+    This function updates both columns that describe the vector. The ranking
+    reads `embedding_blob`, and everything else reads the `embedded` flag.
+    Routing every write through one function keeps the two in step, and it makes
+    this the only place a stored vector changes. That is why the cache below can
+    be invalidated here and nowhere else.
 
-    The one caller that legitimately cannot come through here is the bulk
-    clear in `routers/settings.py` when the embedding model changes. It has to
-    set the same two columns by hand; see the note there.
+    One caller cannot use this function: the bulk clear in
+    `routers/settings.py` that runs when the embedding model changes. It sets
+    the same two columns directly. See the comment there.
     """
     memory.embedding_blob = None if vector is None else vectors.pack(vector)
     memory.embedded = vector is not None
@@ -102,31 +112,36 @@ def set_vector(memory: models.Memory, vector: list[float] | None) -> None:
 
 # ---------- The vector cache ----------
 
-# adventure id -> {memory id: vector}, most-recently-used last.
+# Maps an adventure id to a dict of memory id to vector, with the
+# most recently used adventure last.
 #
-# Turns for one adventure arrive back to back, and the bank barely changes
-# between them, so re-reading every vector each turn is the same 600 KB over
-# and over. Vectors are held as array("f") — 4 bytes a component, the same
-# 6 KB the column holds. A list of Python floats would be eight times that.
+# Turns for one adventure arrive one after another, and the bank changes little
+# between them. Reading every vector on each turn fetches the same 600 KB
+# repeatedly. This cache stores vectors as `array("f")`, which uses 4 bytes per
+# component and matches the 6 KB the column holds. A list of Python floats would
+# use eight times as much.
 #
-# Correctness rests on two things. Anything that *changes* a vector goes
-# through set_vector, which drops that one entry. Anything that *removes* a
-# memory from play — eviction, deletion, pruning, an edit clearing the vector —
-# takes it out of the catalogue query below, and entries missing from the
-# catalogue are dropped on the next read. So nothing has to remember to call an
-# invalidate, which is the failure this design is chosen to avoid.
+# Two rules keep the cache correct. Any code that changes a vector calls
+# `set_vector`, which removes that entry. Any code that removes a memory from
+# play removes it from the catalogue query below, and the next read discards
+# entries that the catalogue no longer lists. Eviction, deletion, pruning, and
+# an edit that clears the vector all work this way. No code path has to remember
+# to invalidate the cache, which is the error this design avoids.
 #
-# In-process, so it assumes one worker. That is what the deploy runs; a second
-# worker would each keep their own copy and both would still be correct on
-# eviction and deletion, but a vector rewritten by one could go stale in the
-# other until that memory next leaves the catalogue.
+# The cache lives in the process, so it assumes one worker, which is what the
+# deploy runs. With two workers, each keeps its own copy. Both stay correct
+# about eviction and deletion, but a vector rewritten by one worker can remain
+# stale in the other until that memory leaves the catalogue.
 _vector_cache: OrderedDict[int, dict[int, array]] = OrderedDict()
 VECTOR_CACHE_ADVENTURES = 8  # ~600 KB each at a 100-memory bank
 
 
 def forget_cached_vectors(adventure_id: int) -> None:
-    """Drop an adventure's cached vectors. Only needed when the adventure
-    itself goes away — everything else self-corrects (see above)."""
+    """Drops an adventure's cached vectors.
+
+    Call this only when the adventure itself is deleted. Every other case
+    corrects itself, as described in the comment above.
+    """
     _vector_cache.pop(adventure_id, None)
 
 
@@ -157,27 +172,27 @@ def _vectors_for(db: Session, adventure_id: int, ids: list[int]) -> dict[int, ar
 def forget_node(db: Session, adventure: models.Adventure, action: models.Action) -> int:
     """Withdraw what a node produced, because the node is being removed.
 
-    Call it before deleting `action` (undo, delete-an-action). A memory hangs
-    off the node whose block it ends on, so "which memories described this?" is
-    a lookup on `(branch_id, depth)` rather than a scan for rows whose covered
-    range has fallen off the end of the story — which is what
-    `prune_dangling_memories` did, and it could only ever notice the damage
-    after the fact.
+    Call this before deleting `action`, which undo and the delete-action
+    endpoint both do. A memory attaches to the node its block ends on, so
+    finding the memories that describe a node is a lookup on `(branch_id,
+    depth)`. The earlier `prune_dangling_memories` instead scanned for rows
+    whose covered range no longer existed, so it could only detect the problem
+    after it occurred.
 
-    Discarding the memory is half of it. The stretch of story it covered is
-    still behind the cursors, so without a rewind those actions read as
-    summarized with nothing describing them, silently, for the rest of the
-    adventure. `source_start` is where that stretch began; the anchor goes to
-    the node before it, which is a depth whether or not anything still sits
-    there.
+    Deleting the memory is half the work. The stretch of story it covered still
+    sits behind the cursors. Without a rewind, those actions count as
+    summarized while nothing describes them, and nothing reports the problem for
+    the rest of the adventure. `source_start` records where that stretch began,
+    so the anchor moves to the node before it. That depth is valid whether or
+    not a node still occupies it.
 
-    The opening node is the one exception, because migration 62 parked the
-    whole pre-coordinate bank on it — see the comment on `lineage.ROOT_DEPTH`.
+    The opening node is the one exception, because migration 62 placed the whole
+    pre-coordinate bank on it. See the comment on `lineage.ROOT_DEPTH`.
 
-    Returns how many memories were withdrawn.
+    Returns the number of memories withdrawn.
     """
     if action.branch_id is None or action.depth is None:
-        return 0  # a pre-tree row: no path contains it, so nothing hangs off it
+        return 0  # A pre-tree row. No path contains it, so nothing refers to it.
     doomed = (
         db.query(models.Memory)
         .filter(
@@ -188,15 +203,16 @@ def forget_node(db: Session, adventure: models.Adventure, action: models.Action)
         .all()
     )
     if action.depth == lineage.ROOT_DEPTH:
-        # The opening node is special, and only for memories that describe no
-        # stretch of story. Migration 62 parked every memory written before
-        # memories had coordinates at depth 0 — that was the choice that took
-        # nothing away from anybody, but it also collected them all onto one
-        # node, so withdrawing that node would retire a player's whole bank in
-        # a single click. A memory with no `source_start` was typed (or
-        # migrated), describes nothing that can fall off the end, and so has
-        # nothing to be withdrawn *from*: it stays. A summary that genuinely
-        # ends here is still withdrawn, because the text it describes is going.
+        # Special case for the opening node, and only for memories that
+        # describe no stretch of story. Migration 62 placed every memory written
+        # before memories had coordinates at depth 0. That choice preserved
+        # every memory, but it also placed them all on one node, so withdrawing
+        # that node would delete a player's entire bank in one action.
+        #
+        # A memory with no `source_start` was either typed by the player or
+        # migrated. It describes no actions, so no deletion can invalidate it,
+        # and it stays. A memory that genuinely summarizes a block ending here is
+        # still withdrawn, because the text it describes is being deleted.
         doomed = [m for m in doomed if m.source_start is not None]
     if not doomed:
         return 0
@@ -217,11 +233,19 @@ async def retrieve_memories(
     update_stats: bool,
     exclude_action_id: int | None = None,
 ) -> dict | None:
-    """Returns {"used": [{id, text, similarity, pinned}], "error": str|None},
-    or None when the memory bank is off for this adventure. `update_stats`
-    bumps use counters (real turns only, not Insights dry runs).
-    `exclude_action_id` drops the action being retried from the similarity
-    query, so the discarded attempt can't steer which memories come back."""
+    """Returns the memories to inject, or None when the bank is off.
+
+    The result is a dict of the form
+    `{"used": [{id, text, similarity, pinned}], "error": str | None}`. It is
+    None when the memory bank is disabled for this adventure.
+
+    Set `update_stats` to True to increment the use counters. Only real turns
+    should do this, not the dry runs that Insights performs.
+
+    `exclude_action_id` removes the action being retried from the similarity
+    query, so that a discarded attempt cannot influence which memories are
+    returned.
+    """
     if not adventure.memory_bank_enabled:
         return None
     if not settings.embedding_model.strip():
@@ -230,16 +254,17 @@ async def retrieve_memories(
     if db is None:
         return {"used": [], "error": None}
 
-    # Which memories are in play, and nothing else about them. This used to
-    # walk adventure.memories, which loaded every row of the bank *including
-    # its vector* — ~31 KB a memory, three megabytes a turn, 96% of everything
-    # a turn read. Two ids and a flag per row is about eight bytes.
+    # Select which memories are in play, and nothing else about them. This code
+    # used to walk `adventure.memories`, which loaded every row of the bank,
+    # including its vector. That cost about 31 KB per memory and about 3 MB per
+    # turn, which was 96% of everything a turn read. An id and a flag come to
+    # about eight bytes per row.
     #
-    # The branch clause is the *whole* lineage here, not the window the story
-    # is read through: retrieval is long-range recall, and a memory of what
-    # happened forty turns ago is exactly what it exists to find. It stays
-    # affordable because memories are sparse — one per six actions — so the
-    # ancestry of even a heavily forked story returns tens of tiny rows.
+    # The branch clause uses the whole lineage here rather than the window the
+    # story is read through. Retrieval exists to recall events from far back in
+    # the story, such as what happened forty turns ago. The full lineage stays
+    # affordable because memories are sparse, at roughly one per six actions, so
+    # even a heavily forked story returns only tens of small rows.
     catalogue = db.execute(
         select(models.Memory.id, models.Memory.pinned).where(
             models.Memory.adventure_id == adventure.id,
@@ -273,8 +298,9 @@ async def retrieve_memories(
         key=lambda row: row[0],
         reverse=True,
     )
-    # Pinned memories are always used and count toward top_k, so the injected
-    # set never exceeds the configured budget (unless pinned alone exceed it).
+    # Pinned memories are always used, and they count toward `top_k`, so the
+    # injected set stays within the budget unless the pinned memories alone
+    # exceed it.
     top_k = max(1, settings.memory_top_k)
     used = [row for row in scored if row[2]]
     remaining = max(0, top_k - len(used))
@@ -283,7 +309,7 @@ async def retrieve_memories(
     if not used:
         return {"used": [], "error": None}
 
-    # Only now, for at most top_k rows, is the text worth fetching.
+    # Fetch the text only now, and only for the `top_k` rows that were chosen.
     used_ids = [memory_id for _, memory_id, _ in used]
     texts = dict(
         db.execute(
@@ -293,9 +319,10 @@ async def retrieve_memories(
     )
 
     if update_stats:
-        # synchronize_session=False: nothing in this request reads the counters
-        # back, and matching the UPDATE against loaded objects would mean having
-        # loaded them, which is the cost this whole path exists to avoid.
+        # Pass `synchronize_session=False` because nothing in this request
+        # reads the counters back. Matching the UPDATE against loaded objects
+        # would require loading those objects, which is the cost this code path
+        # exists to avoid.
         db.execute(
             update(models.Memory)
             .where(models.Memory.id.in_(used_ids))
@@ -343,14 +370,16 @@ async def run_post_turn(adventure_id: int) -> None:
         )
         if settings is None:
             return
-        # No cursor clamp here any more. Undo can leave the story shorter than
-        # the mark, and a *position* past the end of the list was a stalled
-        # pass until the story grew back past it — hence a clamp on every
-        # post-turn run, which had its own trap (clamping to the settled count
-        # rewound a caught-up adventure a step and re-covered an action). An
-        # anchor past the tip is not a broken value: `settled_after` just
-        # reports nothing to do, and the story growing back past it resumes
-        # exactly where it left off.
+        # This code no longer clamps the cursors. Undo can leave the story
+        # shorter than the mark. When the mark was a position, a value past the
+        # end of the list stalled the pass until the story grew back, so every
+        # post-turn run clamped it. That clamp introduced its own error, because
+        # clamping to the settled count rewound a caught-up adventure by one
+        # step and covered an action twice.
+        #
+        # An anchor past the tip is not an invalid value. `settled_after`
+        # reports that there is nothing to do, and once the story grows past the
+        # anchor the pass resumes where it stopped.
         if adventure.auto_summarize:
             await _create_due_memories(adventure, settings, db)
             await _update_story_summary(adventure, settings, db)
@@ -367,16 +396,17 @@ async def _create_due_memories(
 ) -> None:
     provider = summary_provider(settings)
     for _ in range(MAX_MEMORIES_PER_RUN):
-        # Re-read each pass: a memory just committed doesn't change the story,
-        # but this loop is the only thing that moves the anchor, so both
-        # numbers have to be current.
+        # Re-read the anchor on every pass. Committing a memory does not change
+        # the story, but this loop is the only code that moves the anchor, so
+        # both numbers must be current.
         anchor = cursors.MEMORY.depth(db, adventure)
         if history.count_after(adventure, anchor) < MEMORY_INTERVAL:
-            return  # no full block of story past the mark
+            return  # No full block of story sits past the mark.
         if history.count(adventure) < MEMORY_START:
-            return  # ...and the adventure is too short to have started at all
-        # (that order on purpose: the common answer is "nothing due", and the
-        # first question answers it without asking how long the story is)
+            return  # The adventure is too short to have started summarizing.
+        # The order of those two checks is deliberate. The usual answer is that
+        # no memory is due, and the first check settles that without measuring
+        # the length of the whole story.
         block = history.after(adventure, anchor, MEMORY_INTERVAL)
         if len(block) < MEMORY_INTERVAL:
             return
@@ -386,7 +416,8 @@ async def _create_due_memories(
                 MEMORY_SYSTEM_PROMPT, f"Story excerpt:\n\n{excerpt}\n\nMemory:"
             )
         except ProviderError:
-            return  # logged in the debug page; cursor unchanged → retried next turn
+            return  # Logged on the debug page. The cursor is unchanged, so the
+                    # next turn retries this block.
         if not text:
             return
         memory = models.Memory(
@@ -395,11 +426,11 @@ async def _create_due_memories(
             source_start=block[0].depth,
             source_end=block[-1].depth,
         )
-        # Hang it off the node it summarised, so a fork inherits the memories of
-        # the path it forked from and nothing else — and move the mark to that
-        # same node. The two are one statement about where this pass has got to,
-        # and writing them from the same row is what keeps them in step however
-        # gappy the depths underneath are.
+        # Attach the memory to the node it summarizes, so that a fork inherits
+        # the memories of the path it forked from and no others. Then move the
+        # mark to that same node. Both values record how far this pass has
+        # reached, and taking them from one row keeps them in step even when the
+        # depths have gaps.
         tree.attach_memory(memory, block[-1])
         db.add(memory)
         cursors.MEMORY.anchor_at(adventure, block[-1])
@@ -413,18 +444,19 @@ async def _update_story_summary(
     uncovered = history.count_after(adventure, anchor)
     if uncovered < SUMMARY_INTERVAL:
         return
-    # Where the summary will stand once this run succeeds. Read before the AI
-    # call, not after: the mark is the end of the story as this pass saw it,
-    # and a turn landing meanwhile must not be quietly claimed as read.
+    # Where the summary stands once this run succeeds. Read this before the AI
+    # call rather than after it. The mark records the end of the story as this
+    # pass saw it, and a turn that arrives during the call must not be counted
+    # as read.
     caught_up = history.newest(adventure)
     if caught_up is None:
         return
 
-    # Fold in the memories of the stretch the summary has not read — every
-    # memory hanging off a node past the anchor. Both marks and every memory
-    # are now depths on one path, so there is no translation between coordinate
-    # systems left to get wrong. Falls back to raw story text if memory
-    # creation is lagging (e.g. it just failed).
+    # Include the memories for the stretch that the summary has not read, which
+    # means every memory attached to a node past the anchor. The marks and the
+    # memories are now depths on one path, so no coordinate conversion remains.
+    # If memory creation has fallen behind, for example because the last attempt
+    # failed, this falls back to the raw story text.
     new_events = db.execute(
         select(models.Memory.text)
         .where(
@@ -462,15 +494,17 @@ async def _update_story_summary(
 async def _embed_pending(
     adventure: models.Adventure, settings: models.Settings, db: Session
 ) -> None:
-    # A query, not a walk of adventure.memories: this ran every turn and pulled
-    # the whole bank's vectors to find the handful that had none.
+    # Use a query rather than walking `adventure.memories`. That walk ran on
+    # every turn and loaded the whole bank's vectors in order to find the few
+    # rows with none.
     #
-    # No branch clause, deliberately, here and in the eviction below. Being
-    # embedded is a fact about the row, not about the path being played:
-    # skipping a sibling's memories would only mean embedding them later, at
-    # the moment somebody switched branches and wanted them ranked. Capacity is
-    # the same — the bank belongs to the adventure, and evicting the memories
-    # of a story nobody is reading is exactly the right thing to evict first.
+    # Neither this query nor the eviction below applies a branch clause, and
+    # that is deliberate. Whether a row is embedded is a fact about the row, not
+    # about the path being played. Skipping a sibling branch's memories would
+    # only postpone the work until someone switched branches and needed them
+    # ranked. Capacity works the same way. The bank belongs to the adventure,
+    # and the memories of a branch nobody is reading are the right ones to evict
+    # first.
     pending = (
         db.query(models.Memory)
         .filter(
@@ -496,9 +530,10 @@ async def _embed_pending(
 def _evict_over_capacity(
     adventure: models.Adventure, settings: models.Settings, db: Session
 ) -> None:
-    # Counting and ranking are both things the database does without sending
-    # anything back. Walking adventure.memories to count them fetched every
-    # vector in the bank, every turn, whether or not anything was over capacity.
+    # The database performs both the count and the ranking, and returns neither
+    # the rows nor the vectors. Counting by walking `adventure.memories` fetched
+    # every vector in the bank on every turn, whether or not the bank was over
+    # capacity.
     in_this_bank = (models.Memory.adventure_id == adventure.id,
                     models.Memory.forgotten.is_(False))
     active = db.execute(
@@ -507,23 +542,23 @@ def _evict_over_capacity(
     overflow = active - max(1, settings.memory_bank_capacity)
     if overflow <= 0:
         return
-    # Least recently touched goes first, and how often it was used only breaks
-    # a tie. The other way round — use_count first — shut the bank. A memory
-    # written this turn has never been used, so once every survivor had been
-    # retrieved even once the newborn was the lowest row in the bank and was
-    # evicted by the same post-turn run that wrote it, in the pass right after
-    # the one that embedded it. Counts only ever go up, so that state never
-    # ends: the bank an adventure happened to hold when it first filled is the
-    # bank it keeps for good, and everything the story does afterwards is
-    # summarized, marked forgotten, and never ranked.
+    # Evict the least recently used memory first, and use the use count only to
+    # break ties.
     #
-    # Recency does not have that hole, because a new memory carries the newest
-    # timestamp there is — it is the safest row in the bank rather than the
-    # most doomed, and it gets the whole span until something outlives it to
-    # prove itself. Little is given up by demoting the count: a memory that is
-    # genuinely used stays recently-used by being retrieved, so the two only
-    # disagree about memories that mattered once and have not been wanted
-    # since, which is what a full bank should be dropping anyway.
+    # Ordering by use count first froze the bank. A memory written on this turn
+    # has never been used, so once every other memory had been retrieved at
+    # least once, the new memory held the lowest count in the bank. The same
+    # post-turn run that wrote it then evicted it, one pass after embedding it.
+    # Use counts only increase, so the bank never recovered. An adventure kept
+    # whatever memories it held when the bank first filled, and every later
+    # memory was summarized, marked as forgotten, and never ranked.
+    #
+    # Ordering by recency avoids that. A new memory carries the newest
+    # timestamp, so it is the last row to be evicted rather than the first, and
+    # it remains until other memories are used. Demoting the use count costs
+    # little, because retrieving a useful memory also makes it recent. The two
+    # orderings differ only for memories that were used once and have not been
+    # retrieved since, which are the rows a full bank should evict.
     doomed = db.execute(
         select(models.Memory.id)
         .where(*in_this_bank, models.Memory.pinned.is_(False))
@@ -534,7 +569,7 @@ def _evict_over_capacity(
         .limit(overflow)
     ).scalars().all()
     if not doomed:
-        return  # every active memory is pinned; capacity yields to the pins
+        return  # Every active memory is pinned, so the pins override capacity.
     db.execute(
         update(models.Memory)
         .where(models.Memory.id.in_(doomed))
@@ -542,6 +577,6 @@ def _evict_over_capacity(
         .execution_options(synchronize_session=False)
     )
     db.commit()
-    # The bulk UPDATE went around any loaded objects, so anything still holding
-    # the collection would see the evicted memories as active.
+    # The bulk UPDATE bypassed the loaded objects, so code that still holds the
+    # collection would otherwise see the evicted memories as active.
     db.expire(adventure, ["memories"])

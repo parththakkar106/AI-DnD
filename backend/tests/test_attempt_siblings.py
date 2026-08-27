@@ -1,10 +1,10 @@
-"""Phase 14 SP4 — a retry writes a sibling node instead of rewriting a row.
+"""Phase 14 SP4: a retry writes a sibling node instead of rewriting a row.
 
-`test_retry_variants.py` is the behavioural contract, unchanged since before
-the tree, and it still passes: the same URLs, the same payload shape, the same
-outcomes. This file asserts the things that are *only* true of the new storage
-— that a turn can be several rows, that exactly one of them is the story, and
-that the arrangement costs neither an extra prompt nor an extra turn.
+`test_retry_variants.py` is the behavioral contract from before the tree
+existed, and it still passes unchanged: the same URLs, the same payload
+shape, the same outcomes. This file asserts the things that are true only of
+the new storage. A turn can be several rows, exactly one of them is the
+story, and the arrangement costs neither an extra prompt nor an extra turn.
 
     python -m pytest tests/test_attempt_siblings.py -v
 """
@@ -122,8 +122,9 @@ def _page(client) -> dict:
 def _rows(adv_id) -> list[models.Action]:
     """Every action row of the adventure, story or not, live or not.
 
-    Undeferred, because the session is closed before the caller looks: the
-    columns this file is about are exactly the ones a page load never loads.
+    The query undefers these columns because the session closes before the
+    caller reads the result. This file specifically tests the columns that a
+    page load never loads.
     """
     db = SessionLocal()
     try:
@@ -156,7 +157,7 @@ def test_a_retry_writes_a_second_row_at_the_same_coordinate(client):
     assert [a.text for a in ai] == ["Attempt one.", "Attempt two."]
     # Exactly one of them is the story, and it is the newer take.
     assert [a.live for a in ai] == [False, True]
-    # ...and the discarded attempt is untouched, not a copy of anything.
+    # The discarded attempt is untouched, not a copy of anything.
     assert ai[0].state_after is not None
 
 
@@ -173,9 +174,10 @@ def test_the_story_shows_and_counts_the_turn_once(client):
 
 
 def test_a_discarded_attempt_never_reaches_the_prompt(client):
-    """The trap the branch clause exists to close, at sibling scale: the losing
-    attempt sits at the same branch and depth as the live one, so anything
-    reading the story by coordinate alone would replay both."""
+    """This is the failure case the branch clause exists to prevent, at
+    sibling scale. The losing attempt sits at the same branch and depth as
+    the live one, so anything reading the story by coordinate alone would
+    replay both."""
     ScriptedProvider.replies = ["Attempt one.", "Attempt two.", "Next turn."]
     _play(client)
     _retry(client)
@@ -198,21 +200,22 @@ def test_switching_moves_the_story_onto_the_other_row(client):
     r = client.post(
         f"/api/adventures/{client.adv_id}/actions/{newest_id}/variant", json={"index": 0})
     assert r.status_code == 200, r.text
-    # A different row answers — that is the whole change.
+    # A different row answers the request. That is the only change.
     assert r.json()["id"] != newest_id
     assert r.json()["text"].startswith("A scratch")
 
     rows = _rows(client.adv_id)
     ai = [a for a in rows if a.type == "ai"]
     assert [a.live for a in ai] == [True, False]
-    # Both takes are still there, byte for byte.
+    # Both takes remain unchanged in the database.
     assert [a.text.split(".")[0] for a in ai] == ["A scratch", "A beating"]
 
 
 def test_the_assembled_prompt_is_stored_once_per_turn(client):
-    """A snapshot is ~160 kB of prompt every attempt at a turn shares. Giving
-    each sibling a copy would have made retry a permanent multiplier on the
-    biggest column in the database, so the prompt moves with the live flag."""
+    """A snapshot holds about 160 kB of prompt that every attempt at a turn
+    shares. Giving each sibling its own copy would make retry multiply the
+    size of the largest column in the database. Instead, the prompt moves
+    with the live flag."""
     ScriptedProvider.replies = ["Attempt one.", "Attempt two."]
     _play(client)
     _retry(client)
@@ -278,12 +281,12 @@ def test_deleting_a_turn_through_a_discarded_attempt_still_takes_the_turn(client
 def test_retrying_withdraws_the_memory_the_turn_produced(client):
     """Why summarization no longer holds the newest action back.
 
-    A memory covering the newest turn used to be unreachable-by-construction:
-    the summarizer stopped one action short, because a retry rewrote the row
-    under a mark that had already moved past it. Now the mark and the memory
-    both name the node, and replacing what a node says withdraws them — the
-    same repair undo and delete already made, so the holdback was the only
-    thing left that a retry needed.
+    A memory covering the newest turn used to be unreachable by
+    construction. The summarizer stopped one action short, because a retry
+    rewrote the row under a mark that had already moved past it. Now the
+    mark and the memory both name the node, so replacing what a node says
+    withdraws them. Undo and delete already had this repair; the holdback
+    was the only gap a retry still needed to close.
     """
     ScriptedProvider.replies = ["One.", "Two."]
     _play(client)
@@ -311,8 +314,8 @@ def test_retrying_withdraws_the_memory_the_turn_produced(client):
     try:
         adventure = db.get(models.Adventure, client.adv_id)
         assert db.query(models.Memory).count() == 0, "the withdrawn memory is gone"
-        # ...and the ground it covered is handed back, so the block is summarized
-        # again from where it began rather than silently skipped.
+        # The depth range it covered is released, so the block is
+        # summarized again from where it began instead of being skipped.
         assert cursors.MEMORY.depth(db, adventure) == 0
         assert cursors.SUMMARY.depth(db, adventure) == 0
         assert covered_depth > 0
@@ -382,12 +385,14 @@ def test_attempts_module_agrees_with_the_endpoint(client):
 
 
 def test_export_carries_every_attempt_as_its_own_node(client):
-    """SP6 changed the answer here, and the reason is the whole of that subphase.
+    """SP6 changed the answer here, for the same reasons as the rest of that
+    subphase.
 
     A v1 bundle had one entry per turn and folded the group back into a
-    `variants` array, because the format had nowhere else to put a second take.
-    A v2 bundle has coordinates, so an attempt is a node in the file exactly as
-    it is a node in the database, and `live` says which one is the story.
+    `variants` array, because the format had nowhere else to put a second
+    take. A v2 bundle has coordinates, so an attempt is a node in the file
+    exactly as it is a node in the database, and `live` says which one is
+    the story.
     """
     ScriptedProvider.replies = ["One.", "Two."]
     _play(client)
@@ -399,7 +404,7 @@ def test_export_carries_every_attempt_as_its_own_node(client):
     assert len({(a["branch"], a["depth"]) for a in ai}) == 1, "one turn, two takes"
     assert "variants" not in ai[0], "nothing writes the repeating group any more"
 
-    # ...and importing it puts the group back exactly as it stood.
+    # Importing the bundle puts the group back exactly as it stood.
     imported = client.post("/api/adventures/import", json=bundle).json()["id"]
     rows = _rows(imported)
     ai_rows = [a for a in rows if a.type == "ai"]
@@ -410,11 +415,12 @@ def test_export_carries_every_attempt_as_its_own_node(client):
 def test_a_retry_after_switching_back_files_the_new_attempt_last(client):
     """The group stays in the order the attempts were made.
 
-    `add_attempt` used to number a new take one past the take it replaced, which
-    is the end of the group only when the story is standing on the newest one.
-    Switch a three-take turn back to the first and retry, and the new attempt
-    collided with take 2 — `renumber` then broke the tie by id and filed it
-    *between* takes 2 and 3, so the pager walked them in an order nobody played.
+    `add_attempt` used to number a new take one past the take it replaced.
+    That numbering is correct only when the story is standing on the newest
+    take. Switch a three-take turn back to the first and retry, and the new
+    attempt collides with take 2. `renumber` broke the tie by id and placed
+    the new attempt between takes 2 and 3, so the pager listed them in an
+    order the player never produced.
     """
     ScriptedProvider.replies = ["One.", "Two.", "Three.", "Four."]
     _play(client)
@@ -439,9 +445,10 @@ def test_a_retry_after_switching_back_files_the_new_attempt_last(client):
 def test_the_adventure_list_quotes_the_take_the_story_tells(client):
     """The index screen and the story have to agree.
 
-    Siblings share a depth and the newest of them has the highest id, so a
-    snippet ordered by `(depth, id)` alone quotes whichever attempt was written
-    last — which, after switching back, is the one the player threw away.
+    Siblings share a depth, and the newest of them has the highest id. A
+    snippet ordered by `(depth, id)` alone quotes whichever attempt was
+    written last. After switching back, that attempt is the one the player
+    discarded.
     """
     ScriptedProvider.replies = ["One.", "Two."]
     _play(client)

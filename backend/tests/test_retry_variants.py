@@ -137,7 +137,7 @@ def test_retry_keeps_the_discarded_attempt(client):
 
     _retry(client)
     actions = _actions(client)
-    # One AI action still, not two — the retry replaced the live text in place.
+    # One AI action still, not two. The retry replaced the live text in place.
     assert [a["type"] for a in actions] == ["start", "do", "ai"]
     last = actions[-1]
     assert last["text"] == "Attempt two."
@@ -151,18 +151,18 @@ def test_retry_keeps_the_discarded_attempt(client):
 
 
 def test_retry_context_excludes_the_attempt_being_replaced(client):
-    """The whole point of a retry is a fresh take on the *same* turn. The row
-    now survives the retry (it holds the variant history), so it is still in
-    `adventure.actions` while the replacement context is assembled — it must be
-    filtered out, or the model is asked to continue *past* the attempt it is
-    supposed to be replacing and writes a sequel that blends both."""
+    """A retry produces a fresh take on the same turn. The row survives the
+    retry because it holds the variant history, so it is still in
+    `adventure.actions` while the replacement context is assembled. The
+    context builder must filter it out, or the model continues past the
+    attempt it is replacing and writes a sequel that blends both."""
     ScriptedProvider.replies = ["Attempt one.", "Attempt two."]
     _play(client)
     _retry(client)
 
     retry_story = ScriptedProvider.prompts[-1][1]
     assert "Attempt one." not in retry_story
-    # The turn's own player action must still be there — it's what to respond to.
+    # The turn's own player action must still be there. It is what the model responds to.
     assert "look around" in retry_story
     assert "You enter a cave." in retry_story
 
@@ -257,7 +257,7 @@ def test_cannot_switch_a_turn_the_story_moved_past(client):
         f"/api/adventures/{client.adv_id}/actions/{retried['id']}/variant", json={"index": 0})
     assert r.status_code == 400
     assert "latest message" in r.json()["detail"]
-    # Still readable, though — that's the whole point of keeping them.
+    # The variant is still readable. Keeping every attempt browsable is why it still exists.
     variants = client.get(
         f"/api/adventures/{client.adv_id}/actions/{retried['id']}/variants").json()
     assert [v["text"] for v in variants] == ["One.", "Two."]
@@ -333,7 +333,7 @@ def test_export_and_import_round_trips_variants(client):
     bundle = client.get(f"/api/adventures/{client.adv_id}/export").json()
     # SP6: the attempts are nodes in the bundle too, sharing one coordinate,
     # and `live` says which of them the story tells. The `variants` array
-    # survives only in the v1 *reader* — see the hand-edited bundle below.
+    # survives only in the v1 reader. See the hand-edited bundle below.
     ai = [a for a in bundle["actions"] if a["type"] == "ai"]
     assert [(a["text"], a["live"]) for a in ai] == [("One.", False), ("Two.", True)]
     assert len({(a["branch"], a["depth"]) for a in ai}) == 1

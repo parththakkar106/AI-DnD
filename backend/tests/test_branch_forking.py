@@ -1,14 +1,14 @@
-"""Phase 14 SP5 — continuing from a discarded attempt forks a branch.
+"""Phase 14 SP5: continuing from a discarded attempt forks a branch.
 
-SP4 made every attempt at a turn a node. While the attempts sit at the tip they
-are leaves and cost nothing: switching between them just moves the `live` flag.
-The moment the player takes the story down one the line has already moved past,
-the two futures have to coexist — and that is a branch.
+SP4 made every attempt at a turn a node. While the attempts sit at the
+tip, they are leaves and cost nothing: switching between them just moves
+the `live` flag. The moment the player continues from an attempt the line
+has already moved past, the two futures must coexist. That is a branch.
 
-What this file is really watching is the claim the whole design rests on: **a
-fork inserts one row and moves one row, whatever the story behind it is worth.**
-Everything before the fork is borrowed, not copied, and the arithmetic that
-makes borrowing readable is `lineage`.
+This file tests the claim the whole design rests on: a fork inserts one
+row and moves one row, no matter how large the story behind it is.
+Everything before the fork is borrowed, not copied, and the arithmetic
+that makes borrowing possible lives in `lineage`.
 
     python -m pytest tests/test_branch_forking.py -v
 """
@@ -32,8 +32,8 @@ from app.main import app
 from app.providers import PromptParts
 from app.routers import adventures
 
-# `hp` moves freely; `mana` has a cooldown of 2 turns, so a clock that advances
-# when it should not shows up as a change the referee should have rejected.
+# `hp` moves freely. `mana` has a cooldown of 2 turns, so an incorrect
+# advance shows up as a change the referee should have rejected.
 SCHEMA = {
     "player": {
         "hp": {"min": 0, "max": 100, "initial": 100},
@@ -164,12 +164,12 @@ def _rows(adv_id) -> list[models.Action]:
 
 
 def _divergent_story(client):
-    """A story that retried turn 2, continued from the newer take, and left the
-    older one behind as a leaf.
+    """A story that retried turn 2, continued from the newer take, and left
+    the older one behind as a leaf.
 
-        start · do · [attempt one | ATTEMPT TWO] · do · next turn
+        start > do > [attempt one | ATTEMPT TWO] > do > next turn
 
-    Returns the id of the attempt nobody built on.
+    Returns the id of the discarded attempt.
     """
     ScriptedProvider.replies = ["Attempt one.", "Attempt two.", "Next turn."]
     _play(client)
@@ -194,9 +194,10 @@ def test_a_fork_inserts_one_branch_row_and_copies_no_actions(client):
     forked = [b for b in branches if b["parent_branch_id"] is not None][0]
     assert forked["is_head"] is True
     assert forked["own_actions"] == 1, "the promoted attempt, and nothing else"
-    # The fork point is the depth just before the attempt, stored rather than
-    # inferred: inferring it from where two branches first differ would be a
-    # guess, and a wrong one as soon as an attempt repeats its parent's text.
+    # The fork point is the depth just before the attempt. The code stores
+    # this value instead of inferring it from where two branches first
+    # differ, because that inference would guess wrong as soon as an
+    # attempt repeats its parent's text.
     assert forked["fork_depth"] == forked["depth"] - 1
 
 
@@ -225,7 +226,7 @@ def test_both_branches_read_independently(client):
     assert _texts(client) == [
         "You enter a cave.", "> You look around.", "Attempt one.",
     ]
-    # And the line it left is exactly as it was, turns after the fork included.
+    # The branch it left behind is unchanged, including turns after the fork.
     r = client.post(f"/api/adventures/{client.adv_id}/branches/{parent}/switch")
     assert r.status_code == 200, r.text
     assert _texts(client) == [
@@ -235,8 +236,9 @@ def test_both_branches_read_independently(client):
 
 
 def test_the_parent_keeps_a_live_attempt_where_the_fork_left(client):
-    """Promoting the loser must not leave the parent with a hole in its story:
-    a coordinate with no live node is a turn that disappears from the read."""
+    """Promoting the other attempt must not leave the parent with a gap in
+    its story. A coordinate with no live node is a turn that disappears
+    from the read."""
     discarded = _divergent_story(client)
     _fork(client, discarded)
 
@@ -251,8 +253,8 @@ def test_the_parent_keeps_a_live_attempt_where_the_fork_left(client):
         for (branch_id, depth), group in per_coordinate.items():
             live = [a for a in group if a.live]
             assert len(live) == 1, f"branch {branch_id} depth {depth}"
-        # The parent's turn 2 is now a single take, so the pager stops offering
-        # a page through attempts that have gone their own way.
+        # The parent's turn 2 is now a single take, so the pager no longer
+        # offers a page through attempts that diverged onto another branch.
         parent_turn = per_coordinate[(parent_id, 2)]
         assert len(parent_turn) == 1
         assert parent_turn[0].variant_count == 0
@@ -261,9 +263,10 @@ def test_the_parent_keeps_a_live_attempt_where_the_fork_left(client):
 
 
 def test_playing_on_a_fork_continues_that_branchs_depths(client):
-    """A depth is a position along *this* story. Numbering the next node from
-    the adventure-wide index would leave a hole where the other branch's turns
-    are, which every windowing estimate then has to work around."""
+    """A depth is a position along this story. Numbering the next node from
+    the adventure-wide index would leave a gap where the other branch's
+    turns are, and every windowing estimate would then have to work around
+    that gap."""
     discarded = _divergent_story(client)
     _fork(client, discarded)
     ScriptedProvider.replies = ["Onward."]
@@ -283,8 +286,8 @@ def test_playing_on_a_fork_continues_that_branchs_depths(client):
 # ------------------------------------------------------------- not a fork
 
 def test_forking_at_the_tip_switches_without_making_a_branch(client):
-    """Attempts nobody has built on stay leaves — that is what keeps the
-    lineage a list of divergences rather than of every retry ever."""
+    """Attempts nobody has built on stay leaves. This is what keeps the
+    lineage a list of divergences instead of a list of every retry."""
     ScriptedProvider.replies = ["Attempt one.", "Attempt two."]
     _play(client)
     _retry(client)
@@ -297,8 +300,8 @@ def test_forking_at_the_tip_switches_without_making_a_branch(client):
 
 
 def test_forking_the_attempt_already_in_the_story_does_nothing(client):
-    """Idempotent, because a client that has lost track of which take is live
-    must not be able to fork a branch per click."""
+    """This call is idempotent. A client that has lost track of which take
+    is live must not create a new branch on every click."""
     discarded = _divergent_story(client)
     _fork(client, discarded)
     promoted = [a.id for a in _rows(client.adv_id) if a.type == "ai" and a.live
@@ -323,10 +326,11 @@ def test_forking_a_turn_that_is_already_the_story_is_a_no_op(client):
 
 
 def test_forking_a_live_node_on_another_branch_is_refused(client):
-    """A live node off the path is another line's story, not an attempt going
-    spare — so the refusal names the tool that would actually do it. It used to
-    answer "only one take", which was true of the group and no help at all: the
-    caller does not want another take, it wants the branch this one is on."""
+    """A live node off the path belongs to another branch's story, not to a
+    spare attempt on this one. The refusal names the tool that actually
+    switches branches. It used to answer "only one take", which was true
+    of the attempt group but useless here: the caller does not want
+    another take, it wants the branch this node is on."""
     discarded = _divergent_story(client)
     _fork(client, discarded)
     parent_id = [b for b in _branches(client) if b["parent_branch_id"] is None][0]["id"]
@@ -336,8 +340,8 @@ def test_forking_a_live_node_on_another_branch_is_refused(client):
     r = _fork(client, stranded)
     assert r.status_code == 400
     assert "another branch" in r.json()["detail"]
-    # And refusing left the tree alone — the bug this guards is a fork that
-    # promotes a sibling on the branch it was called against.
+    # Refusing must leave the tree alone. The bug this guards against is a
+    # fork that promotes a sibling on the branch it was called against.
     assert len(_branches(client)) == 2
 
 
@@ -366,10 +370,10 @@ def test_switching_restores_the_script_and_world_state(client):
 
 
 def test_the_cooldown_clock_travels_with_the_branch(client):
-    """The world-state clock is a depth, and depths repeat across branches — so
-    it can only be right if each branch carries its own. It does, for free: the
-    clock lives inside `_meta.last_changed`, which is part of the world state a
-    switch restores."""
+    """The world-state clock is a depth, and depths repeat across branches,
+    so it can only be correct if each branch carries its own. It does,
+    without extra work: the clock lives inside `_meta.last_changed`, which
+    is part of the world state a switch restores."""
     ScriptedProvider.replies = [
         "Drained.\n```state\n{\"player.mana\": -10}\n```",
         "Untouched.",
@@ -393,9 +397,9 @@ def test_the_cooldown_clock_travels_with_the_branch(client):
 
 
 def test_a_retry_does_not_advance_the_cooldown_clock(client):
-    """SP5's one carried-over open item. A retry re-runs the *same* turn, so
-    the clock the cooldown rules read must not move — it used to be the reused
-    `index` that guaranteed this, and it is the reused depth now."""
+    """SP5's one carried-over open item. A retry re-runs the same turn, so
+    the clock the cooldown rules read must not move. The reused `index`
+    used to guarantee this; the reused depth guarantees it now."""
     ScriptedProvider.replies = [
         "Drained.\n```state\n{\"player.mana\": -10}\n```",
         "Drained again.\n```state\n{\"player.mana\": -10}\n```",
@@ -404,18 +408,19 @@ def test_a_retry_does_not_advance_the_cooldown_clock(client):
     first = _state(client.adv_id)[1]["_meta"]["last_changed"]["player.mana"]
     _retry(client)
     assert _state(client.adv_id)[1]["_meta"]["last_changed"]["player.mana"] == first
-    # ...and the second attempt's drain landed, rather than being rejected for
-    # a cooldown it should never have been measured against.
+    # The second attempt's drain must land, instead of being rejected for a
+    # cooldown it was never actually subject to.
     assert _state(client.adv_id)[1]["player"]["mana"] == 40
 
 
 # --------------------------------------------------------- derived work
 
 def test_a_memory_on_the_line_left_behind_is_out_of_range_on_the_fork(client):
-    """Nothing is moved or withdrawn when a branch forks. The memory hangs off
-    the coordinate the *parent's* attempt still occupies, and the lineage caps
-    the parent one depth short of it — so the fork simply cannot see it, and
-    resummarizes that ground from the text it actually tells."""
+    """Nothing is moved or removed when a branch forks. The memory attaches
+    to the coordinate the parent's attempt still occupies, and the lineage
+    caps the parent one depth short of it. The fork therefore cannot see
+    this memory, and resummarizes that span from the text it actually
+    contains."""
     from app import tree
 
     discarded = _divergent_story(client)
@@ -441,8 +446,8 @@ def test_a_memory_on_the_line_left_behind_is_out_of_range_on_the_fork(client):
     db = SessionLocal()
     try:
         adventure = db.get(models.Adventure, client.adv_id)
-        # Still there, untouched — it describes the parent's story, which is
-        # unchanged.
+        # The memory is still there, untouched, because it describes the
+        # parent's story, which is unchanged.
         assert [m.text for m in db.query(models.Memory).all()] == ["Attempt two happened."]
         path = lineage.path_of(db, adventure)
         visible = db.query(models.Memory).filter(
@@ -450,8 +455,8 @@ def test_a_memory_on_the_line_left_behind_is_out_of_range_on_the_fork(client):
             path.clause(models.Memory),
         ).all()
         assert visible == [], "a sibling's memory reached this branch"
-        # ...and the mark reads as one depth short of it, so the block is due
-        # again on this branch rather than silently claimed as read.
+        # The cursor reads one depth short of the memory, so this branch
+        # treats the block as due again instead of silently marking it read.
         assert cursors.MEMORY.depth(db, adventure) == 1
     finally:
         db.close()
@@ -460,20 +465,22 @@ def test_a_memory_on_the_line_left_behind_is_out_of_range_on_the_fork(client):
 # ------------------------------------------------------------------- undo
 
 def test_undo_stops_at_the_fork(client):
-    """Taking back a turn on a fork must never reach across into the line it
-    was forked from — those turns are that branch's story too."""
+    """Undoing a turn on a fork must never reach into the branch it forked
+    from. Those turns belong to that branch's story too."""
     discarded = _divergent_story(client)
     _fork(client, discarded)
     rows_before = len(_rows(client.adv_id))
 
     r = client.post(f"/api/adventures/{client.adv_id}/undo")
     assert r.status_code == 200, r.text
-    # The promoted attempt goes, and the player action in front of it stays:
-    # it is on the parent, and the parent still tells it.
+    # The promoted attempt is removed, and the player action before it
+    # stays, because that action belongs to the parent and the parent
+    # still has it.
     assert len(_rows(client.adv_id)) == rows_before - 1
     assert _texts(client) == ["You enter a cave.", "> You look around."]
 
-    # Nothing left of this branch's own: refuse rather than eat the parent's.
+    # Nothing is left of this branch's own turns, so undo must refuse
+    # instead of removing the parent's turns.
     r = client.post(f"/api/adventures/{client.adv_id}/undo")
     assert r.status_code == 400
     assert "forked from" in r.json()["detail"]
@@ -497,10 +504,11 @@ def test_the_branch_list_is_the_tree(client):
 
 
 def test_fork_agrees_with_the_lineage_computed_by_hand(client):
-    """`test_branch_clause.make_branch` has computed a fork's lineage since SP2,
-    by hand, precisely so the fixture could not pass by agreeing with a bug in
-    the code under test. SP5 is when that code exists — so check the two
-    against each other rather than letting them drift apart."""
+    """`test_branch_clause.make_branch` has computed a fork's lineage by
+    hand since SP2, precisely so the fixture could not pass by repeating a
+    bug in the code under test. SP5 introduces that code, so this test
+    checks the two against each other instead of letting them drift
+    apart."""
     from tests.test_branch_clause import make_branch
 
     discarded = _divergent_story(client)
@@ -512,8 +520,8 @@ def test_fork_agrees_with_the_lineage_computed_by_hand(client):
         real = lineage.branch_of(db, adventure)
         parent = db.get(models.Branch, real.parent_branch_id)
         by_hand = make_branch(db, adventure, parent=parent, fork_depth=real.fork_depth)
-        # Same shape, its own id: compare the ancestry, which is the part that
-        # is arithmetic rather than allocation.
+        # The two branches share a shape but not an id, so compare only the
+        # ancestry, which is the arithmetic part rather than the allocated id.
         assert lineage.entries_of(real)[1:] == lineage.entries_of(by_hand)[1:]
         assert lineage.entries_of(real)[0] == (real.id, None)
     finally:
@@ -521,9 +529,9 @@ def test_fork_agrees_with_the_lineage_computed_by_hand(client):
 
 
 def test_a_deep_fork_chain_reads_for_what_one_branch_costs(client):
-    """Clause count is bounded by the window, not by fork count — the property
-    the whole lineage cache exists for, now measured through real forks rather
-    than hand-built rows."""
+    """Clause count is bounded by the window, not by fork count. This is
+    the property the whole lineage cache exists for, now measured through
+    real forks instead of hand-built rows."""
     from tools import dbmeter
 
     ScriptedProvider.replies = ["First take.", "Second take.", "Onward."]
@@ -555,9 +563,9 @@ def test_a_deep_fork_chain_reads_for_what_one_branch_costs(client):
     try:
         adventure = db.get(models.Adventure, client.adv_id)
         entries = lineage.entries_of(lineage.branch_of(db, adventure))
-        # The whole ancestry is there to be named...
+        # The whole ancestry is available to be named.
         assert len(entries) == len(branches)
-        # ...and the windowed read names as few of them as the window needs.
+        # The windowed read names as few of them as the window needs.
         path = lineage.path_of(db, adventure)
         assert path.prefix_covering(60) <= len(entries)
     finally:
@@ -565,8 +573,8 @@ def test_a_deep_fork_chain_reads_for_what_one_branch_costs(client):
 
 
 def test_switching_to_a_branch_of_another_adventure_is_a_404(client):
-    """A branch id names one adventure, so the two ids in the URL have to
-    agree — otherwise a guessed number reads somebody else's story."""
+    """A branch id names one adventure, so the two ids in the URL must
+    agree. Otherwise a guessed number reads somebody else's story."""
     other = client.post("/api/adventures", json={"title": "Elsewhere"}).json()["id"]
     ScriptedProvider.replies = ["Elsewhere."]
     r = client.post(f"/api/adventures/{other}/actions", json={"type": "do", "text": "wait"})

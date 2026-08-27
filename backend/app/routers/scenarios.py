@@ -54,9 +54,10 @@ def get_scenario(
     user: models.User = Depends(auth.get_current_user),
 ):
     scenario = get_scenario_or_404(scenario_id, db, user)
-    # Funnel step. Only for shared scenarios: opening one is the first sign a
-    # visitor is interested, whereas someone editing their own is already past
-    # this point — and their titles are theirs, not a statistic.
+    # A funnel step, recorded for shared scenarios only. Opening one is the
+    # first sign that a visitor is interested, and someone editing their own
+    # scenario is already past this point. Their titles are theirs rather than a
+    # statistic.
     if scenario.is_public:
         analytics.record_event(analytics.EV_SCENARIO_OPEN, user)
     return scenario
@@ -204,8 +205,9 @@ def import_scenario(
     if isinstance(schema, dict):
         fields["stat_schema"] = schema
 
-    # AI Dungeon bundles carry an `image` too, so this is worth honouring — but
-    # it's untrusted input, hence sanitize() rather than a straight assignment.
+    # An AI Dungeon bundle also carries an `image`, so this reads it. The value
+    # is untrusted input, so it goes through `sanitize()` rather than a direct
+    # assignment.
     image = images.sanitize(bundle.get("image"), schemas.IMAGE_MAX)
     if image:
         fields["image"] = image
@@ -216,10 +218,10 @@ def import_scenario(
     scenario = models.Scenario(**fields, user_id=user.id)
     if not scenario.title:
         scenario.title = "Imported Scenario"
-    # Raw-dict import bypasses the schemas — clamp to VARCHAR widths
-    # (Postgres enforces them; see schemas.py). Column defaults haven't been
-    # applied yet at this point (that happens at flush), so a bundle with no
-    # `tags` key leaves the attribute None — hence the `or ""`.
+    # A raw-dict import bypasses the schemas, so truncate to the VARCHAR widths.
+    # Postgres enforces them. See `schemas.py`. Column defaults have not been
+    # applied yet, because that happens at flush, so a bundle with no `tags` key
+    # leaves the attribute None, which is why the code says `or ""`.
     scenario.title = scenario.title[:schemas.NAME_MAX]
     scenario.tags = (scenario.tags or "")[:schemas.TAGS_MAX]
     db.add(scenario)

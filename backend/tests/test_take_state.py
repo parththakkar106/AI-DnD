@@ -1,15 +1,17 @@
-"""Phase 14 SP9 — what a take does to the shared state.
+"""Phase 14 SP9: what a take does to the shared state.
 
-A turn does not only write text. A script mutates `script_state`, the referee
-mutates `world_state`, and both are *shared* — they belong to the adventure, not
-to the node. So playing a turn again has to put them back to where they were
-before that turn ran, or the new take stacks its mutations on top of the one it
-replaces and the numbers drift every time the player asks for another take.
+A turn does not only write text. A script mutates `script_state`, and the
+referee mutates `world_state`. Both are shared: they belong to the
+adventure, not to the node. Playing a turn again must put them back to
+where they were before that turn ran. Otherwise the new take stacks its
+mutations on top of the one it replaces, and the numbers drift every time
+the player asks for another take.
 
-`retry` has done this since SP4 (`attempts.roll_back_before`). These are the
-same guarantee for the two roads SP9 opened: a take of a turn the story moved
-past, and a take of the player's own turn. Both create a branch, which is the
-interesting part — the rollback has to survive leaving the line it was on.
+`retry` has provided this guarantee since SP4 (`attempts.roll_back_before`).
+These tests confirm the same guarantee for the two roads SP9 opened: a take
+of a turn the story moved past, and a take of the player's own turn. Both
+create a branch, which matters because the rollback must survive leaving
+the line it was on.
 
     python -m pytest tests/test_take_state.py -v
 """
@@ -34,9 +36,9 @@ from app.routers import adventures
 
 SCHEMA = {"player": {"hp": {"min": 0, "max": 100, "initial": 100}}}
 
-# Ten gold a turn, every turn. A number that only ever goes up is the clearest
-# possible witness to a rollback: if a take stacks instead of replacing, it says
-# so in one digit.
+# Ten gold a turn, every turn. A number that only ever increases makes a
+# rollback failure obvious: if a take stacks instead of replacing, the gold
+# total is off by exactly one turn's worth.
 GOLD_SCRIPT = """
 const modifier = (text) => {
   state.gold = (state.gold || 0) + 10;
@@ -146,7 +148,7 @@ def _rows(adv_id, type_):
 
 
 def test_the_script_runs_once_a_turn(client):
-    """The premise the rest of the file rests on."""
+    """This test establishes the baseline the rest of the file depends on."""
     _play(client)
     assert _gold(client.adv_id) == 10
     _play(client, "press on")
@@ -156,9 +158,9 @@ def test_the_script_runs_once_a_turn(client):
 def test_a_take_of_a_past_ai_turn_does_not_stack_its_script(client):
     """Two turns played, then the first one taken again.
 
-    The take leaves the path just before turn one, so the state it starts from
-    is the state turn one started from — nothing, not the twenty that two turns
-    had accumulated. Then its own run adds ten.
+    The take leaves the path just before turn one. The state it starts from
+    is the state turn one started from: zero gold, not the twenty that two
+    turns accumulated. The take's own run then adds ten.
     """
     _play(client)
     _play(client, "press on")
@@ -182,11 +184,11 @@ def test_a_take_of_a_player_turn_does_not_stack_its_script(client):
 
 
 def test_writing_below_a_passed_take_starts_from_that_take_s_state(client):
-    """The `after_id` road, which forks on the way to writing.
+    """The `after_id` path, which forks while writing.
 
-    The take being written under produced the state its own turn left behind —
-    ten — and the turn played on top of it adds the next ten. The twenty the
-    abandoned line reached has nothing to do with this branch.
+    The take being written under produced a state of ten gold, from its own
+    turn. The turn played on top of it adds another ten. The twenty gold
+    that the abandoned line reached has no effect on this branch.
     """
     _play(client)
     r = client.post(f"/api/adventures/{client.adv_id}/retry")
