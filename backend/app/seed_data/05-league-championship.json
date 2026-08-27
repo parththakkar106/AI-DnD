@@ -1,97 +1,139 @@
 {
-  "title": "[Demo] Road to the Champion",
-  "description": "The first stage of a Pokémon League Championship. Showcases the full world-state system: your active Pokémon's HP and your own focus, a text stat for who's currently out, two rival NPCs with their own stats, flags, and milestones as you fight your way to the title. Open the World State panel on the left to watch it change.",
-  "prompt": "The stadium roars as the announcer calls your name. Across the battlefield, your Round One opponent, Trainer Milo, sends out his Graveler with a grin. \"Eight rounds to the Champion's throne,\" he says, \"and you're not getting past round one.\"\n\nYour rival Sage leans over the rail behind you, arms crossed. \"Don't choke, champ. I want to be the one who beats you, not some rock-throwing tryhard.\"\n\nYour team is ready. Which Pokémon do you send out?",
-  "memory": "The player is a Trainer competing in an eight-round League Championship tournament. Round One opponent is Milo, who favors Rock-type Pokémon. The player's rival Sage is watching from the stands, more interested in facing the player later than in Milo winning. The player has a full team of six Pokémon.",
-  "authors_note": "Keep battles tactical: type matchups, status effects, and terrain matter. Let the crowd and Sage's commentary react to how the fight is going. A loss here should feel costly but not scenario-ending.",
-  "ai_instructions": "Write in second person, present tense. Narrate Pokémon battles move by move, naming the active Pokémon on each side. End each reply where the player can act (choose a move, switch Pokémon, or use an item). Reflect what happens in the numbers each turn: drop the active Pokémon's HP and the opponent's HP with hits, spend focus on strategy/special moves, update the active Pokémon text stat whenever the player switches, shift Milo's resolve and Sage's respect based on how the fight goes, and mark milestones as they're reached.",
-  "tags": "demo, pokemon, tournament, battle, world-state",
+  "title": "[Demo] League Championship: Round One",
+  "description": "A full Pokémon battle run on the built-in world-state system. Every member of your team has its own HP and status condition, one flag marks who is currently out, and your potion supply runs down as you use it. The opponent's active Pokémon is tracked the same way. No scripting — the engine keeps the numbers honest. Open the World State panel on the left to watch the battle play out.",
+  "prompt": "The floodlights come up over the championship field and the referee raises both flags. Round One of eight. Beat the trainer in front of you or go home.\n\nAcross the packed rock terrain, Trainer Milo tosses his first Poké Ball. Graveler lands hard enough to crack the stone under it, four arms flexing, and settles into a low stance.\n\n\"Rock-types all the way down,\" Milo calls over the noise. \"Hope you brought something that hits harder than it looks.\"\n\nYour Pidgeotto is already in the air, wings locked into a slow circle above the field. It is fast, but Rock-type moves will tear it out of the sky, and Graveler is built to take a hit. Three Hyper Potions sit in your belt pouch.\n\nGraveler grinds one fist into its palm. The referee drops the flag.\n\nWhat's your move?",
+  "memory": "The player is a Trainer in Round One of an eight-round League Championship. The Round One opponent is Milo, a Rock-type specialist with three Pokémon: Graveler (Rock/Ground), Onix (Rock/Ground), and Kabutops (Rock/Water). The player's team is Pidgeotto (Normal/Flying), Ivysaur (Grass/Poison), Wartortle (Water), Machoke (Fighting), and Pikachu (Electric). Pidgeotto is out first. The player carries Hyper Potions, which restore HP and can be swapped for a status heal when needed. A battle is lost when every Pokémon on one side has fainted.",
+  "authors_note": "Play it like a real battle. Type matchups decide damage, status conditions stick around and cost the afflicted Pokémon turns, and switching costs the player a turn while the opponent attacks freely. Milo is competent: he switches to punish bad matchups and targets whatever is weakest.",
+  "ai_instructions": "Write in second person, present tense. Narrate the battle move by move, naming the active Pokémon on each side and the move each one uses. End every reply at a decision point where the player can choose a move, switch Pokémon, or use an item.\n\nReflect type advantage and disadvantage in the damage you narrate and in the HP numbers: a super-effective hit should take roughly double a neutral hit, a resisted hit roughly half. Ground and Rock moves hit Pikachu and Pidgeotto hard. Water, Grass, and Fighting moves are strong against Milo's Rock-types.\n\nEvery turn, update the state:\n- Drop the active Pokémon's HP on both sides when they take damage, and raise it when they are healed.\n- Set a Pokémon's status stat to the condition it just picked up: poisoned, burned, paralyzed, frozen, asleep, or none when it is cured or wakes up. Status matters. Poison and burn shave HP at the end of each turn, paralysis and freeze cost turns, sleep stops a Pokémon acting until it wakes.\n- When the player switches, set the incoming Pokémon's flag true and the outgoing one's flag false in the same turn. Exactly one of the player's `_active` flags must be true at any moment. The engine does not enforce this, so check it yourself before you emit the state block.\n- When the player uses a potion, decrement `player.potions` by 1 and raise the healed Pokémon's HP. Potions cannot be used once the count reaches 0.\n- When a Pokémon's HP hits 0 it faints, its status becomes `fainted`, and its trainer must send out a replacement. A fainted Pokémon cannot be healed or switched back in.\n- Update `npc.milo.active_pokemon` and reset `npc.milo.active_hp` and `npc.milo.active_status` whenever Milo sends out a new Pokémon, and decrement `npc.milo.pokemon_left` when one of his faints.\n\nMark milestones as they happen. Do not decide the whole battle in one reply; give the player a turn between every exchange.",
+  "tags": "demo, pokemon, battle, tournament, world-state, combat",
   "icon": "⚡",
   "stat_schema": {
     "world": {
-      "round": { "type": "counter", "min": 1, "initial": 1, "desc": "Which round of the eight-round championship this is; only ever counts up." }
+      "round": { "type": "counter", "min": 1, "max": 8, "initial": 1, "desc": "Which round of the eight-round championship this is; only ever counts up." },
+      "turn": { "type": "counter", "min": 0, "initial": 0, "max_delta_per_turn": 1, "desc": "How many turns the current battle has lasted; only ever counts up." }
     },
     "player": {
-      "active_hp": {
-        "desc": "The player's current active Pokémon's HP.",
-        "min": 0, "max": 100, "initial": 100, "max_delta_per_turn": 40,
-        "bands": [[0, 1, "fainted"], [1, 25, "critical"], [25, 50, "hurt"],
-                  [50, 80, "scuffed"], [80, 101, "full health"]]
+      "potions": {
+        "desc": "Hyper Potions left in the player's bag. Each one restores HP or cures a status condition, and is used up when it is used.",
+        "min": 0, "max": 5, "initial": 3, "max_delta_per_turn": 1,
+        "bands": [[0, 1, "out of potions"], [1, 2, "one left"], [2, 4, "a few left"], [4, 6, "well stocked"]]
       },
-      "focus": {
-        "desc": "The player's concentration, spent calling special strategies or status moves, restored by steady play.",
-        "min": 0, "max": 50, "initial": 40, "max_delta_per_turn": 20,
-        "bands": [[0, 10, "rattled"], [10, 30, "focused"], [30, 51, "in the zone"]]
+      "pidgeotto_hp": {
+        "desc": "Pidgeotto's HP. Normal/Flying. Fast, but Rock-type moves hit it for four times damage.",
+        "min": 0, "max": 84, "initial": 84, "max_delta_per_turn": 60,
+        "bands": [[0, 1, "fainted"], [1, 20, "critical"], [20, 45, "hurt"], [45, 70, "scuffed"], [70, 85, "healthy"]]
       },
-      "active_pokemon": {
-        "type": "text", "initial": "Charmeleon",
-        "desc": "The player's currently active Pokémon. Update it the moment the player switches or sends out a different team member."
+      "pidgeotto_status": {
+        "type": "text", "initial": "none",
+        "desc": "Pidgeotto's status condition: none, poisoned, burned, paralyzed, frozen, asleep, or fainted."
+      },
+      "ivysaur_hp": {
+        "desc": "Ivysaur's HP. Grass/Poison. Grass moves are super effective on Milo's Rock/Ground types.",
+        "min": 0, "max": 96, "initial": 96, "max_delta_per_turn": 60,
+        "bands": [[0, 1, "fainted"], [1, 24, "critical"], [24, 50, "hurt"], [50, 78, "scuffed"], [78, 97, "healthy"]]
+      },
+      "ivysaur_status": {
+        "type": "text", "initial": "none",
+        "desc": "Ivysaur's status condition: none, poisoned, burned, paralyzed, frozen, asleep, or fainted."
+      },
+      "wartortle_hp": {
+        "desc": "Wartortle's HP. Water. Bulky, and Water moves are super effective on Rock/Ground types.",
+        "min": 0, "max": 92, "initial": 92, "max_delta_per_turn": 60,
+        "bands": [[0, 1, "fainted"], [1, 23, "critical"], [23, 48, "hurt"], [48, 75, "scuffed"], [75, 93, "healthy"]]
+      },
+      "wartortle_status": {
+        "type": "text", "initial": "none",
+        "desc": "Wartortle's status condition: none, poisoned, burned, paralyzed, frozen, asleep, or fainted."
+      },
+      "machoke_hp": {
+        "desc": "Machoke's HP. Fighting. Hits Rock-types hard but is slow and takes Ground moves badly.",
+        "min": 0, "max": 104, "initial": 104, "max_delta_per_turn": 65,
+        "bands": [[0, 1, "fainted"], [1, 26, "critical"], [26, 54, "hurt"], [54, 84, "scuffed"], [84, 105, "healthy"]]
+      },
+      "machoke_status": {
+        "type": "text", "initial": "none",
+        "desc": "Machoke's status condition: none, poisoned, burned, paralyzed, frozen, asleep, or fainted."
+      },
+      "pikachu_hp": {
+        "desc": "Pikachu's HP. Electric. Frail, and its Electric moves do nothing at all to Ground-types.",
+        "min": 0, "max": 76, "initial": 76, "max_delta_per_turn": 60,
+        "bands": [[0, 1, "fainted"], [1, 19, "critical"], [19, 40, "hurt"], [40, 62, "scuffed"], [62, 77, "healthy"]]
+      },
+      "pikachu_status": {
+        "type": "text", "initial": "none",
+        "desc": "Pikachu's status condition: none, poisoned, burned, paralyzed, frozen, asleep, or fainted."
       }
     },
     "flags": {
-      "type_advantage_scouted": { "desc": "True once the player has identified a good type matchup against Milo's team.", "initial": false },
-      "crowd_won_over": { "desc": "True once the crowd is cheering for the player.", "initial": false }
+      "pidgeotto_active": { "desc": "True while Pidgeotto is the player's Pokémon on the field. Exactly one of the player's _active flags may be true at a time.", "initial": true },
+      "ivysaur_active": { "desc": "True while Ivysaur is the player's Pokémon on the field. Exactly one of the player's _active flags may be true at a time.", "initial": false },
+      "wartortle_active": { "desc": "True while Wartortle is the player's Pokémon on the field. Exactly one of the player's _active flags may be true at a time.", "initial": false },
+      "machoke_active": { "desc": "True while Machoke is the player's Pokémon on the field. Exactly one of the player's _active flags may be true at a time.", "initial": false },
+      "pikachu_active": { "desc": "True while Pikachu is the player's Pokémon on the field. Exactly one of the player's _active flags may be true at a time.", "initial": false },
+      "sandstorm_active": { "desc": "True while a sandstorm is whipping across the field, chipping HP off any Pokémon that is not Rock, Ground, or Steel each turn.", "initial": false }
     },
     "npcs": {
       "milo": {
         "name": "Trainer Milo",
-        "keys": "Milo, opponent, Graveler, rock",
-        "desc": "The Round One opponent. Confident, favors Rock-type Pokémon, fights harder the more the match turns against him.",
+        "keys": "Milo, opponent, Graveler, Onix, Kabutops, rock",
+        "desc": "The Round One opponent, a Rock-type specialist with three Pokémon: Graveler, Onix, and Kabutops. He leads with Graveler, switches to punish a bad matchup, and aims for whichever of the player's Pokémon is closest to fainting.",
         "stats": {
-          "active_hp": {
-            "desc": "Milo's current active Pokémon's HP.",
-            "min": 0, "max": 100, "initial": 100, "max_delta_per_turn": 40,
-            "bands": [[0, 1, "fainted"], [1, 25, "critical"], [25, 50, "hurt"],
-                      [50, 80, "scuffed"], [80, 101, "full health"]]
+          "active_pokemon": {
+            "type": "text", "initial": "Graveler",
+            "desc": "Which Pokémon Milo currently has on the field: Graveler, Onix, or Kabutops. Replace this the moment he sends out a different one."
           },
-          "resolve": {
-            "desc": "How determined Milo is; climbs as the match turns against him, breaks if he's outclassed too badly.",
-            "min": 0, "max": 100, "initial": 45, "max_delta_per_turn": 25,
-            "bands": [[0, 20, "shaken"], [20, 60, "determined"], [60, 101, "unshakeable"]]
-          }
-        }
-      },
-      "sage": {
-        "name": "Sage",
-        "keys": "Sage, rival",
-        "desc": "The player's rival, watching from the stands. Wants to be the one who beats the player later, so roots against Milo but needles the player about weak play.",
-        "stats": {
-          "respect": {
-            "desc": "How much Sage respects the player's battling right now; rises with sharp, decisive play and falls with sloppy or hesitant play.",
-            "min": -100, "max": 100, "initial": 10, "max_delta_per_turn": 20,
-            "bands": [[-100, -30, "mocking"], [-30, 30, "unimpressed"], [30, 70, "grudgingly impressed"],
-                      [70, 101, "hyped"]]
+          "active_hp": {
+            "desc": "The HP of Milo's active Pokémon. Reset this to the newcomer's full HP whenever he sends out a different Pokémon: Graveler 98, Onix 90, Kabutops 88.",
+            "min": 0, "max": 98, "initial": 98, "max_delta_per_turn": 65,
+            "bands": [[0, 1, "fainted"], [1, 25, "critical"], [25, 50, "hurt"], [50, 78, "scuffed"], [78, 99, "healthy"]]
+          },
+          "active_status": {
+            "type": "text", "initial": "none",
+            "desc": "The status condition on Milo's active Pokémon: none, poisoned, burned, paralyzed, frozen, asleep, or fainted."
+          },
+          "pokemon_left": {
+            "desc": "How many of Milo's three Pokémon are still able to battle. Milo loses the round when this reaches 0.",
+            "min": 0, "max": 3, "initial": 3, "max_delta_per_turn": 1,
+            "bands": [[0, 1, "defeated"], [1, 2, "last Pokémon"], [2, 3, "two left"], [3, 4, "full team"]]
           }
         }
       }
     },
     "milestones": {
-      "type_matchup_found": { "desc": "Identify and exploit a type advantage against Milo's team" },
-      "round_one_won": { "desc": "Defeat Milo and advance past Round One" },
-      "crowd_favorite": { "desc": "Win the crowd over during the match" }
+      "graveler_defeated": { "desc": "Knock out Milo's lead Graveler" },
+      "status_landed": { "desc": "Inflict a status condition on one of Milo's Pokémon" },
+      "type_advantage_used": { "desc": "Land a super-effective hit by switching in the right Pokémon" },
+      "round_one_won": { "desc": "Knock out all three of Milo's Pokémon and advance to Round Two" }
     }
   },
   "story_cards": [
     {
       "type": "location",
       "name": "Championship Stadium",
-      "keys": "stadium, arena, battlefield",
-      "entry": "The League Championship's main battlefield, packed with spectators. Eight rounds stand between any Trainer and the Champion's throne. The field is rocky terrain, favoring Rock- and Ground-type moves.",
-      "notes": "Terrain: rocky. Rock/Ground moves get a slight edge here."
+      "keys": "stadium, arena, battlefield, field, terrain",
+      "entry": "The League Championship's main battlefield. The floor is broken rock terrain, which gives Rock- and Ground-type moves solid footing and gives grounded Pokémon cover to duck behind. Eight rounds stand between any Trainer and the Champion's title, and this is Round One.",
+      "notes": "Rocky terrain. Rock and Ground moves get a slight edge. Boulders can be used as cover or thrown."
     },
     {
       "type": "character",
       "name": "Trainer Milo",
-      "keys": "Milo, Graveler, rock trainer",
-      "entry": "Milo is the Round One opponent, a confident Rock-type specialist with a Graveler as his lead. He's fought his way here on brute power and doesn't rattle easily, but a well-placed Water- or Grass-type move can turn the fight fast.",
-      "notes": "Weak to Water and Grass. Resistant to Normal and Flying."
+      "keys": "Milo, opponent, rock trainer",
+      "entry": "Milo is the Round One opponent, a Rock-type specialist who won his qualifiers on raw defense. His team is Graveler (Rock/Ground), Onix (Rock/Ground), and Kabutops (Rock/Water). He leads with Graveler, likes Sandstorm and Rock Slide, and switches out the moment a matchup turns against him.",
+      "notes": "Graveler and Onix are weak to Water, Grass, Fighting, Ground, Ice, and Steel, and are immune to Electric. Kabutops is weak to Grass, Fighting, Ground, and Electric. All three resist Normal and Flying."
     },
     {
       "type": "character",
-      "name": "Sage",
-      "keys": "Sage, rival",
-      "entry": "Sage is the player's long-time rival, sharp-tongued and competitive. Currently in the stands watching Round One, waiting for a chance to face the player directly in a later round.",
-      "notes": "Not a current opponent. Provides commentary and reacts to the player's performance."
+      "name": "Your Team",
+      "keys": "team, party, my Pokemon, Pidgeotto, Ivysaur, Wartortle, Machoke, Pikachu",
+      "entry": "Five Pokémon travel with you. Pidgeotto (Normal/Flying) is fast but folds to Rock moves. Ivysaur (Grass/Poison) hits Rock/Ground types for heavy damage and can poison with Poison Powder or put a target to sleep with Sleep Powder. Wartortle (Water) is bulky and super effective on the whole of Milo's team. Machoke (Fighting) hits hardest of all but is slow. Pikachu (Electric) is fast and can paralyze, but its Electric moves cannot touch a Ground-type at all.",
+      "notes": "One Pokémon on the field at a time. Switching costs a turn."
+    },
+    {
+      "type": "item",
+      "name": "Hyper Potion",
+      "keys": "potion, hyper potion, heal, item, bag",
+      "entry": "A pressurized spray that closes wounds fast. One dose restores a large chunk of a Pokémon's HP, or clears a single status condition instead. Using one costs your turn, and the opponent attacks freely while you do it. You start the round with three and cannot restock mid-battle.",
+      "notes": "Decrement player.potions by 1 per use. A potion cannot revive a fainted Pokémon."
     }
   ],
   "scripts": []
