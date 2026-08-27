@@ -4,7 +4,7 @@
   "prompt": "The floodlights come up over the championship field and the referee raises both flags. Round One of eight. Beat the trainer in front of you or go home.\n\nAcross the packed rock terrain, Trainer Milo tosses his first Poké Ball. Graveler lands hard enough to crack the stone under it, four arms flexing, and settles into a low stance.\n\n\"Rock-types all the way down,\" Milo calls over the noise. \"Hope you brought something that hits harder than it looks.\"\n\nYour Pidgeotto is already in the air, wings locked into a slow circle above the field. It is fast, but Rock-type moves will tear it out of the sky, and Graveler is built to take a hit. Three Hyper Potions sit in your belt pouch.\n\nGraveler grinds one fist into its palm. The referee drops the flag.\n\nWhat's your move?",
   "memory": "The player is a Trainer in Round One of an eight-round League Championship. The Round One opponent is Milo, a Rock-type specialist with three Pokémon: Graveler (Rock/Ground), Onix (Rock/Ground), and Kabutops (Rock/Water). The player's team is Pidgeotto (Normal/Flying), Ivysaur (Grass/Poison), Wartortle (Water), Machoke (Fighting), and Pikachu (Electric). Pidgeotto is out first. The player carries Hyper Potions, which restore HP and can be swapped for a status heal when needed. A battle is lost when every Pokémon on one side has fainted.",
   "authors_note": "Play it like a real battle. Type matchups decide damage, status conditions stick around and cost the afflicted Pokémon turns, and switching costs the player a turn while the opponent attacks freely. Milo is competent: he switches to punish bad matchups and targets whatever is weakest.",
-  "ai_instructions": "Write in second person, present tense. Narrate the battle move by move, naming the active Pokémon on each side and the move each one uses. End every reply at a decision point where the player can choose a move, switch Pokémon, or use an item.\n\nReflect type advantage and disadvantage in the damage you narrate and in the HP numbers: a super-effective hit should take roughly double a neutral hit, a resisted hit roughly half. Ground and Rock moves hit Pikachu and Pidgeotto hard. Water, Grass, and Fighting moves are strong against Milo's Rock-types.\n\nEvery turn, update the state:\n- Drop the active Pokémon's HP on both sides when they take damage, and raise it when they are healed.\n- Set a Pokémon's status stat to the condition it just picked up: poisoned, burned, paralyzed, frozen, asleep, or none when it is cured or wakes up. Status matters. Poison and burn shave HP at the end of each turn, paralysis and freeze cost turns, sleep stops a Pokémon acting until it wakes.\n- When the player switches, set the incoming Pokémon's flag true and the outgoing one's flag false in the same turn. Exactly one of the player's `_active` flags must be true at any moment. The engine does not enforce this, so check it yourself before you emit the state block.\n- When the player uses a potion, decrement `player.potions` by 1 and raise the healed Pokémon's HP. Potions cannot be used once the count reaches 0.\n- When a Pokémon's HP hits 0 it faints, its status becomes `fainted`, and its trainer must send out a replacement. A fainted Pokémon cannot be healed or switched back in.\n- Update `npc.milo.active_pokemon` and reset `npc.milo.active_hp` and `npc.milo.active_status` whenever Milo sends out a new Pokémon, and decrement `npc.milo.pokemon_left` when one of his faints.\n\nMark milestones as they happen. Do not decide the whole battle in one reply; give the player a turn between every exchange.",
+  "ai_instructions": "Write in second person, present tense. Narrate the battle move by move, naming the active Pokémon on each side and the move each one uses. End every reply at a decision point where the player can choose a move, switch Pokémon, or use an item.\n\nReflect type advantage and disadvantage in the damage you narrate and in the HP numbers: a super-effective hit should take roughly double a neutral hit, a resisted hit roughly half. Ground and Rock moves hit Pikachu and Pidgeotto hard. Water, Grass, and Fighting moves are strong against Milo's Rock-types.\n\nEvery turn, update the state:\n- Drop the active Pokémon's HP on both sides when they take damage (`npc.<name>.hp` for the player's own Pokémon, e.g. npc.pidgeotto.hp; `npc.milo.active_hp` for Milo's), and raise it when they are healed.\n- Set a Pokémon's `status` stat (`npc.<name>.status`, or `npc.milo.active_status`) to the condition it just picked up: poisoned, burned, paralyzed, frozen, asleep, or none when it is cured or wakes up. Status matters. Poison and burn shave HP at the end of each turn, paralysis and freeze cost turns, sleep stops a Pokémon acting until it wakes.\n- When the player switches, set `player.active_pokemon` to the incoming Pokémon's name in full (not a delta).\n- When the player uses a potion, decrement `player.potions` by 1 and raise the healed Pokémon's HP. Potions cannot be used once the count reaches 0.\n- When a Pokémon's HP hits 0 it faints, its status becomes `fainted`, and its trainer must send out a replacement (the player picks the next `player.active_pokemon`). A fainted Pokémon cannot be healed or switched back in.\n- Update `npc.milo.active_pokemon` and reset `npc.milo.active_hp` and `npc.milo.active_status` whenever Milo sends out a new Pokémon, and decrement `npc.milo.pokemon_left` when one of his faints.\n\nMark milestones as they happen. Do not decide the whole battle in one reply; give the player a turn between every exchange.",
   "tags": "demo, pokemon, battle, tournament, world-state, combat",
   "icon": "⚡",
   "stat_schema": {
@@ -18,61 +18,95 @@
         "min": 0, "max": 5, "initial": 3, "max_delta_per_turn": 1,
         "bands": [[0, 1, "out of potions"], [1, 2, "one left"], [2, 4, "a few left"], [4, 6, "well stocked"]]
       },
-      "pidgeotto_hp": {
-        "desc": "Pidgeotto's HP. Normal/Flying. Fast, but Rock-type moves hit it for four times damage.",
-        "min": 0, "max": 84, "initial": 84, "max_delta_per_turn": 60,
-        "bands": [[0, 1, "fainted"], [1, 20, "critical"], [20, 45, "hurt"], [45, 70, "scuffed"], [70, 85, "healthy"]]
-      },
-      "pidgeotto_status": {
-        "type": "text", "initial": "none",
-        "desc": "Pidgeotto's status condition: none, poisoned, burned, paralyzed, frozen, asleep, or fainted."
-      },
-      "ivysaur_hp": {
-        "desc": "Ivysaur's HP. Grass/Poison. Grass moves are super effective on Milo's Rock/Ground types.",
-        "min": 0, "max": 96, "initial": 96, "max_delta_per_turn": 60,
-        "bands": [[0, 1, "fainted"], [1, 24, "critical"], [24, 50, "hurt"], [50, 78, "scuffed"], [78, 97, "healthy"]]
-      },
-      "ivysaur_status": {
-        "type": "text", "initial": "none",
-        "desc": "Ivysaur's status condition: none, poisoned, burned, paralyzed, frozen, asleep, or fainted."
-      },
-      "wartortle_hp": {
-        "desc": "Wartortle's HP. Water. Bulky, and Water moves are super effective on Rock/Ground types.",
-        "min": 0, "max": 92, "initial": 92, "max_delta_per_turn": 60,
-        "bands": [[0, 1, "fainted"], [1, 23, "critical"], [23, 48, "hurt"], [48, 75, "scuffed"], [75, 93, "healthy"]]
-      },
-      "wartortle_status": {
-        "type": "text", "initial": "none",
-        "desc": "Wartortle's status condition: none, poisoned, burned, paralyzed, frozen, asleep, or fainted."
-      },
-      "machoke_hp": {
-        "desc": "Machoke's HP. Fighting. Hits Rock-types hard but is slow and takes Ground moves badly.",
-        "min": 0, "max": 104, "initial": 104, "max_delta_per_turn": 65,
-        "bands": [[0, 1, "fainted"], [1, 26, "critical"], [26, 54, "hurt"], [54, 84, "scuffed"], [84, 105, "healthy"]]
-      },
-      "machoke_status": {
-        "type": "text", "initial": "none",
-        "desc": "Machoke's status condition: none, poisoned, burned, paralyzed, frozen, asleep, or fainted."
-      },
-      "pikachu_hp": {
-        "desc": "Pikachu's HP. Electric. Frail, and its Electric moves do nothing at all to Ground-types.",
-        "min": 0, "max": 76, "initial": 76, "max_delta_per_turn": 60,
-        "bands": [[0, 1, "fainted"], [1, 19, "critical"], [19, 40, "hurt"], [40, 62, "scuffed"], [62, 77, "healthy"]]
-      },
-      "pikachu_status": {
-        "type": "text", "initial": "none",
-        "desc": "Pikachu's status condition: none, poisoned, burned, paralyzed, frozen, asleep, or fainted."
+      "active_pokemon": {
+        "type": "text", "initial": "Pidgeotto",
+        "desc": "Which of the player's Pokémon is currently on the field: Pidgeotto, Ivysaur, Wartortle, Machoke, or Pikachu. Replace this the moment the player switches."
       }
     },
     "flags": {
-      "pidgeotto_active": { "desc": "True while Pidgeotto is the player's Pokémon on the field. Exactly one of the player's _active flags may be true at a time.", "initial": true },
-      "ivysaur_active": { "desc": "True while Ivysaur is the player's Pokémon on the field. Exactly one of the player's _active flags may be true at a time.", "initial": false },
-      "wartortle_active": { "desc": "True while Wartortle is the player's Pokémon on the field. Exactly one of the player's _active flags may be true at a time.", "initial": false },
-      "machoke_active": { "desc": "True while Machoke is the player's Pokémon on the field. Exactly one of the player's _active flags may be true at a time.", "initial": false },
-      "pikachu_active": { "desc": "True while Pikachu is the player's Pokémon on the field. Exactly one of the player's _active flags may be true at a time.", "initial": false },
       "sandstorm_active": { "desc": "True while a sandstorm is whipping across the field, chipping HP off any Pokémon that is not Rock, Ground, or Steel each turn.", "initial": false }
     },
     "npcs": {
+      "pidgeotto": {
+        "name": "Pidgeotto",
+        "keys": "Pidgeotto",
+        "desc": "The player's own Pokémon. Normal/Flying. Fast, but Rock-type moves hit it for four times damage.",
+        "stats": {
+          "hp": {
+            "desc": "Pidgeotto's HP.",
+            "min": 0, "max": 84, "initial": 84, "max_delta_per_turn": 60,
+            "bands": [[0, 1, "fainted"], [1, 20, "critical"], [20, 45, "hurt"], [45, 70, "scuffed"], [70, 85, "healthy"]]
+          },
+          "status": {
+            "type": "text", "initial": "none",
+            "desc": "Status condition: none, poisoned, burned, paralyzed, frozen, asleep, or fainted."
+          }
+        }
+      },
+      "ivysaur": {
+        "name": "Ivysaur",
+        "keys": "Ivysaur",
+        "desc": "The player's own Pokémon. Grass/Poison. Super effective on Milo's Rock/Ground types; can inflict poison or sleep.",
+        "stats": {
+          "hp": {
+            "desc": "Ivysaur's HP.",
+            "min": 0, "max": 96, "initial": 96, "max_delta_per_turn": 60,
+            "bands": [[0, 1, "fainted"], [1, 24, "critical"], [24, 50, "hurt"], [50, 78, "scuffed"], [78, 97, "healthy"]]
+          },
+          "status": {
+            "type": "text", "initial": "none",
+            "desc": "Status condition: none, poisoned, burned, paralyzed, frozen, asleep, or fainted."
+          }
+        }
+      },
+      "wartortle": {
+        "name": "Wartortle",
+        "keys": "Wartortle",
+        "desc": "The player's own Pokémon. Water. Bulky, and super effective on the whole of Milo's team.",
+        "stats": {
+          "hp": {
+            "desc": "Wartortle's HP.",
+            "min": 0, "max": 92, "initial": 92, "max_delta_per_turn": 60,
+            "bands": [[0, 1, "fainted"], [1, 23, "critical"], [23, 48, "hurt"], [48, 75, "scuffed"], [75, 93, "healthy"]]
+          },
+          "status": {
+            "type": "text", "initial": "none",
+            "desc": "Status condition: none, poisoned, burned, paralyzed, frozen, asleep, or fainted."
+          }
+        }
+      },
+      "machoke": {
+        "name": "Machoke",
+        "keys": "Machoke",
+        "desc": "The player's own Pokémon. Fighting. Hits Rock-types hardest of the team but is slow and takes Ground moves badly.",
+        "stats": {
+          "hp": {
+            "desc": "Machoke's HP.",
+            "min": 0, "max": 104, "initial": 104, "max_delta_per_turn": 65,
+            "bands": [[0, 1, "fainted"], [1, 26, "critical"], [26, 54, "hurt"], [54, 84, "scuffed"], [84, 105, "healthy"]]
+          },
+          "status": {
+            "type": "text", "initial": "none",
+            "desc": "Status condition: none, poisoned, burned, paralyzed, frozen, asleep, or fainted."
+          }
+        }
+      },
+      "pikachu": {
+        "name": "Pikachu",
+        "keys": "Pikachu",
+        "desc": "The player's own Pokémon. Electric. Frail, and its Electric moves do nothing at all to Ground-types.",
+        "stats": {
+          "hp": {
+            "desc": "Pikachu's HP.",
+            "min": 0, "max": 76, "initial": 76, "max_delta_per_turn": 60,
+            "bands": [[0, 1, "fainted"], [1, 19, "critical"], [19, 40, "hurt"], [40, 62, "scuffed"], [62, 77, "healthy"]]
+          },
+          "status": {
+            "type": "text", "initial": "none",
+            "desc": "Status condition: none, poisoned, burned, paralyzed, frozen, asleep, or fainted."
+          }
+        }
+      },
       "milo": {
         "name": "Trainer Milo",
         "keys": "Milo, opponent, Graveler, Onix, Kabutops, rock",
@@ -120,13 +154,6 @@
       "keys": "Milo, opponent, rock trainer",
       "entry": "Milo is the Round One opponent, a Rock-type specialist who won his qualifiers on raw defense. His team is Graveler (Rock/Ground), Onix (Rock/Ground), and Kabutops (Rock/Water). He leads with Graveler, likes Sandstorm and Rock Slide, and switches out the moment a matchup turns against him.",
       "notes": "Graveler and Onix are weak to Water, Grass, Fighting, Ground, Ice, and Steel, and are immune to Electric. Kabutops is weak to Grass, Fighting, Ground, and Electric. All three resist Normal and Flying."
-    },
-    {
-      "type": "character",
-      "name": "Your Team",
-      "keys": "team, party, my Pokemon, Pidgeotto, Ivysaur, Wartortle, Machoke, Pikachu",
-      "entry": "Five Pokémon travel with you. Pidgeotto (Normal/Flying) is fast but folds to Rock moves. Ivysaur (Grass/Poison) hits Rock/Ground types for heavy damage and can poison with Poison Powder or put a target to sleep with Sleep Powder. Wartortle (Water) is bulky and super effective on the whole of Milo's team. Machoke (Fighting) hits hardest of all but is slow. Pikachu (Electric) is fast and can paralyze, but its Electric moves cannot touch a Ground-type at all.",
-      "notes": "One Pokémon on the field at a time. Switching costs a turn."
     },
     {
       "type": "item",
