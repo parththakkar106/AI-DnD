@@ -541,6 +541,13 @@ narrate, then a separate structured-extraction step, with a retry branch when ex
 fails and a tool-calling path for dice — that is a graph, and hand-rolling it would get
 ugly fast.
 
+**This is not the same branching as the story tree (§2.2).** "No branching" here
+describes *control flow*: the code path a single turn takes through the backend. That path
+never forks. It is not true of the *data* the app stores. When a player rewinds and plays a
+turn differently, that action creates a new branch in the saved history. One turn's
+execution is a straight line. The sequence of turns across a playthrough is a tree. The two
+claims are about different things and do not conflict.
+
 ---
 
 # Part 2 — Data and correctness

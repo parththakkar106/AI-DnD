@@ -1,0 +1,1233 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI D&amp;D Engine Room</title>
+<meta name="description" content="The HLD and LLD of AI D&amp;D: context budgeting, the world-state engine, the story tree, the egress fix, and the pen-test findings.">
+<meta property="og:title" content="AI D&amp;D Engine Room">
+<meta property="og:description" content="The HLD and LLD of AI D&amp;D: context budgeting, the world-state engine, the story tree, the egress fix, and the pen-test findings.">
+<meta property="og:type" content="article">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8E%B2%3C/text%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=JetBrains+Mono:wght@400;500;700&display=swap">
+
+<style>
+:root {
+  --bg: #E9ECEF;
+  --surface: #FAFBFC;
+  --surface-2: #F1F4F6;
+  --ink: #14181F;
+  --muted: #59636F;
+  --rule: #D2D8DE;
+  --rule-soft: #E2E7EB;
+  --brass: #92621A;
+  --brass-soft: #EFE3CC;
+  --teal: #16605F;
+  --teal-soft: #D9EBEA;
+  --rust: #8F3A22;
+  --rust-soft: #F3E0D9;
+  --shadow: 0 1px 2px rgba(20,24,31,.05), 0 8px 24px -16px rgba(20,24,31,.28);
+
+  --display: "Bricolage Grotesque", "Helvetica Neue", Arial, sans-serif;
+  --body: "Source Serif 4", Georgia, "Times New Roman", serif;
+  --mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0F1217;
+    --surface: #171B21;
+    --surface-2: #1D222A;
+    --ink: #E2E6EA;
+    --muted: #949EAA;
+    --rule: #272D35;
+    --rule-soft: #20252C;
+    --brass: #D2A24C;
+    --brass-soft: #2E2617;
+    --teal: #58B6B1;
+    --teal-soft: #142826;
+    --rust: #E07A57;
+    --rust-soft: #2C1A14;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 10px 30px -18px rgba(0,0,0,.9);
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0F1217;
+  --surface: #171B21;
+  --surface-2: #1D222A;
+  --ink: #E2E6EA;
+  --muted: #949EAA;
+  --rule: #272D35;
+  --rule-soft: #20252C;
+  --brass: #D2A24C;
+  --brass-soft: #2E2617;
+  --teal: #58B6B1;
+  --teal-soft: #142826;
+  --rust: #E07A57;
+  --rust-soft: #2C1A14;
+  --shadow: 0 1px 2px rgba(0,0,0,.4), 0 10px 30px -18px rgba(0,0,0,.9);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--body);
+  font-size: 17px;
+  line-height: 1.62;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------- shell ---------- */
+
+.shell {
+  display: grid;
+  grid-template-columns: 236px minmax(0, 1fr);
+  gap: 56px;
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: 0 32px 120px;
+  align-items: start;
+}
+
+.rail {
+  position: sticky;
+  top: 0;
+  max-height: 100vh;
+  overflow-y: auto;
+  padding: 40px 0 40px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.rail-group { margin-bottom: 22px; }
+.rail-head {
+  text-transform: uppercase;
+  letter-spacing: .13em;
+  font-weight: 700;
+  font-size: 10px;
+  color: var(--muted);
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--rule);
+  margin-bottom: 8px;
+}
+.rail a {
+  display: block;
+  padding: 3px 0 3px 10px;
+  color: var(--muted);
+  text-decoration: none;
+  border-left: 2px solid transparent;
+}
+.rail a:hover, .rail a:focus-visible { color: var(--ink); border-left-color: var(--brass); }
+.rail a .n { color: var(--brass); font-weight: 700; }
+
+.doc { min-width: 0; padding-top: 40px; }
+.wrap { max-width: 68ch; }
+
+/* ---------- masthead ---------- */
+
+.masthead {
+  border-bottom: 2px solid var(--ink);
+  padding-bottom: 26px;
+  margin-bottom: 40px;
+}
+.eyebrow {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: .18em;
+  text-transform: uppercase;
+  color: var(--brass);
+  font-weight: 700;
+  margin: 0 0 16px;
+}
+h1 {
+  font-family: var(--display);
+  font-weight: 800;
+  font-size: clamp(2.6rem, 6vw, 4.1rem);
+  line-height: .98;
+  letter-spacing: -.03em;
+  margin: 0 0 18px;
+  text-wrap: balance;
+}
+.standfirst {
+  font-size: 1.18rem;
+  color: var(--muted);
+  max-width: 60ch;
+  margin: 0 0 26px;
+}
+.standfirst strong { color: var(--ink); font-weight: 600; }
+
+.facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0;
+  font-family: var(--mono);
+  border-top: 1px solid var(--rule);
+}
+.fact {
+  padding: 12px 22px 12px 0;
+  margin-right: 22px;
+  border-right: 1px solid var(--rule);
+}
+.fact:last-child { border-right: 0; }
+.fact .v {
+  display: block;
+  font-size: 1.25rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -.02em;
+}
+.fact .k {
+  display: block;
+  font-size: 10px;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+/* ---------- sections ---------- */
+
+section { margin-bottom: 72px; scroll-margin-top: 24px; }
+
+.part-open {
+  margin: 96px 0 48px;
+  padding-top: 20px;
+  border-top: 2px solid var(--ink);
+}
+.part-open:first-of-type { margin-top: 56px; }
+.part-open h2 {
+  font-family: var(--display);
+  font-size: clamp(1.9rem, 4vw, 2.7rem);
+  font-weight: 800;
+  letter-spacing: -.025em;
+  line-height: 1.05;
+  margin: 0 0 12px;
+}
+.part-open p { color: var(--muted); max-width: 64ch; margin: 0; }
+
+h3 {
+  font-family: var(--display);
+  font-size: 1.52rem;
+  font-weight: 700;
+  letter-spacing: -.018em;
+  line-height: 1.18;
+  margin: 0 0 6px;
+  text-wrap: balance;
+}
+h4 {
+  font-family: var(--display);
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: -.01em;
+  margin: 34px 0 8px;
+}
+p { margin: 0 0 16px; }
+.wrap > p:last-child, section > p:last-child { margin-bottom: 0; }
+
+.tags { display: flex; gap: 6px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; }
+.tag {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 2px;
+  border: 1px solid;
+}
+.tag.hld { color: var(--brass); border-color: var(--brass); background: var(--brass-soft); }
+.tag.lld { color: var(--teal); border-color: var(--teal); background: var(--teal-soft); }
+.tag.src {
+  color: var(--muted);
+  border-color: var(--rule);
+  background: transparent;
+  text-transform: none;
+  letter-spacing: .02em;
+  font-weight: 500;
+}
+
+code {
+  font-family: var(--mono);
+  font-size: .84em;
+  background: var(--surface-2);
+  border: 1px solid var(--rule-soft);
+  border-radius: 3px;
+  padding: .08em .32em;
+}
+
+pre {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--brass);
+  border-radius: 3px;
+  padding: 16px 18px;
+  overflow-x: auto;
+  margin: 20px 0;
+}
+pre code { background: none; border: 0; padding: 0; font-size: inherit; }
+
+ul, ol { margin: 0 0 16px; padding-left: 1.15em; }
+li { margin-bottom: 7px; }
+li::marker { color: var(--brass); }
+
+a { color: var(--ink); text-decoration-color: var(--brass); text-underline-offset: 2px; }
+:focus-visible { outline: 2px solid var(--brass); outline-offset: 3px; }
+
+/* ---------- tables ---------- */
+
+.tablewrap { overflow-x: auto; margin: 22px 0; }
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 14.5px;
+  min-width: 460px;
+}
+th {
+  text-align: left;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  font-weight: 700;
+  color: var(--muted);
+  padding: 0 16px 8px 0;
+  border-bottom: 1px solid var(--ink);
+  vertical-align: bottom;
+}
+td {
+  padding: 9px 16px 9px 0;
+  border-bottom: 1px solid var(--rule-soft);
+  vertical-align: top;
+}
+tr:last-child td { border-bottom: 0; }
+td.num, th.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; padding-right: 0; }
+td.win, .win { color: var(--teal); font-weight: 700; }
+table code { font-size: .82em; }
+
+/* ---------- callouts ---------- */
+
+.trap {
+  border: 1px solid var(--rule);
+  border-top: 3px solid var(--rust);
+  background: var(--surface);
+  padding: 18px 20px;
+  margin: 24px 0;
+  box-shadow: var(--shadow);
+}
+.trap .lab {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: var(--rust);
+  display: block;
+  margin-bottom: 7px;
+}
+.trap p { font-size: 15.5px; margin-bottom: 10px; }
+.trap p:last-child { margin-bottom: 0; }
+
+.rule-note {
+  border-left: 3px solid var(--teal);
+  padding: 4px 0 4px 18px;
+  margin: 24px 0;
+  font-size: 1.06rem;
+}
+.rule-note strong { font-weight: 600; }
+
+/* ---------- figures ---------- */
+
+figure {
+  margin: 30px 0;
+  max-width: 900px;
+}
+.figbox {
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  padding: 22px 24px;
+  overflow-x: auto;
+  box-shadow: var(--shadow);
+}
+figure svg { display: block; width: 100%; height: auto; color: var(--ink); }
+figcaption {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--muted);
+  margin-top: 10px;
+  max-width: 70ch;
+}
+.svg-box { fill: var(--surface-2); stroke: var(--rule); }
+.svg-box-hi { fill: var(--brass-soft); stroke: var(--brass); }
+.svg-box-alt { fill: var(--teal-soft); stroke: var(--teal); }
+.svg-line { stroke: currentColor; fill: none; }
+.svg-line-hi { stroke: var(--brass); fill: none; }
+.svg-line-dim { stroke: var(--muted); fill: none; }
+.svg-t { fill: currentColor; font-family: "JetBrains Mono", monospace; font-size: 12px; }
+.svg-t-sm { fill: var(--muted); font-family: "JetBrains Mono", monospace; font-size: 10.5px; }
+.svg-t-hi { fill: var(--brass); font-family: "JetBrains Mono", monospace; font-size: 11px; font-weight: 700; }
+.svg-fill-dim { fill: var(--muted); }
+.svg-fill-brass { fill: var(--brass); }
+
+/* ---------- pipeline ---------- */
+
+.pipe { list-style: none; padding: 0; margin: 24px 0; counter-reset: step; }
+.pipe li {
+  display: grid;
+  grid-template-columns: 30px minmax(0,1fr);
+  gap: 14px;
+  padding: 11px 0;
+  border-top: 1px solid var(--rule-soft);
+  margin: 0;
+  align-items: baseline;
+}
+.pipe li:last-child { border-bottom: 1px solid var(--rule-soft); }
+.pipe li::before {
+  counter-increment: step;
+  content: counter(step, decimal-leading-zero);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--brass);
+}
+.pipe .what { font-family: var(--mono); font-size: 13px; font-weight: 500; }
+.pipe .why { display: block; font-family: var(--body); font-size: 14.5px; color: var(--muted); margin-top: 2px; }
+.pipe li.hook .what { color: var(--teal); }
+
+/* ---------- budget bar ---------- */
+
+.budget { margin: 26px 0; font-family: var(--mono); font-size: 11.5px; }
+.budget-bar { display: flex; height: 46px; border: 1px solid var(--rule); border-radius: 2px; overflow: hidden; }
+.budget-bar span {
+  display: flex; align-items: center; justify-content: center;
+  font-size: 10px; letter-spacing: .06em; text-transform: uppercase; font-weight: 700;
+  border-right: 1px solid var(--rule);
+}
+.budget-bar span:last-child { border-right: 0; }
+.b-fixed { background: var(--brass-soft); color: var(--brass); flex: 0 0 42%; }
+.b-cards { background: var(--teal-soft); color: var(--teal); flex: 0 0 23%; }
+.b-hist  { background: var(--surface-2); color: var(--muted); flex: 1; }
+.budget-key { display: flex; flex-wrap: wrap; gap: 10px 26px; margin-top: 10px; color: var(--muted); }
+
+/* ---------- limits ---------- */
+
+.limits { list-style: none; padding: 0; margin: 22px 0; }
+.limits li {
+  padding: 12px 0;
+  border-top: 1px solid var(--rule-soft);
+  margin: 0;
+  font-size: 15.5px;
+}
+.limits li:last-child { border-bottom: 1px solid var(--rule-soft); }
+.limits b { font-family: var(--display); font-weight: 700; font-size: 15px; }
+
+footer {
+  margin-top: 90px;
+  padding-top: 22px;
+  border-top: 2px solid var(--ink);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--muted);
+  max-width: 68ch;
+}
+
+@media (max-width: 900px) {
+  .shell { grid-template-columns: minmax(0,1fr); gap: 0; padding: 0 22px 90px; }
+  .rail {
+    position: static; max-height: none; padding: 30px 0 0;
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 20px;
+  }
+  .rail-group { margin-bottom: 0; }
+  body { font-size: 16px; }
+  .fact { padding-right: 16px; margin-right: 16px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}
+</style>
+</head>
+<body>
+
+<div class="shell">
+
+<nav class="rail" aria-label="Contents">
+  <div class="rail-group">
+    <div class="rail-head">Orientation</div>
+    <a href="#what"><span class="n">0.1</span> What it is</a>
+    <a href="#stack"><span class="n">0.2</span> The stack</a>
+  </div>
+  <div class="rail-group">
+    <div class="rail-head">High level</div>
+    <a href="#topology"><span class="n">1.1</span> Topology</a>
+    <a href="#domain"><span class="n">1.2</span> Domain model</a>
+    <a href="#pipeline"><span class="n">1.3</span> Turn pipeline</a>
+    <a href="#modes"><span class="n">1.4</span> Two modes</a>
+    <a href="#noframework"><span class="n">1.5</span> No agent framework</a>
+  </div>
+  <div class="rail-group">
+    <div class="rail-head">Low level</div>
+    <a href="#budget"><span class="n">2.1</span> Context budget</a>
+    <a href="#window"><span class="n">2.2</span> Windowed history</a>
+    <a href="#worldstate"><span class="n">2.3</span> World state</a>
+    <a href="#length"><span class="n">2.4</span> Length, measured</a>
+    <a href="#memory"><span class="n">2.5</span> Memory bank</a>
+    <a href="#tree"><span class="n">2.6</span> The story tree</a>
+    <a href="#undo"><span class="n">2.7</span> Undo &amp; retry</a>
+    <a href="#lock"><span class="n">2.8</span> Turn lock</a>
+    <a href="#stream"><span class="n">2.9</span> Streaming</a>
+    <a href="#sandbox"><span class="n">2.10</span> QuickJS sandbox</a>
+  </div>
+  <div class="rail-group">
+    <div class="rail-head">Operations</div>
+    <a href="#egress"><span class="n">3.1</span> The 189&times; fix</a>
+    <a href="#migrations"><span class="n">3.2</span> Migrations</a>
+    <a href="#security"><span class="n">3.3</span> Spend &amp; security</a>
+    <a href="#analytics"><span class="n">3.4</span> Counting visits</a>
+  </div>
+  <div class="rail-group">
+    <div class="rail-head">Scoreboard</div>
+    <a href="#results">Measured results</a>
+    <a href="#limits">Known limitations</a>
+  </div>
+</nav>
+
+<main class="doc">
+
+<header class="masthead">
+  <p class="eyebrow">AI-DnD &middot; architecture notes</p>
+  <h1>The Engine Room</h1>
+  <p class="standfirst">An AI Dungeon clone is a chat wrapper until four things are true. The prompt is <strong>budgeted</strong>. The numbers are <strong>refereed</strong>. The story is a <strong>tree</strong>. Someone else&rsquo;s JavaScript runs in a <strong>sandbox</strong>. This page shows how each one is built, and what it cost to learn.</p>
+  <div class="facts">
+    <div class="fact"><span class="v">440</span><span class="k">backend tests</span></div>
+    <div class="fact"><span class="v">64</span><span class="k">schema versions</span></div>
+    <div class="fact"><span class="v">189&times;</span><span class="k">egress cut</span></div>
+    <div class="fact"><span class="v">103&nbsp;B</span><span class="k">cost of a branch</span></div>
+    <div class="fact"><span class="v">1</span><span class="k">model call per turn</span></div>
+  </div>
+</header>
+
+<div class="wrap">
+
+<section id="what">
+  <div class="tags"><span class="tag hld">HLD</span></div>
+  <h3>0.1 &ensp;What the thing is</h3>
+  <p>You write a scenario, then play an open-ended text adventure where a language model narrates the world. You type &ldquo;I open the door&rdquo;, the model writes what happens next, and it remembers what came before.</p>
+  <p>Four subsystems carry the weight, and every hard problem in the codebase belongs to one of them:</p>
+  <ol>
+    <li><strong>A context engine.</strong> The model has a finite input window. The app decides, every single turn, which pieces of the story get into the prompt and which get dropped.</li>
+    <li><strong>A world-state engine.</strong> The scenario declares stats (<code>hp</code>, <code>trust</code>, <code>day</code>). The model proposes changes each turn; Python decides what actually sticks.</li>
+    <li><strong>A story tree.</strong> The story is not a list. Any turn can hold more than one take, and writing below a take that isn&rsquo;t live starts a branch that <em>borrows</em> every turn above the fork rather than copying it.</li>
+    <li><strong>A scripting sandbox.</strong> Real AI Dungeon JavaScript imports and runs, inside an embedded QuickJS interpreter.</li>
+  </ol>
+  <p>It runs locally against Ollama for free, or hosted against any OpenAI-compatible endpoint.</p>
+</section>
+
+<section id="stack">
+  <div class="tags"><span class="tag hld">HLD</span></div>
+  <h3>0.2 &ensp;The stack, and what each part is doing</h3>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Piece</th><th>Job in this system</th></tr></thead>
+    <tbody>
+      <tr><td><b>FastAPI</b></td><td>HTTP server. Routes, plus the SSE streaming.</td></tr>
+      <tr><td><b>SQLAlchemy</b></td><td>ORM. <code>Adventure</code>, <code>Action</code>, <code>Memory</code> are Python classes; attribute access becomes <code>SELECT</code>s &mdash; which is exactly how the egress bug happened.</td></tr>
+      <tr><td><b>SQLite / Postgres</b></td><td>One file on disk locally; Neon Postgres when hosted. Same code, two dialects.</td></tr>
+      <tr><td><b>React + Vite</b></td><td>The SPA. Built files are served by FastAPI, same origin, same port.</td></tr>
+      <tr><td><b>httpx</b></td><td>Calls the model endpoint, streaming.</td></tr>
+      <tr><td><b>tiktoken</b></td><td>Counts tokens, so budgeting is arithmetic rather than a guess.</td></tr>
+      <tr><td><b>QuickJS</b></td><td>Embeddable JS engine used as the user-script sandbox.</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+</div>
+
+<div class="part-open">
+  <h2>Part 1 &mdash; The high-level design</h2>
+  <p>What the boxes are, who talks to whom, and the two or three decisions that every later decision inherits.</p>
+</div>
+
+<div class="wrap">
+
+<section id="topology">
+  <div class="tags"><span class="tag hld">HLD</span></div>
+  <h3>1.1 &ensp;One process, two things outside it</h3>
+  <p>Production is a single Docker web service on Render. It serves both the API and the built SPA. Only two things live off-box: the database and the model endpoint.</p>
+  <p>This shape is not an accident. It is what makes the in-process turn lock and the in-memory rate limiter honest. It is also what the <em>Known limitations</em> list is measured against.</p>
+</section>
+
+</div>
+
+<figure>
+  <div class="figbox">
+  <svg viewBox="0 0 880 340" role="img" aria-label="Browser talks to one FastAPI process over HTTP and SSE; that process talks out to Neon Postgres over SQL and to an OpenAI-compatible model endpoint over streaming HTTPS, and runs QuickJS in-process.">
+    <defs>
+      <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="svg-fill-dim"/>
+      </marker>
+      <marker id="arb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="svg-fill-brass"/>
+      </marker>
+    </defs>
+
+    <!-- browser -->
+    <rect x="8" y="96" width="150" height="126" rx="3" class="svg-box"/>
+    <text x="83" y="126" text-anchor="middle" class="svg-t">Browser</text>
+    <text x="83" y="147" text-anchor="middle" class="svg-t-sm">React SPA</text>
+    <text x="83" y="164" text-anchor="middle" class="svg-t-sm">ReadableStream</text>
+    <text x="83" y="181" text-anchor="middle" class="svg-t-sm">reader</text>
+    <text x="83" y="205" text-anchor="middle" class="svg-t-sm">localStorage</text>
+
+    <!-- arrows browser <-> api -->
+    <line x1="160" y1="140" x2="256" y2="140" class="svg-line-hi" stroke-width="1.5" marker-end="url(#arb)"/>
+    <text x="208" y="132" text-anchor="middle" class="svg-t-hi">POST</text>
+    <line x1="256" y1="180" x2="160" y2="180" class="svg-line-hi" stroke-width="1.5" marker-end="url(#arb)"/>
+    <text x="208" y="199" text-anchor="middle" class="svg-t-hi">SSE tokens</text>
+
+    <!-- the one process -->
+    <rect x="258" y="34" width="330" height="266" rx="3" class="svg-box-hi"/>
+    <text x="423" y="58" text-anchor="middle" class="svg-t">One Render web service</text>
+    <text x="423" y="75" text-anchor="middle" class="svg-t-sm">uvicorn &middot; single worker</text>
+
+    <rect x="278" y="92" width="132" height="40" rx="2" class="svg-box"/>
+    <text x="344" y="116" text-anchor="middle" class="svg-t-sm">FastAPI routes</text>
+    <rect x="436" y="92" width="132" height="40" rx="2" class="svg-box"/>
+    <text x="502" y="110" text-anchor="middle" class="svg-t-sm">static SPA</text>
+    <text x="502" y="124" text-anchor="middle" class="svg-t-sm">(same origin)</text>
+
+    <rect x="278" y="146" width="132" height="40" rx="2" class="svg-box"/>
+    <text x="344" y="164" text-anchor="middle" class="svg-t-sm">context builder</text>
+    <text x="344" y="178" text-anchor="middle" class="svg-t-sm">+ referee</text>
+    <rect x="436" y="146" width="132" height="40" rx="2" class="svg-box-alt"/>
+    <text x="502" y="164" text-anchor="middle" class="svg-t-sm">QuickJS</text>
+    <text x="502" y="178" text-anchor="middle" class="svg-t-sm">16 MB / 2 s</text>
+
+    <rect x="278" y="200" width="290" height="40" rx="2" class="svg-box"/>
+    <text x="423" y="218" text-anchor="middle" class="svg-t-sm">in-memory: turn lock &middot; rate windows</text>
+    <text x="423" y="232" text-anchor="middle" class="svg-t-sm">visit counters &middot; summarize tasks</text>
+    <text x="423" y="264" text-anchor="middle" class="svg-t-sm">all single-process by design</text>
+
+    <!-- postgres -->
+    <line x1="590" y1="110" x2="694" y2="110" class="svg-line-dim" stroke-width="1.5" marker-end="url(#ar)"/>
+    <text x="642" y="102" text-anchor="middle" class="svg-t-sm">SQL</text>
+    <rect x="696" y="70" width="176" height="82" rx="3" class="svg-box"/>
+    <text x="784" y="98" text-anchor="middle" class="svg-t">Neon Postgres</text>
+    <text x="784" y="118" text-anchor="middle" class="svg-t-sm">scale-to-zero, 5 min</text>
+    <text x="784" y="135" text-anchor="middle" class="svg-t-sm">egress is the bill</text>
+
+    <!-- model endpoint -->
+    <line x1="590" y1="222" x2="694" y2="222" class="svg-line-dim" stroke-width="1.5" marker-end="url(#ar)"/>
+    <text x="642" y="214" text-anchor="middle" class="svg-t-sm">https</text>
+    <rect x="696" y="182" width="176" height="82" rx="3" class="svg-box"/>
+    <text x="784" y="210" text-anchor="middle" class="svg-t">Model endpoint</text>
+    <text x="784" y="230" text-anchor="middle" class="svg-t-sm">OpenAI-compatible</text>
+    <text x="784" y="247" text-anchor="middle" class="svg-t-sm">Ollama / OpenRouter</text>
+
+    <!-- health note -->
+    <line x1="83" y1="252" x2="83" y2="284" class="svg-line-dim" stroke-width="1.2" stroke-dasharray="3 3"/>
+    <text x="8" y="300" class="svg-t-sm">GET /api/health never touches the DB &mdash; a keep-warm</text>
+    <text x="8" y="316" class="svg-t-sm">pinger wakes the web service without waking Postgres.</text>
+  </svg>
+  </div>
+  <figcaption>The whole system. The brass box is one process: everything inside it shares memory, which is why the turn lock and rate limiter work and also why a second worker would break both.</figcaption>
+</figure>
+
+<div class="wrap">
+
+<section id="domain">
+  <div class="tags"><span class="tag hld">HLD</span><span class="tag src">backend/app/models.py</span></div>
+  <h3>1.2 &ensp;The domain model: template versus instance</h3>
+  <pre><code>User
+ ├─ Scenario   (the template)     ── stat_schema, prompt, memory, author's note
+ │    └─ StoryCard, Script
+ └─ Adventure  (the playthrough)  ── world_state, script_state,
+      │                              head_branch_id, head_depth
+      ├─ Branch  (one line of it) ── parent_branch_id, fork_depth, lineage, name
+      ├─ Action  (one node)       ── branch_id, depth, parent_id, live,
+      │                              text, context_snapshot, state_after
+      ├─ StoryCard  (its own copy)
+      ├─ Memory     (text, embedding, branch_id, depth, use_count)
+      └─ AdventureScript</code></pre>
+  <p>The decision that shapes everything else: <strong>a scenario declares what stats exist. An adventure holds what they are right now.</strong> Creating an adventure copies the scenario&rsquo;s story cards, scripts, and plot fields into it. Editing a scenario later never mutates a game in progress. This is the same reasoning as instantiating a class: shared definition, independent state.</p>
+  <p>The opt-in escape hatch is <em>Update from scenario</em>. <code>GET /adventures/{id}/refresh</code> returns a diff: per-field old and new values, card additions, updates and removals, and world-state paths added or removed. <code>POST</code> to the same path applies it under the turn lock. It never touches the opening action, the adventure&rsquo;s title, its summary, or player-authored cards.</p>
+  <div class="trap">
+    <span class="lab">The trap that made it possible</span>
+    <p>Re-copying scenario text would have re-injected literal <code>${Hero}</code> placeholders. The answers were consumed once at creation and thrown away. And without <code>story_cards.source_ref</code> (<code>card:&lt;id&gt;</code> / <code>npc:&lt;key&gt;</code>, NULL for player-authored), there was no link back. A rename read as delete-plus-add, and player cards would have been clobbered. Two migrations were the price of one feature.</p>
+  </div>
+</section>
+
+<section id="pipeline">
+  <div class="tags"><span class="tag hld">HLD</span><span class="tag src">routers/adventures.py &middot; _generate_turn</span></div>
+  <h3>1.3 &ensp;The turn pipeline</h3>
+  <p>Everything between &ldquo;player pressed a button&rdquo; and &ldquo;text is on screen&rdquo;. Teal steps are user-script hooks &mdash; the points where someone else&rsquo;s JavaScript gets to rewrite the turn.</p>
+  <ol class="pipe">
+    <li class="hook"><div><span class="what">onInput hook</span><span class="why">User JS may rewrite or block the input outright.</span></div></li>
+    <li><div><span class="what">store the player action</span><span class="why">Written before generation, so a failed turn still shows what you typed.</span></div></li>
+    <li><div><span class="what">retrieve memories</span><span class="why">Embed the last 4 actions, cosine-rank the bank, take the top K.</span></div></li>
+    <li><div><span class="what">build_context()</span><span class="why">The budget allocator. Fixed sections first, elastic ones into what is left.</span></div></li>
+    <li class="hook"><div><span class="what">onModelContext hook</span><span class="why">User JS may rewrite the entire assembled prompt.</span></div></li>
+    <li><div><span class="what">snapshot the exact prompt</span><span class="why">Stored on the action. Powers Insights; costs ~74 KB a turn, which becomes §3.1.</span></div></li>
+    <li><div><span class="what">provider.generate()</span><span class="why">One streamed call. Tokens forwarded to the browser as they arrive.</span></div></li>
+    <li class="hook"><div><span class="what">onOutput hook</span><span class="why">Last chance for user JS to touch the text.</span></div></li>
+    <li><div><span class="what">extract + referee the state block</span><span class="why">Parse the fenced JSON delta, clamp it, strip it from the prose.</span></div></li>
+    <li><div><span class="what">save the node</span><span class="why">Stamped with <code>state_after</code> and <code>world_state_after</code> &mdash; the scoreboard as this turn leaves it.</span></div></li>
+    <li><div><span class="what">fire-and-forget: summarize + embed</span><span class="why">Background task, own DB session, never on the shared demo key.</span></div></li>
+  </ol>
+  <p>Two choices are visible in that list before any detail. <strong>The prompt is snapshotted, not reconstructed.</strong> That makes prompt bugs findable, and it makes the database expensive. <strong>Every node also records the state it leaves behind.</strong> Rewinding to before a turn is a read of the node in front of it. That single move is why undo, retry, and a branch switch are the same restore.</p>
+</section>
+
+<section id="modes">
+  <div class="tags"><span class="tag hld">HLD</span><span class="tag src">AIDND_MULTI_USER</span></div>
+  <h3>1.4 &ensp;Two personalities, one codebase</h3>
+  <p>One env var switches the whole app. Not two builds &mdash; the differences are gated at each site.</p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th></th><th>Local (default)</th><th>Hosted</th></tr></thead>
+    <tbody>
+      <tr><td>Users</td><td>One auto-created local user</td><td>Guest on first visit, optional account</td></tr>
+      <tr><td>Auth</td><td>None &mdash; no cookies, no login</td><td>Signed session cookie</td></tr>
+      <tr><td>Rate limits</td><td>Off</td><td>On</td></tr>
+      <tr><td>Row caps</td><td>Off</td><td>On</td></tr>
+      <tr><td><code>/docs</code></td><td>On</td><td>Off</td></tr>
+      <tr><td>Provider</td><td>Whatever Settings points at</td><td>User&rsquo;s key, or the shared demo key</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>Someone running this on their own laptop should never be throttled by their own app. They should never see a login screen, and they should get the interactive API docs. A hosted deployment needs all four of those to be the opposite.</p>
+  <p><strong>Guests upgrade in place.</strong> A visitor gets a guest <code>User</code> row on first load. Registering sets <code>email</code> and <code>password_hash</code> on <em>that same row</em>, so every adventure played as a guest survives with no re-parenting.</p>
+  <p>Guests idle past <code>AIDND_GUEST_RETENTION_DAYS</code> are swept by a single Core <code>DELETE</code>. The FK graph is <code>ON DELETE CASCADE</code> the whole way down. Without it, the ORM path would have pulled every action and memory into Python just to delete them.</p>
+</section>
+
+<section id="noframework">
+  <div class="tags"><span class="tag hld">HLD</span></div>
+  <h3>1.5 &ensp;Why there is no agent framework</h3>
+  <p>Graph-based agent frameworks earn their complexity with branching, cyclic, multi-step control flow. Their path depends on what the model decides, with loops, tool calls, and persisted state between steps. This pipeline is <strong>a fixed linear sequence with exactly one model call.</strong> There is no routing decision, no tool selection, no loop.</p>
+  <p>There is a second, more specific reason. <strong>The budgeting logic is the product.</strong> Buffer-window and summary-memory abstractions are opinionated about how to fit history into a window. Here, the Insights panel exposes each context component, its token cost, and the trigger word that pulled it in. Assembly has to be explicit and inspectable.</p>
+  <div class="rule-note"><strong>When it would flip:</strong> imagine the design used two calls instead. First narrate, then run a separate structured-extraction step, with a retry branch when extraction fails and a tool path for dice. That is a graph, and hand-rolling it would get ugly fast.</div>
+  <div class="rule-note"><strong>This is not the same branching as the story tree.</strong> &ldquo;No branching&rdquo; here describes <em>control flow</em>: the code path a single turn takes through the backend. That path never forks. &ldquo;No branching&rdquo; is not true of the <em>data</em> the app stores. See §2.6: when a player rewinds and plays a turn differently, that action does create a new branch in the saved history. One turn's execution is a straight line. The sequence of turns across a playthrough is a tree. The two claims are about different things and do not conflict.</div>
+</section>
+
+</div>
+
+<div class="part-open">
+  <h2>Part 2 &mdash; The low-level design</h2>
+  <p>The arithmetic, the schemas and the invariants. Each of these is a place where the obvious implementation is wrong, and the reason it is wrong was found by measurement or by a bug.</p>
+</div>
+
+<div class="wrap">
+
+<section id="budget">
+  <div class="tags"><span class="tag lld">LLD</span><span class="tag src">backend/app/context/builder.py</span></div>
+  <h3>2.1 &ensp;Context assembly is a budget problem</h3>
+  <p>Say the budget is 8,000 tokens. A 200-turn adventure has far more story than that. The naive fix is to send the last N turns, but that breaks in both directions. N short exchanges waste the window. N long ones overflow it. Either way, it throws away the premise and the promise you made to the innkeeper.</p>
+  <p>So the prompt is split into two kinds of sections. <strong>Fixed</strong> sections are included whatever they cost. <strong>Elastic</strong> ones fit into what is left.</p>
+
+  <div class="budget">
+    <div class="budget-bar">
+      <span class="b-fixed">fixed sections</span>
+      <span class="b-cards">cards &le; 40%</span>
+      <span class="b-hist">history, newest first</span>
+    </div>
+    <div class="budget-key">
+      <span>fixed &rarr; narrator &middot; stat guide &middot; live state &middot; emit rule &middot; ai_instructions &middot; plot &middot; summary &middot; memories</span>
+      <span>elastic &rarr; story cards, then story turns</span>
+    </div>
+  </div>
+
+  <pre><code>reserved  = every fixed section + author's note + length hint + emit reminder
+available = max(256, context_token_budget - reserved)
+cards      spend up to available * 0.4
+history    spends available - cards_used, filling backwards from newest</code></pre>
+
+  <h4>The details that are decisions</h4>
+  <ul>
+    <li><strong>Cards are capped at 40% of the elastic budget.</strong> Story cards trigger on keyword match. A scene naming six things could pull six lore entries and leave no room for the story. The cap turns that failure into &ldquo;some lore is missing&rdquo; instead of &ldquo;the model has no idea what just happened&rdquo;. Cards that do not fit are still reported to Insights with <code>included: false</code>.</li>
+    <li><strong>History fills newest-first and stops.</strong> Old material is not lost. It has already been summarized into memories and the running summary, both of which sit in the fixed block.</li>
+    <li><strong>If even the newest turn is over budget, it is hard-truncated, not dropped.</strong> A prompt with no story produces nonsense. A prompt with the tail of the last turn produces something.</li>
+    <li><strong>The author&rsquo;s note is injected 3 actions from the end</strong> (<code>AUTHORS_NOTE_DEPTH = 3</code>), not at the top. It is a steering control, so it goes where steering works best: recency.</li>
+    <li><strong>The world-state reminder takes the very last slot.</strong> The full emit rule lives hundreds of tokens up in the system block. A one-line reminder occupies the position closest to where the model starts writing.</li>
+  </ul>
+
+  <div class="trap">
+    <span class="lab">Reliability by imitation</span>
+    <p>The <code>state</code> block is stripped from text before storage. Replayed history then showed the model twenty of its own past turns <em>with no state block</em>, teaching it by example to stop emitting one. Once it missed a turn, it never recovered, and retry did not help.</p>
+    <p>The fix has two halves, both gated on the adventure actually having a schema. First, a one-line <code>EMIT_REMINDER</code> sits in the recency slot. Second, <code>_history_text()</code> reconstructs each past turn&rsquo;s delta block from the stored delta and re-appends it. <code>Action.text</code> stays clean, so the UI, the embeddings, and card trigger-matching are unaffected. History carries only the per-turn <em>delta</em>, for format imitation. The full scoreboard is rendered once, up top.</p>
+  </div>
+</section>
+
+<section id="window">
+  <div class="tags"><span class="tag lld">LLD</span><span class="tag src">backend/app/context/history.py</span></div>
+  <h3>2.2 &ensp;The performance trap hiding inside that</h3>
+  <p>Building the context needs only the newest ~6,000 tokens of story. The obvious implementation reads <code>adventure.actions</code>, which loads every row of the adventure and then discards 90% of it. At turn 200 that was <strong>839 KB read to use about 70 KB</strong>, and it grew every turn.</p>
+  <p><code>history.py</code> serves three shapes straight from SQL: a tail, a slice, and a count. <code>window_covering()</code> fetches the newest 32 actions and measures their real token count. If that falls short, it <em>projects</em> how many more it needs from the average it just measured, instead of blindly doubling:</p>
+  <pre><code>average   = tokens / len(actions)
+projected = int(budget / average * 1.15) + 8</code></pre>
+  <p>Each round fetches only what it does not already hold, so no row is read twice. The same turn now costs <strong>129 KB, flat from about turn 50</strong>. The cost is bounded by the context budget, not by the length of the story.</p>
+  <div class="rule-note"><strong>Second rule in that module:</strong> if the actions are already loaded, slice them instead of querying. The scripting pipeline hands the whole history to user scripts because AI Dungeon&rsquo;s API requires it. On a scripted adventure the rows are already in memory, so a query beside them would mean paying twice.</div>
+</section>
+
+<section id="worldstate">
+  <div class="tags"><span class="tag lld">LLD</span><span class="tag src">backend/app/worldstate/engine.py</span></div>
+  <h3>2.3 &ensp;World state: the AI proposes, Python referees</h3>
+  <p>Three options, and two of them lose.</p>
+  <ul>
+    <li><strong>A deterministic dice engine.</strong> What a real RPG does. It loses here because the action space is unbounded. Mapping arbitrary natural language onto a fixed rules system is harder than the problem being solved.</li>
+    <li><strong>Let the model own the numbers.</strong> Fails immediately. Models are bad at arithmetic, worse at holding a number across twenty turns, and unable to obey their own frequency rules. Tell one &ldquo;change this at most every 5 turns&rdquo; and it changes it every turn.</li>
+    <li><strong>The model proposes, the engine disposes.</strong> Chosen. The model narrates and appends a JSON delta. Python validates and clamps it before anything is stored.</li>
+  </ul>
+  <pre><code>narration: "The blade catches your shoulder. Gwen shouts and drags you back."
+
+```state
+{"player.hp": -15, "npc.gwen.trust": 5, "milestones.escaped": true}
+```</code></pre>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Rule applied, in order</th><th>What it stops</th></tr></thead>
+    <tbody>
+      <tr><td>Path must exist in the schema</td><td>Hallucinated stats</td></tr>
+      <tr><td>Value must be the right type</td><td><code>"a lot"</code> instead of <code>-15</code></td></tr>
+      <tr><td>Cooldown</td><td>Changing a stat more often than the scenario allows</td></tr>
+      <tr><td>Counters can&rsquo;t decrease</td><td>The in-game day going backwards</td></tr>
+      <tr><td><code>max_delta_per_turn</code></td><td>Losing 90 hp to a stubbed toe</td></tr>
+      <tr><td>Clamp to <code>min</code>/<code>max</code></td><td>Negative hp, trust above 100</td></tr>
+      <tr><td>Milestones are sticky, <code>true</code> only</td><td>Un-completing a quest</td></tr>
+      <tr><td>Flags are two-way booleans</td><td>Nothing &mdash; deliberately unrestricted</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>Everything rejected is <em>reported</em>, not silently swallowed: Insights shows applied, clamped and rejected paths per turn, and a chip under each narration shows what actually changed.</p>
+
+  <h4>Word bands are the reliability mechanism</h4>
+  <pre><code>"hp": { "min": 0, "max": 100, "initial": 100,
+        "bands": [[0,20,"very weak"], [20,40,"hurt"], [40,60,"minor damage"],
+                  [60,90,"healthy"], [90,100,"full health"]] }</code></pre>
+  <p>The live state line shows the current band label, like <code>hp 55/100 (minor damage)</code>. The model reads a <em>word</em>, not just a number. The stat guide also prints the whole ladder once per turn. Models reason well over semantics and badly over arithmetic. &ldquo;He&rsquo;s badly hurt, so a solid hit takes him to very weak&rdquo; is a judgment a model can make. &ldquo;55 minus 22 is 33&rdquo; is one it gets wrong often enough to matter.</p>
+
+  <h4>Two philosophies underneath</h4>
+  <p><strong>Nothing in this engine raises.</strong> A malformed delta returns <code>{}</code> and the turn continues. The parser strips trailing commas and leading <code>+</code> signs. It accepts a fence labelled <code>state</code>, one labelled <code>json</code>, or an unlabelled one. It falls back to a bare object hugging the end of the text, but only if that object parses into something delta-shaped, so prose ending in <code>}</code> is never eaten. This tolerance exists because the hosted demo runs on free-tier models. A stricter parser would mean good models work and free ones don&rsquo;t.</p>
+  <p><strong>One call, not two.</strong> Narrate-then-extract is more reliable per call, but it costs twice the latency and twice the rate-limit budget. On a 20&nbsp;req/min free tier, that halves the playable turn rate. The tolerant parser plus the terminal reminder buys the same reliability for less cost.</p>
+</section>
+
+<section id="length">
+  <div class="tags"><span class="tag lld">LLD</span><span class="tag src">builder.length_hint()</span></div>
+  <h3>2.4 &ensp;Output length, decided by measurement</h3>
+  <p>The hint&rsquo;s whole job is protecting the <code>state</code> block, which is emitted last and is therefore what truncation eats. So it must shorten output. The first version lengthened it.</p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Phrasing, cap 800, n=5</th><th class="num">Mean words</th></tr></thead>
+    <tbody>
+      <tr><td>No hint</td><td class="num">174</td></tr>
+      <tr><td>&ldquo;Keep this turn under about 506 words.&rdquo;</td><td class="num" style="color:var(--rust);font-weight:700">246</td></tr>
+      <tr><td>&ldquo;Hard limit &hellip; must not exceed 506 words &hellip; a typical turn is much shorter.&rdquo;</td><td class="num win">170</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p><strong>A budget reads to the model as a target to fill.</strong> Every one of the five budget runs was longer than every unhinted run, 41% longer on average. That pushes output <em>toward</em> the wall the hint exists to avoid. Ceiling phrasing is statistically indistinguishable from no hint at loose caps, but it still works at tight ones. At cap 250, unhinted runs hit <code>finish_reason: length</code> 2 times in 6. Ceiling-hinted runs hit it 0 times in 6.</p>
+  <p>A one-sided ceiling turned out to be half a fix. Across <em>other</em> models, the same prompt gave wildly different lengths. A terse model has nothing to act on but &ldquo;much shorter&rdquo;, so it collapses to two paragraphs. The hint is now a band with <strong>deliberately asymmetric bounds</strong>, so neither side reads as a number to hit:</p>
+  <pre><code>must not exceed 506 words, and it should not stop short of about 177.
+Prefer the lower end of that range unless the scene genuinely needs more.
+
+LENGTH_FLOOR_SHARE   = 0.35 of the ceiling
+MIN_LENGTH_FLOOR_WORDS = 60    # below this the floor is dropped and the
+MAX_LENGTH_FLOOR_WORDS = 300   # tight-cap string stays byte-identical</code></pre>
+  <div class="rule-note"><strong>The transferable rule:</strong> phrase every number in a prompt as a <em>bound</em>, never a target. Give it two sides. A one-sided hint just moves each model further in whichever direction it already leaned. Test it against no-hint on at least two models with opposite verbosity biases before trusting it.</div>
+  <div class="trap">
+    <span class="lab">Shipped unmeasured, and known to be</span>
+    <p>No test was run on the band wording. Two risks remain open. A stated <em>range</em> may invite landing mid-range on verbose models. Truncation is still silent, since nothing in the app reads <code>finish_reason</code> yet. The better design is a <code>target_length</code> preference separate from <code>max_output_tokens</code>, which is currently a safety wall doubling as the length dial. It was rejected as too big for the ask.</p>
+  </div>
+</section>
+
+<section id="memory">
+  <div class="tags"><span class="tag lld">LLD</span><span class="tag src">backend/app/memorybank.py</span></div>
+  <h3>2.5 &ensp;The memory bank</h3>
+  <p>Turn 4 said you promised the innkeeper you&rsquo;d return. At turn 90, that is long gone from the prompt. But if you walk back into the inn, it should come back. Three layers make that happen:</p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Layer</th><th>Cadence</th><th>What it is</th></tr></thead>
+    <tbody>
+      <tr><td><b>Memory</b></td><td>every 6 actions, from 12</td><td>One or two past-tense sentences of concrete fact.</td></tr>
+      <tr><td><b>Story summary</b></td><td>every 15 actions</td><td>A single &le;250-word overview, rewritten by folding in the new memories.</td></tr>
+      <tr><td><b>Retrieval</b></td><td>every turn</td><td>Embed the last 4 actions (&le;600 tokens), cosine-rank the bank, inject the top 5.</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>Retrieval is what answers the innkeeper problem. The promise is a memory. The memory has a vector. Walking into the inn produces a query vector near it.</p>
+  <ul>
+    <li><strong>A memory hangs off the node whose block it ends on.</strong> That is a <code>(branch_id, depth)</code> coordinate, not the adventure and not a position in a list. This makes &ldquo;which memories described this turn?&rdquo; an indexed lookup. It is also why memories inherit correctly across a fork: the ones above the fork point already sit on ancestors both lines read.</li>
+    <li><strong>Cursors only advance on success.</strong> Every AI call here is best-effort. If summarization fails, the cursor is unchanged, and the same block is retried on a later turn. There is no retry loop, no backoff, no dead-letter queue. The cadence <em>is</em> the retry mechanism.</li>
+    <li><strong>Pinned memories count toward <code>top_k</code>.</strong> Otherwise, 6 pinned plus <code>top_k=5</code> injects 11 and blows the budget the whole context engine exists to respect.</li>
+    <li><strong>A dimension mismatch scores 0.0, it does not crash.</strong> Change your embedding model, and old 768-dim vectors meet a 1536-dim query. <code>zip()</code> would happily truncate and score garbage silently.</li>
+    <li><strong>Eviction is LRU-ish and non-destructive.</strong> Over capacity (default 200), the least-used unpinned memories are marked <code>forgotten</code> instead of deleted, so you can un-forget one.</li>
+    <li><strong>Background calls never spend the shared demo key.</strong> Summarization and embedding providers are built from the user&rsquo;s own settings, never from the demo config. Unmetered background calls on a server-funded key would be a bill.</li>
+  </ul>
+  <div class="trap">
+    <span class="lab">The measurement that had been running with the feature off</span>
+    <p>Two full rounds of egress work ran with the memory bank effectively disabled. Retrieval needs an embedding model, and embedding providers are BYOK-only by construction. So the demo never embeds, and the stress harness had none configured. Measured later in production: <strong>134 memories, 1536 dims, ~31 KB each as JSON text</strong>. The ranking walked <code>adventure.memories</code>, so the whole bank crossed the wire every turn just to pick five. On a 100-memory adventure that was <strong>3,024 KB per turn against 129 KB for everything else, about 96% of a turn.</strong> Break-even is 4.2 memories.</p>
+    <p>This is not a repeat of the earlier fix. There is no repeating group, no denormalization. It is a <em>format</em> problem (JSON floats at 20 bytes where a float is 4) plus a <em>fetch-frequency</em> problem. <b>Rule: any egress measurement must run with an embedding model configured.</b></p>
+  </div>
+</section>
+
+</div>
+
+<div class="wrap">
+<section id="tree">
+  <div class="tags"><span class="tag lld">LLD</span><span class="tag hld">HLD</span><span class="tag src">context/lineage.py &middot; tree.py &middot; attempts.py</span></div>
+  <h3>2.6 &ensp;The story is a tree</h3>
+  <p>The largest structural change the project has had, and the one with the most reasoning behind it.</p>
+  <p>The story used to be a list, and a mutable one. Retry rewrote the last entry in place. Undo and delete removed entries from the middle. Everything derived from the story was indexed by <em>position in that list</em>: memories, the running summary, the two marks saying how far each had got. A position means something different once anything in front of it is deleted. That one fact produced a family of bugs that all looked different:</p>
+  <ul>
+    <li>Deleting a middle action slid a never-summarized action into the &ldquo;already covered&rdquo; range. A <em>recent</em> action silently never became a memory.</li>
+    <li>Discarding a memory left its actions behind the mark, describing nothing.</li>
+    <li>Retry rewrote text after the mark had passed it. The memory then described narration no longer in the story.</li>
+    <li>The retried row stayed attached while its replacement was written. The model was shown the attempt it was meant to replace and wrote a <em>continuation</em> of it. That exclusion had to be threaded through four separate readers.</li>
+    <li>Attempts lived in a JSON array on the row, with a mirrored copy of the live one in the ordinary columns. That is a repeating group and a denormalization in one.</li>
+  </ul>
+  <div class="rule-note">Each was fixed where it was found. Lined up, the pattern becomes visible: <strong>they are all the same bug. The story is a list nobody may reorder.</strong></div>
+</section>
+</div>
+
+<figure>
+  <div class="figbox">
+  <svg viewBox="0 0 880 300" role="img" aria-label="Branch C's lineage reads its own nodes at depth 6 and 7, branch B capped at depth 5, and branch A capped at depth 3, producing one ordered path without copying any node.">
+    <defs>
+      <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" class="svg-fill-dim"/>
+      </marker>
+    </defs>
+
+    <!-- depth ruler -->
+    <text x="8" y="34" class="svg-t-sm">depth</text>
+    <text x="120" y="34" text-anchor="middle" class="svg-t-sm">0</text>
+    <text x="200" y="34" text-anchor="middle" class="svg-t-sm">1</text>
+    <text x="280" y="34" text-anchor="middle" class="svg-t-sm">2</text>
+    <text x="360" y="34" text-anchor="middle" class="svg-t-sm">3</text>
+    <text x="440" y="34" text-anchor="middle" class="svg-t-sm">4</text>
+    <text x="520" y="34" text-anchor="middle" class="svg-t-sm">5</text>
+    <text x="600" y="34" text-anchor="middle" class="svg-t-sm">6</text>
+    <text x="680" y="34" text-anchor="middle" class="svg-t-sm">7</text>
+    <line x1="90" y1="44" x2="720" y2="44" class="svg-line-dim" stroke-width=".8" stroke-dasharray="2 4"/>
+
+    <!-- branch A lane -->
+    <text x="8" y="90" class="svg-t">A</text>
+    <line x1="108" y1="84" x2="376" y2="84" class="svg-line-hi" stroke-width="2"/>
+    <line x1="376" y1="84" x2="720" y2="84" class="svg-line-dim" stroke-width="1" stroke-dasharray="4 5"/>
+    <circle cx="120" cy="84" r="9" class="svg-box-hi"/><circle cx="200" cy="84" r="9" class="svg-box-hi"/>
+    <circle cx="280" cy="84" r="9" class="svg-box-hi"/><circle cx="360" cy="84" r="9" class="svg-box-hi"/>
+    <circle cx="440" cy="84" r="9" class="svg-box"/><circle cx="520" cy="84" r="9" class="svg-box"/>
+    <circle cx="600" cy="84" r="9" class="svg-box"/>
+    <text x="740" y="88" class="svg-t-sm">not on C&rsquo;s path</text>
+
+    <!-- fork A -> B -->
+    <path d="M360 93 L360 124 L432 124" class="svg-line-hi" stroke-width="1.6" fill="none" marker-end="url(#ar2)"/>
+
+    <!-- branch B lane -->
+    <text x="8" y="150" class="svg-t">B</text>
+    <line x1="440" y1="144" x2="536" y2="144" class="svg-line-hi" stroke-width="2"/>
+    <line x1="536" y1="144" x2="720" y2="144" class="svg-line-dim" stroke-width="1" stroke-dasharray="4 5"/>
+    <circle cx="440" cy="144" r="9" class="svg-box-hi"/><circle cx="520" cy="144" r="9" class="svg-box-hi"/>
+    <circle cx="600" cy="144" r="9" class="svg-box"/><circle cx="680" cy="144" r="9" class="svg-box"/>
+    <text x="740" y="148" class="svg-t-sm">not on C&rsquo;s path</text>
+
+    <!-- fork B -> C -->
+    <path d="M520 153 L520 184 L592 184" class="svg-line-hi" stroke-width="1.6" fill="none" marker-end="url(#ar2)"/>
+
+    <!-- branch C lane -->
+    <text x="8" y="210" class="svg-t">C</text>
+    <line x1="600" y1="204" x2="680" y2="204" class="svg-line-hi" stroke-width="2"/>
+    <circle cx="600" cy="204" r="9" class="svg-box-hi"/><circle cx="680" cy="204" r="9" class="svg-box-hi"/>
+    <text x="704" y="208" class="svg-t-hi">head</text>
+
+    <!-- lineage row -->
+    <line x1="8" y1="238" x2="872" y2="238" class="svg-line-dim" stroke-width=".8"/>
+    <text x="8" y="262" class="svg-t-sm">branches.lineage on C, computed once at fork, never walked:</text>
+    <text x="8" y="284" class="svg-t">[ (C, &#8734;), (B, 5), (A, 3) ]</text>
+    <text x="330" y="284" class="svg-t-sm">&rarr;  ORDER BY depth DESC reads entry 0, then 1, then 2 &mdash; and stops.</text>
+  </svg>
+  </div>
+  <figcaption>Reading branch C. Filled nodes are on the path; the ranges are disjoint and descending, so a tail read consumes the newest entries and never reaches the rest. Clause count is bounded by the context window, not by fork count.</figcaption>
+</figure>
+
+<div class="wrap">
+<section>
+  <h4>The shape</h4>
+  <pre><code>branches(id, adventure_id, parent_branch_id, fork_depth, lineage, name)
+actions (id, adventure_id, branch_id, depth, parent_id, live, text, …, state_after)
+memories(…, branch_id, depth)
+adventures(…, head_branch_id, head_depth)</code></pre>
+  <p><code>depth</code> is a position along <em>a</em> path, not a global turn number: <code>A4</code> and <code>B4</code> are two alternatives, not two turns. Reading branch C is one query:</p>
+  <pre><code>SELECT * FROM actions
+WHERE (branch_id = 'C')
+   OR (branch_id = 'B' AND depth &lt;= 5)
+   OR (branch_id = 'A' AND depth &lt;= 3)
+ORDER BY depth DESC LIMIT 32          -- → A0 A1 A2 A3 B4 B5 C6 C7</code></pre>
+  <p><strong>Why <code>branch_id</code> + <code>depth</code>, and not parent pointers alone.</strong> Parent pointers are the obvious way to store a tree, but they are the wrong way to read one. Reading a story would need N round trips up a chain, which throws away the windowing work of §2.2. Depth replaces the old <code>index</code> as the ordering key, so reads keep the shape they already had. <code>ltree</code> was rejected because it breaks SQLite dev parity and its path column grows per row. Closure tables were rejected for being O(n&sup2;).</p>
+  <p>A branch stores no story of its own. A fork costs only an id, a parent, a fork depth, and a cached ancestry. Measured on a 40-turn story forked twenty times, against the same story flat: a page load of <strong>31,652 B against 31,433 B, or 1.007&times;, about 103 bytes per branch.</strong> No migration, no vacuum, no copy.</p>
+
+  <h4>What a player actually does</h4>
+  <div class="rule-note">Any turn can gain another <strong>take</strong>. On an AI turn that means regenerate. On your own message it means type something else. Stepping between takes with <code>‹&nbsp;2/4&nbsp;›</code> is free, since the story below simply empties: that take has no children yet. <strong>A branch is created when you write below a take that is not the live one</strong>, never before.</div>
+  <p>That rule collapses two operations into one and deletes a distinction from the UI. The first version of this screen had a chip that <em>switched</em> at the tip and only <em>previewed</em> above it, with a second button to take that line. One control's meaning depended on where the reader was standing. It shipped, was driven by hand, and was found unusable. The replacement is a pager that only ever steps, a fork button on every turn, and no tip-versus-past distinction at all.</p>
+
+  <h4>Takes are grouped by parent, not by coordinate</h4>
+  <p>This is the load-bearing detail, and it is not obvious. The natural way to find &ldquo;the other takes of this turn&rdquo; is by coordinate: same branch, same depth. That is wrong in both directions:</p>
+  <pre><code>B ── C   C1   C2              &lt;- three takes, one parent (B)
+          │    └── D1' D2'    &lt;- two takes, parent C2
+          └── D1 D2 D3        &lt;- three takes, parent C1</code></pre>
+  <p>Standing on the C2 path at that depth must read <code>2/2</code>, not <code>5</code>. Coordinate grouping gets that right by accident: writing under a non-live take forks, and the two sets land on different branches. It gets <code>C</code> wrong. Once C is forked onto a branch of its own, it sits alone at its coordinate and reads <code>1/1</code>, having lost C1 and C2 from a pager that must still say <code>1/3</code>.</p>
+  <p>So a node carries <code>parent_id</code>, read for nothing else. The alternative was making a branch&rsquo;s fork point a <em>node</em> rather than a depth, and it was rejected. The whole point of <code>lineage</code> is that a read is an OR-clause per branch instead of a walk. Re-pointing the fork at a node changes path resolution itself, dragging in the cursors, the memory depths, and both bundle formats. <code>parent_id</code> is one indexed lookup, never a walk.</p>
+
+  <h4>Cursors become anchors</h4>
+  <p>The two marks, how far the memory bank has got and how far the summary has got, used to be counts. A count is a position in a list. Every rule about sliding, rewinding, and translating between positions and <code>Action.index</code> existed to patch up the fact that the list moves.</p>
+  <p>A cursor is now an <strong>anchor</strong>: <code>(branch_id, depth)</code>, the node up to and including which the work is done. Deleting an action does not move it. &ldquo;What is not covered yet?&rdquo; becomes a question about the story instead of a list index, and it answers correctly no matter what has been deleted in front of it. The branch half is what makes it survive forking. A depth alone is ambiguous once two branches both have a node 41.</p>
+  <p><code>position_of_index</code>, <code>note_action_removed</code>, <code>settled_story_actions</code>, and the cursor-rewind machinery were <strong>deleted</strong>, not left unused. So was the one-turn memory holdback that existed because a retry could rewrite an action the mark had already passed.</p>
+
+  <div class="trap">
+    <span class="lab">Three findings only hand-driving produced</span>
+    <p><strong>A sibling group breaks every query that assumed one row per depth.</strong> <code>_latest_narration</code> ordered by <code>(depth desc, id desc)</code> and got the <em>newest</em> attempt rather than the live one. The index screen quoted a take the player had thrown away. Anything ranking actions by coordinate needs <code>live</code> in the filter.</p>
+    <p><strong><code>delete_turn</code> meant &ldquo;every take at this coordinate&rdquo;.</strong> Once the group spans branches, undo reached onto another line and deleted a take nobody asked about. Anything that reads a take group and then <em>writes</em> has to say whether it means the turn or the coordinate.</p>
+    <p><strong>The adventure GET does not build <code>ActionOut</code>.</strong> It hands the window to the relationship with <code>set_committed_value</code> and lets Pydantic walk it. Patching every place that builds <code>ActionOut</code> still misses this one path, and every page load takes it.</p>
+  </div>
+
+  <p>One review finding was <em>rejected</em>, and that is the part worth keeping. A memory the player types lands on the head&rsquo;s coordinate. A retry withdraws every memory at that coordinate, so the note disappears. That is reproduced and real, but it is the rule working: <em>a memory anchored to a node describes that node and goes when the node goes.</em> The root node is the one exception. The pre-tree bank was parked on depth 0, the one depth every branch can see, so withdrawing it would retire a whole bank in a click.</p>
+</section>
+
+<section id="undo">
+  <div class="tags"><span class="tag lld">LLD</span></div>
+  <h3>2.7 &ensp;Undo and retry that actually rewind</h3>
+  <p>Most implementations of undo delete the last message. That is wrong here, because a turn mutates three things: the text, the scripting scoreboard (<code>script_state</code>), and the RPG stats (<code>world_state</code>).</p>
+  <p>Every node carries <code>state_after</code> and <code>world_state_after</code>, deep copies of the adventure once that turn had played. Rewinding to before a turn is a read of the node in front of it, so <strong>undo, retry, and a branch switch are the same restore.</strong> The cooldown clock comes along free. It lives inside the world state at <code>_meta.last_changed</code>, so each line of the story carries its own without anything having to know there is one.</p>
+  <p>Nothing a retry replaces is thrown away. The old attempt stays as another take, a sibling node with <code>live</code> false, and the pager steps between them. Retry is not a special case. It is the tree with the branch not yet created.</p>
+  <ul>
+    <li><strong>The turn being retried is excluded from its own context.</strong> Its takes are still attached to the adventure. Without <code>exclude_action_id</code>, the model is shown the attempt it is replacing as established story. The exclusion had leaked into four readers: history replay, story-card trigger matching, in-scene NPC detection, and the memory-bank similarity query. <em>Anything reading the story during generation takes the exclusion.</em></li>
+    <li><strong>A retry reuses the turn&rsquo;s depth</strong>, not the next one. Cooldowns are measured along the path. A new depth would advance the clock the cooldown rules run on, and it would quietly unlock stats that should still be waiting.</li>
+    <li><strong>If regeneration fails, the rollback is reversed.</strong> <code>generate_turn</code> wraps the generator in <code>try/finally</code>. A provider error, an empty reply, a script <code>stop</code>, or the browser hanging up puts the previous take back in charge. Otherwise server state drifts from the text still on the user&rsquo;s screen.</li>
+  </ul>
+</section>
+
+<section id="lock">
+  <div class="tags"><span class="tag lld">LLD</span></div>
+  <h3>2.8 &ensp;The turn lock</h3>
+  <p>One turn at a time per adventure. The subtlety is <em>where</em> the check goes. A <code>StreamingResponse</code> does not start iterating its generator until the response begins. A check inside the generator would let two rapid requests both pass before either claims the slot. And because sync FastAPI endpoints run in a threadpool, the test-and-set needs a real <code>threading.Lock</code>.</p>
+  <pre><code>def acquire_turn_lock(adventure_id):          # in the REQUEST handler
+    with _active_turns_guard:
+        if adventure_id in _active_turns:
+            raise HTTPException(409, "A turn is already generating…")
+        _active_turns.add(adventure_id)
+
+async def with_turn_lock(adventure_id, gen):  # wraps the SSE generator
+    try:
+        async for event in gen: yield event
+    finally:
+        _active_turns.discard(adventure_id)</code></pre>
+  <p>The lock is in-memory, so it is a single-process guarantee. That is honest for the deployment it targets. Two workers would need the lock in the database.</p>
+</section>
+
+<section id="stream">
+  <div class="tags"><span class="tag lld">LLD</span></div>
+  <h3>2.9 &ensp;Streaming</h3>
+  <p>The app uses Server-Sent Events, not WebSockets. Traffic is one-directional, and a bidirectional connection for a unidirectional problem is cost with no return. FastAPI reads the provider&rsquo;s stream and yields <code>data: {"type":"chunk","text":"…"}</code>. The frontend reads the body with a <code>ReadableStream</code> reader, buffers on <code>\n\n</code> boundaries, and dispatches each event. Event types: <code>player</code>, <code>reasoning</code> (thinking traces, into their own collapsible panel with their own budget), <code>chunk</code>, <code>stopped</code>, <code>error</code>, <code>done</code>.</p>
+  <div class="trap">
+    <span class="lab">Two things that only appear when hosted</span>
+    <p><code>X-Accel-Buffering: no</code>. nginx-style reverse proxies buffer by default, turning a stream into one delivery at the end.</p>
+    <p>The security-headers and body-size middlewares are written as <strong>pure ASGI</strong> rather than Starlette&rsquo;s <code>BaseHTTPMiddleware</code>. The latter buffers the response body, which would break streaming outright.</p>
+  </div>
+  <p>The empty-reply case is diagnosed, not just reported as &ldquo;empty&rdquo;. If a reasoning model streams thinking but no story text, it spent its whole budget thinking. The error says so and names the three settings to change.</p>
+</section>
+
+<section id="sandbox">
+  <div class="tags"><span class="tag lld">LLD</span><span class="tag src">backend/app/scripting/</span></div>
+  <h3>2.10 &ensp;The QuickJS sandbox</h3>
+  <p>Real AI Dungeon scripts define <code>modifier(text)</code> and call it as the last line, with globals like <code>state</code>, <code>history</code>, and <code>storyCards</code>. The same contract runs here, inside an embedded QuickJS interpreter. The safety properties are mostly <em>structural</em>. Nothing was removed, because nothing was there to begin with.</p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Property</th><th>How</th></tr></thead>
+    <tbody>
+      <tr><td>No filesystem, network or process access</td><td>QuickJS has none by default</td></tr>
+      <tr><td>Memory cap</td><td>16 MB per run</td></tr>
+      <tr><td>CPU cap</td><td>2 seconds per run</td></tr>
+      <tr><td>No shared state between runs</td><td>A fresh <code>Context</code> per hook execution</td></tr>
+      <tr><td>A broken script can&rsquo;t break a turn</td><td>Every failure returns <code>.error</code> with text, state and cards unchanged</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>Data crosses the boundary as JSON. Python serializes <code>{state, text, history, storyCards, info}</code> in, and the script&rsquo;s results come back out the same way. There is no object bridge to exploit.</p>
+  <p>One bug-compatibility is deliberate: <code>addStoryCard</code> returns the new card&rsquo;s <em>index</em>. The first card returns <code>0</code>, which is falsy, so <code>if (!addStoryCard(...))</code> misfires. That is upstream AI Dungeon&rsquo;s behavior. Matching real scripts is the entire point of the feature.</p>
+</section>
+
+</div>
+
+<div class="part-open">
+  <h2>Part 3 &mdash; Running it in public</h2>
+  <p>A hosted demo on a free tier turns three things into engineering problems that a local app never has: bytes on the wire, a spending surface, and strangers.</p>
+</div>
+
+<div class="wrap">
+
+<section id="egress">
+  <div class="tags"><span class="tag lld">LLD</span><span class="tag src">migration 36 &middot; tests/test_egress.py</span></div>
+  <h3>3.1 &ensp;The 189&times; egress fix</h3>
+  <p>Neon&rsquo;s free tier allows 5 GB of network transfer per project per billing period, and it hard-blocks <em>at connection time</em>. There is no read-only grace. You cannot even <code>pg_dump</code> your way out once it trips. This app tripped it.</p>
+  <p>The diagnosis came from the monitoring tab, not a guess. The database was ~55 MB, and had transferred 5 GB. Compute was idle most of the day, and the pooler never exceeded three connections. That is the whole database, ninety times over: a payload-per-request problem, not traffic volume and not a leak.</p>
+  <p><code>Action.context_snapshot</code> holds the entire assembled prompt, about 74 KB per row and 94% of the database. Every adventure load pulled it for every action, just to read two small fields out of it. SQLAlchemy loads all columns by default.</p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Step</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>Move the two things actually needed per action into their own column, <code>Action.world_delta</code>.</td></tr>
+      <tr><td>2</td><td>Mark the heavy columns <code>deferred</code> &mdash; <code>context_snapshot</code>, <code>variants</code>, <code>reasoning</code> &mdash; so they load only when asked for.</td></tr>
+      <tr><td>3</td><td>Backfill with dialect-specific <em>server-side</em> SQL (<code>json_extract</code> on SQLite, <code>#&gt;</code> on Postgres) so the 39 MB never crosses the wire.</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>One adventure load went from <strong>38.5 MB to 0.20 MB</strong>. A second round found two more problems. <code>Action.variants</code> was bulk-fetched just to compute a count, fixed the same way plus a real <code>variant_count</code> column. And <code>story_actions()</code> walked the relationship, so a turn was O(story length), which is what §2.2 replaced. A 200-turn playthrough went from 84.5 MB to 23.0 MB. A delete went from 115 KB to 5 KB.</p>
+  <div class="rule-note"><strong>What makes it stick:</strong> <code>tests/test_egress.py</code> hooks SQLAlchemy&rsquo;s <code>before_cursor_execute</code>. It captures every statement the ORM emits and fails if a bulk load ever names those columns again. The regression is caught by asserting on the <em>SQL</em>, not on a timing. It was verified by sabotage.</div>
+  <div class="trap">
+    <span class="lab">Four traps from that work</span>
+    <p><strong><code>Query.count()</code> wraps the entity select in a subquery,</strong> so the emitted SQL names every deferred column. No bytes come back, but the database still reads them. A SQL-grepping guard cannot tell that apart from a real bulk fetch. Use <code>db.query(func.count(Action.id))</code> instead.</p>
+    <p><strong>SQL and Python must agree exactly on what counts as a story action,</strong> or cursors point at the wrong one. <code>trim()</code> strips only spaces, so fold <code>\n\r\t</code> with <code>replace()</code> first.</p>
+    <p><strong>Read table sizes from column sums, not <code>n_live_tup</code>.</strong> After a migration rewrites a table, that estimate goes stale in the direction that makes bloat look smaller. It said ~40 MB was reclaimable; the real figure was 79 MB. <code>sum(octet_length(col))</code> is the honest number.</p>
+    <p><strong>After a migration that rewrites <code>actions</code>, run one <code>VACUUM FULL actions;</code></strong> on the direct endpoint, not the pooler. It takes an ACCESS EXCLUSIVE lock. And <code>DROP COLUMN</code> is metadata-only in Postgres, so it frees nothing by itself.</p>
+  </div>
+  <div class="rule-note"><strong>The cost trap, recorded so nobody undoes the fix:</strong> Neon compute is ~95% of the bill and depends only on <em>awake hours</em>. Never add an uptime pinger that touches the database to dodge Render&rsquo;s cold start. It holds the database awake around the clock and turns ~$0.30/month into ~$19. Point any warmer at <code>/api/health</code> instead, which deliberately does not query the database.</div>
+</section>
+
+<section id="migrations">
+  <div class="tags"><span class="tag lld">LLD</span><span class="tag src">backend/app/migrations.py</span></div>
+  <h3>3.2 &ensp;Migrations, hand-rolled</h3>
+  <p>No Alembic. An append-only list of <code>(version, SQL)</code> pairs, with the current version in SQLite&rsquo;s <code>PRAGMA user_version</code> or a one-row table on Postgres. 64 versions so far.</p>
+  <ul>
+    <li>A <strong>fresh</strong> database is created by <code>Base.metadata.create_all()</code> &mdash; always current &mdash; and stamped at the latest version. It never replays history.</li>
+    <li>An <strong>existing</strong> database runs every migration above its stored version, in order.</li>
+  </ul>
+  <p>Someone may run this single-file SQLite app for months. The entire requirement is &ldquo;add a column, don&rsquo;t lose their data&rdquo;. Alembic&rsquo;s autogenerate, branching, and down-migrations are machinery for a team with a staging environment. This is 250 lines, and you can read all of it.</p>
+  <p>The constraint it creates is written at the top of the file. Change <code>models.py</code> so fresh databases are current, <em>and</em> append a pair so existing ones upgrade. Migrations 2&ndash;23 predate Postgres support and use SQLite-only syntax. That is harmless, because every Postgres database starts fresh, but anything added since must run on both dialects.</p>
+  <div class="trap">
+    <span class="lab">Migration #10, and a subtle correctness bug</span>
+    <p>Repairing duplicate action indexes uses <code>UPDATE … FROM</code> with a window function rather than a correlated subquery. SQLite may evaluate a correlated subquery against partially-updated rows, which would produce fresh duplicates while &ldquo;repairing&rdquo; them.</p>
+    <p>Separately, the test suite only ever builds <em>fresh</em> databases. It does not cover migrations as upgrades. Check the upgrade path by hand whenever one is added.</p>
+  </div>
+</section>
+
+<section id="security">
+  <div class="tags"><span class="tag lld">LLD</span><span class="tag hld">HLD</span></div>
+  <h3>3.3 &ensp;The spending surface, and the strangers</h3>
+  <p>The demo lets people play with no signup and no API key, on a key the server pays for. That makes it the most defended code in the project.</p>
+  <p><code>resolve_provider_config()</code> is the single place the BYOK-versus-demo decision is made. On the demo branch it pins <strong>two</strong> things. It pins the <em>model</em> to a whitelist, so no caller-supplied override can aim a server-funded key at an expensive model. It pins the <em>endpoint</em> to the configured demo URL, so the key cannot be redirected to a URL the user controls and harvested. A defensive <code>__post_init__</code> raises if a demo config somehow carries a non-whitelisted model.</p>
+  <div class="trap">
+    <span class="lab">The check that took the site down</span>
+    <p>That backstop tests <code>using_demo</code>, <strong>not</strong> <code>api_key == DEMO_API_KEY</code>. Keying on the key value looks stricter, but it is wrong. The demo key is an ordinary OpenRouter key, so a user can legitimately paste that same value into their own settings as BYOK. Every resolution then raised, 500ing even <code>GET /auth/me</code>, which is the SPA&rsquo;s bootstrap call. Nothing rendered at all.</p>
+    <p><b><code>/auth/me</code> is a single point of failure for the whole frontend.</b> Anything it touches must not be able to raise. And <code>using_demo</code> is what actually means &ldquo;the server is paying&rdquo;.</p>
+  </div>
+
+  <h4>Secrets</h4>
+  <p>Everything derives from one server-side secret. Passwords use <code>hashlib.scrypt</code> (N=2<sup>14</sup>, r=8, p=1, per-password salt, constant-time compare); this is a stdlib function, so it needs no extra dependency. Sessions are <code>v1.&lt;user_id&gt;.&lt;HMAC-SHA256&gt;</code> with no expiry, because long-lived guest sessions are the point. Stored LLM keys are Fernet-encrypted at rest with an <code>enc:</code> prefix, so legacy plaintext rows stay recognizable. The secret auto-generates for local installs, but <strong>multi-user mode refuses to start without the env var</strong>. Hosted filesystems are ephemeral. A regenerated secret on every deploy would silently log out every user and orphan their stored API keys.</p>
+
+  <h4>Two findings from an authorized pen-test</h4>
+  <p><strong>Rate limits were bypassable (High, confirmed live).</strong> The Dockerfile ran uvicorn with <code>--forwarded-allow-ips "*"</code>, which trusts the <em>leftmost</em> <code>X-Forwarded-For</code> value. Render forwards rather than strips the inbound client XFF, appending the real client IP on the right. So the leftmost hop was fully attacker-controlled, and every rotation bought a fresh rate-limit bucket. Proof: a fixed IP hit 429 after 10 login attempts; rotating a spoofed XFF passed 14 of 14. That defeated the only anti-brute-force control in the app.</p>
+  <p>Fixed in two independent layers. <code>limits._client_ip()</code> now reads the <strong>rightmost</strong> hop, the one Render appends, which a client cannot push past. It is tunable via <code>AIDND_TRUSTED_PROXY_HOPS</code>. A new per-account throttle also applies: 8 failures per 15 minutes, <strong>keyed on the target email</strong>, so a botnet with many real IPs still cannot brute one account. The accepted tradeoff is that an attacker can keep a known account in a 15-minute cooldown. That is a nuisance, and it is strictly better than brute force.</p>
+  <p><strong>SSRF via the BYOK endpoint (Medium).</strong> A hosted user could point <code>Settings.endpoint_url</code> at an internal or metadata address, and the connection test echoed part of the response back. <code>netguard.endpoint_block_reason</code> resolves the host and refuses anything where <code>not ip.is_global</code>. It checks at request time, so it resists DNS rebinding. It is a deliberate no-op in local mode, since a local install reaching <code>localhost:11434</code> is the intended case.</p>
+  <p>What held, and is worth naming: per-object authorization was solid throughout. Every <code>{id}</code> route filters on <code>user_id</code>, and sub-resources re-check they belong to their parent. The API key is write-only in every response shape. Session tokens are unforgeable. The sandbox has no host bindings.</p>
+
+  <h4>The guard rails, in numbers</h4>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Guard</th><th class="num">Limit</th></tr></thead>
+    <tbody>
+      <tr><td>Turn generation</td><td class="num">10 / min</td></tr>
+      <tr><td>Auth attempts, per IP</td><td class="num">10 / 5 min</td></tr>
+      <tr><td>Guest creation, per IP (each is a DB row)</td><td class="num">30 / 5 min</td></tr>
+      <tr><td>Script test runs (each costs up to 2 s CPU)</td><td class="num">30 / min</td></tr>
+      <tr><td>Connection test (outbound HTTP to a user URL)</td><td class="num">10 / min</td></tr>
+      <tr><td>Adventures / scenarios / scripts per user</td><td class="num">100 / 200 / 200</td></tr>
+      <tr><td>Actions per adventure</td><td class="num">5,000</td></tr>
+      <tr><td>Request body, and on import endpoints</td><td class="num">2 MB / 20 MB</td></tr>
+      <tr><td>Demo turns per user per day</td><td class="num">20</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>Import endpoints check bundle list lengths against the same caps live creation enforces. Otherwise the cap is bypassed by uploading a file. That check had a bug worth remembering: <strong>a cap has to count what gets written, not what the file says.</strong> The import counted a v1 file&rsquo;s turns, but each turn expands into a row per saved attempt. A file inside a 5,000-action cap could write 50,000 rows.</p>
+</section>
+
+<section id="analytics">
+  <div class="tags"><span class="tag lld">LLD</span><span class="tag src">analytics.py &middot; accesslog.py</span></div>
+  <h3>3.4 &ensp;Counting visits without undoing §3.1</h3>
+  <p>The obvious way to build analytics is to write a row per request and read rows per dashboard query. That would have undone the entire egress fix. So <strong>a visit is a write and never a read.</strong> Counts accumulate in a process-local dict and flush every 60 seconds as UPSERTs into a generic <code>(day, metric, label) → hits</code> table, plus one row per visitor per day for the funnel flags. Every dashboard query is a <code>GROUP BY</code>. It returns tens of rows no matter how much traffic sits behind it.</p>
+  <p><strong>The counters are anonymous and the access log beside them is not, on purpose.</strong> A visitor in the counter tables is <code>HMAC(secret, "visitor:&lt;user id&gt;")</code> truncated to 32 chars. It is one-way, so those tables cannot be joined back to <code>users</code>, and keyed, so no client can compute one. Story content never reaches that module. The identifying half lives in a separate module and a separate table, so the anonymity of the counters is a property of the code rather than a convention.</p>
+  <ul>
+    <li><strong>The funnel counts people, not clicks.</strong> A player who starts six adventures is one person who started an adventure. That is the whole reason the per-visitor-day table exists. Its flags only ever turn on.</li>
+    <li><strong>A failed turn is an HTTP 200 with a bad ending.</strong> Status-code middleware cannot see one. A demo whose model started refusing every request would look perfectly healthy. All five SSE error paths now go through one <code>turn_error()</code> helper.</li>
+    <li><strong>The tests run on SQLite; production is Neon.</strong> A flush that raises is caught and logged. A dialect mistake in the UPSERTs would have stayed invisible while the dashboard quietly stayed empty. One test compiles both statements against the Postgres dialect without connecting to one.</li>
+  </ul>
+</section>
+
+</div>
+
+<div class="part-open">
+  <h2>Part 4 &mdash; The scoreboard</h2>
+  <p>What the work bought, and what it deliberately did not.</p>
+</div>
+
+<div class="wrap">
+
+<section id="results">
+  <div class="tags"><span class="tag hld">HLD</span></div>
+  <h3>Measured results</h3>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Property</th><th class="num">Figure</th></tr></thead>
+    <tbody>
+      <tr><td>Database egress per adventure load</td><td class="num">38.5 MB &rarr; <b class="win">0.20 MB</b></td></tr>
+      <tr><td>Turn read cost at turn 200</td><td class="num">839 KB &rarr; <b class="win">129 KB</b>, flat</td></tr>
+      <tr><td>200-turn playthrough, total reads</td><td class="num">84.5 MB &rarr; <b class="win">23.0 MB</b></td></tr>
+      <tr><td>Cost of a branch</td><td class="num">~103 B &middot; 20 forks load at 1.007&times;</td></tr>
+      <tr><td>Prompt snapshot size</td><td class="num">~74 KB/turn, 94% of the DB</td></tr>
+      <tr><td>Length hint, budget vs ceiling phrasing</td><td class="num">246 vs <b class="win">170</b> words (n=5)</td></tr>
+      <tr><td>Backend tests</td><td class="num">440</td></tr>
+      <tr><td>Schema versions</td><td class="num">64</td></tr>
+      <tr><td>Sandbox limits</td><td class="num">16 MB, 2 s, fresh context</td></tr>
+      <tr><td>Context defaults</td><td class="num">note at depth 3, cards &le; 40%</td></tr>
+      <tr><td>Memory cadence</td><td class="num">memory /6, summary /15, top-5</td></tr>
+      <tr><td>Actual hosting bill</td><td class="num">~$0.30/mo, mostly $0 collected</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>Two of those tests encode a performance property rather than a behavior: <code>test_egress.py</code> asserts on the SQL the ORM emits, and <code>test_history_window.py</code> asserts that the read cost stops growing with story length.</p>
+</section>
+
+<section id="limits">
+  <div class="tags"><span class="tag hld">HLD</span></div>
+  <h3>Known limitations</h3>
+  <p>Deliberate trades for a single-user-first app that also happens to be hosted, written down so nobody has to discover them the hard way.</p>
+  <ul class="limits">
+    <li><b>Single process.</b> The turn lock, the rate limiter and the summarization task all assume one worker. A second would need a row-level advisory lock and Redis.</li>
+    <li><b>No vector index.</b> Retrieval does cosine similarity in Python over the whole bank. Fine at the 200-memory cap; at 10,000 it wants pgvector.</li>
+    <li><b>Prompt snapshots are heavy</b> even after the egress fix. They are deferred, not smaller. Compressing or expiring them is the real fix.</li>
+    <li><b>In-memory rate-limit windows reset on restart,</b> so a restart grants a brief extra allowance.</li>
+    <li><b>Background summarization is a fire-and-forget asyncio task,</b> so it does not survive a restart. At real load it belongs in a queue.</li>
+    <li><b>The two memory marks are one pair on the adventure, not one per branch.</b> Switching lines makes the mark on the line being left unreadable, so that ground is summarized again. It fails in the safe direction &mdash; redo, never skip &mdash; but switching back and forth costs AI calls.</li>
+    <li><b>Story cards are adventure-wide,</b> so a card invented on one branch shows on all of them.</li>
+    <li><b>Editing an already-summarized turn leaves its memory stale.</b> Replacing a turn withdraws what was derived from it; editing one in place does not.</li>
+    <li><b>The frontend has no test runner.</b> This is the standing reason the project keeps finding UI bugs by hand &mdash; every one of the tree-UI findings above was invisible to 440 green backend tests.</li>
+    <li><b>Truncation is silent.</b> Nothing reads <code>finish_reason</code> yet, which is the obvious next step for §2.4.</li>
+  </ul>
+</section>
+
+<footer>
+  <p>Compiled from <code>docs/GUIDE.md</code>, <code>plan/00&ndash;14</code> and <code>plan/STATUS.md</code> in the AI-DnD repository, plus the measurements recorded alongside them. Live at <a href="https://ai-dnd-1gmp.onrender.com">ai-dnd-1gmp.onrender.com</a> &middot; source at <a href="https://github.com/parththakkar106/AI-DnD">github.com/parththakkar106/AI-DnD</a>.</p>
+</footer>
+
+</div>
+
+</main>
+</div>
+</body>
+</html>
