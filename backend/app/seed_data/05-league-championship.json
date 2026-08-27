@@ -1,0 +1,98 @@
+{
+  "title": "[Demo] Road to the Champion",
+  "description": "The first stage of a Pokémon League Championship. Showcases the full world-state system: your active Pokémon's HP and your own focus, a text stat for who's currently out, two rival NPCs with their own stats, flags, and milestones as you fight your way to the title. Open the World State panel on the left to watch it change.",
+  "prompt": "The stadium roars as the announcer calls your name. Across the battlefield, your Round One opponent, Trainer Milo, sends out his Graveler with a grin. \"Eight rounds to the Champion's throne,\" he says, \"and you're not getting past round one.\"\n\nYour rival Sage leans over the rail behind you, arms crossed. \"Don't choke, champ. I want to be the one who beats you, not some rock-throwing tryhard.\"\n\nYour team is ready. Which Pokémon do you send out?",
+  "memory": "The player is a Trainer competing in an eight-round League Championship tournament. Round One opponent is Milo, who favors Rock-type Pokémon. The player's rival Sage is watching from the stands, more interested in facing the player later than in Milo winning. The player has a full team of six Pokémon.",
+  "authors_note": "Keep battles tactical: type matchups, status effects, and terrain matter. Let the crowd and Sage's commentary react to how the fight is going. A loss here should feel costly but not scenario-ending.",
+  "ai_instructions": "Write in second person, present tense. Narrate Pokémon battles move by move, naming the active Pokémon on each side. End each reply where the player can act (choose a move, switch Pokémon, or use an item). Reflect what happens in the numbers each turn: drop the active Pokémon's HP and the opponent's HP with hits, spend focus on strategy/special moves, update the active Pokémon text stat whenever the player switches, shift Milo's resolve and Sage's respect based on how the fight goes, and mark milestones as they're reached.",
+  "tags": "demo, pokemon, tournament, battle, world-state",
+  "icon": "⚡",
+  "stat_schema": {
+    "world": {
+      "round": { "type": "counter", "min": 1, "initial": 1, "desc": "Which round of the eight-round championship this is; only ever counts up." }
+    },
+    "player": {
+      "active_hp": {
+        "desc": "The player's current active Pokémon's HP.",
+        "min": 0, "max": 100, "initial": 100, "max_delta_per_turn": 40,
+        "bands": [[0, 1, "fainted"], [1, 25, "critical"], [25, 50, "hurt"],
+                  [50, 80, "scuffed"], [80, 101, "full health"]]
+      },
+      "focus": {
+        "desc": "The player's concentration, spent calling special strategies or status moves, restored by steady play.",
+        "min": 0, "max": 50, "initial": 40, "max_delta_per_turn": 20,
+        "bands": [[0, 10, "rattled"], [10, 30, "focused"], [30, 51, "in the zone"]]
+      },
+      "active_pokemon": {
+        "type": "text", "initial": "Charmeleon",
+        "desc": "The player's currently active Pokémon. Update it the moment the player switches or sends out a different team member."
+      }
+    },
+    "flags": {
+      "type_advantage_scouted": { "desc": "True once the player has identified a good type matchup against Milo's team.", "initial": false },
+      "crowd_won_over": { "desc": "True once the crowd is cheering for the player.", "initial": false }
+    },
+    "npcs": {
+      "milo": {
+        "name": "Trainer Milo",
+        "keys": "Milo, opponent, Graveler, rock",
+        "desc": "The Round One opponent. Confident, favors Rock-type Pokémon, fights harder the more the match turns against him.",
+        "stats": {
+          "active_hp": {
+            "desc": "Milo's current active Pokémon's HP.",
+            "min": 0, "max": 100, "initial": 100, "max_delta_per_turn": 40,
+            "bands": [[0, 1, "fainted"], [1, 25, "critical"], [25, 50, "hurt"],
+                      [50, 80, "scuffed"], [80, 101, "full health"]]
+          },
+          "resolve": {
+            "desc": "How determined Milo is; climbs as the match turns against him, breaks if he's outclassed too badly.",
+            "min": 0, "max": 100, "initial": 45, "max_delta_per_turn": 25,
+            "bands": [[0, 20, "shaken"], [20, 60, "determined"], [60, 101, "unshakeable"]]
+          }
+        }
+      },
+      "sage": {
+        "name": "Sage",
+        "keys": "Sage, rival",
+        "desc": "The player's rival, watching from the stands. Wants to be the one who beats the player later, so roots against Milo but needles the player about weak play.",
+        "stats": {
+          "respect": {
+            "desc": "How much Sage respects the player's battling right now; rises with sharp, decisive play and falls with sloppy or hesitant play.",
+            "min": -100, "max": 100, "initial": 10, "max_delta_per_turn": 20,
+            "bands": [[-100, -30, "mocking"], [-30, 30, "unimpressed"], [30, 70, "grudgingly impressed"],
+                      [70, 101, "hyped"]]
+          }
+        }
+      }
+    },
+    "milestones": {
+      "type_matchup_found": { "desc": "Identify and exploit a type advantage against Milo's team" },
+      "round_one_won": { "desc": "Defeat Milo and advance past Round One" },
+      "crowd_favorite": { "desc": "Win the crowd over during the match" }
+    }
+  },
+  "story_cards": [
+    {
+      "type": "location",
+      "name": "Championship Stadium",
+      "keys": "stadium, arena, battlefield",
+      "entry": "The League Championship's main battlefield, packed with spectators. Eight rounds stand between any Trainer and the Champion's throne. The field is rocky terrain, favoring Rock- and Ground-type moves.",
+      "notes": "Terrain: rocky. Rock/Ground moves get a slight edge here."
+    },
+    {
+      "type": "character",
+      "name": "Trainer Milo",
+      "keys": "Milo, Graveler, rock trainer",
+      "entry": "Milo is the Round One opponent, a confident Rock-type specialist with a Graveler as his lead. He's fought his way here on brute power and doesn't rattle easily, but a well-placed Water- or Grass-type move can turn the fight fast.",
+      "notes": "Weak to Water and Grass. Resistant to Normal and Flying."
+    },
+    {
+      "type": "character",
+      "name": "Sage",
+      "keys": "Sage, rival",
+      "entry": "Sage is the player's long-time rival, sharp-tongued and competitive. Currently in the stands watching Round One, waiting for a chance to face the player directly in a later round.",
+      "notes": "Not a current opponent. Provides commentary and reacts to the player's performance."
+    }
+  ],
+  "scripts": []
+}
