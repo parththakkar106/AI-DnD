@@ -1,0 +1,243 @@
+/* ---- Form-based schema editor ----
+   One shape for everything: a section is a panel, every entry inside it is a
+   `.se-row` tile, and every control wears a `.se-field` caption. Adding a new
+   kind of entry means reusing those three, not inventing a fourth box. */
+.se-section {
+  margin-bottom: 16px;
+  padding: 13px 15px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-panel);
+}
+.se-section-nested {
+  margin: 10px 0 0;
+  padding: 11px 12px;
+  background: rgba(0, 0, 0, 0.22);
+  border-radius: 8px;
+}
+.se-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.se-section-title {
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--accent);
+}
+.se-hint {
+  margin: -2px 0 10px;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: var(--text-dim);
+}
+.se-empty { color: var(--text-dim); font-size: 0.82rem; padding: 4px 0; }
+.se-add, .se-add-sm {
+  font-size: 0.78rem;
+  padding: 3px 10px;
+  white-space: nowrap;
+}
+.se-add-sm { margin-top: 6px; }
+.se-remove {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 2px 6px;
+  font-size: 0.9rem;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.se-remove:hover { color: var(--danger, #e5484d); }
+
+/* Every control in the editor, one look. The global field rule keys off
+   `input[type="…"]`, so the plain `<input>`s here (keys, descriptions) never
+   matched it and fell back to browser defaults — that mismatch is most of why
+   this panel used to read as a pile of unrelated boxes. Everything below is
+   qualified with `.se` so it outranks that global rule (0,1,1) too. */
+/* `:where()` so the exclusion costs no specificity — a plain
+   `:not([type="checkbox"])` would rank this above the `.se .se-*` overrides
+   below and swallow every one of them. */
+.se input:not(:where([type="checkbox"])), .se textarea, .se select {
+  width: 100%;
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 0.84rem;
+  font-family: inherit;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+/* One entry — a stat, a flag, a milestone. */
+.se-row {
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.018);
+  transition: border-color 0.15s;
+}
+.se-row:last-child { margin-bottom: 0; }
+.se-row:focus-within { border-color: var(--border-bright); }
+/* Wraps because a phone-width row can't fit key + toggle + ✕ side by side, and
+   an input's default `min-width: auto` would push the ✕ off-screen instead. */
+.se-row-top { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 8px; }
+.se .se-key {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.82rem;
+  min-width: 0;
+  max-width: 220px;
+}
+/* Only in the row context — `.se-field` is a *column* flex, where a basis of
+   140px would set the input's height instead of its width. */
+.se .se-row-top .se-key { flex: 1 1 140px; }
+.se-field { display: flex; flex-direction: column; gap: 3px; }
+.se-field > span {
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--text-dim);
+}
+.se-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: flex-end;
+  margin-bottom: 8px;
+}
+.se .se-num input, .se .se-num select { width: 72px; padding: 4px 6px; }
+.se .se-kind select { width: 132px; }
+.se .se-initial-text input { width: 220px; max-width: 100%; }
+.se-check {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 0.8rem; color: var(--text-dim);
+  white-space: nowrap;
+}
+.se-check input { width: auto; }
+/* The global textarea rule also forces min-height:70px, which a 2-row inline
+   field doesn't want. */
+.se .se-area { min-height: 0; line-height: 1.45; resize: vertical; }
+.se-sub-head { font-size: 0.7rem; color: var(--text-dim); margin: 4px 0 4px; }
+.se-band { display: flex; gap: 6px; align-items: center; margin-bottom: 4px; }
+/* Qualified so it outweighs the global input[type="number"] rule (0,1,1) —
+   as a bare class it lost, and the band bounds rendered full-width. */
+.se .se-band-n { width: 64px; padding: 4px 6px; }
+.se .se-band-l { flex: 1 1 60px; width: auto; min-width: 0; }
+.se-bands { margin-top: 8px; }
+
+/* ---- NPC roster (its own page section) ---- */
+.se-npc-grid {
+  display: grid;
+  /* min() so a 320px phone gets one column instead of a 340px overflow */
+  grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr));
+  gap: 14px;
+  align-items: start;
+}
+.se-npc {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-panel);
+  overflow: hidden;
+}
+.se-npc:focus-within { border-color: var(--border-bright); }
+.se-npc-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  background: linear-gradient(180deg, rgba(212, 169, 78, 0.07), transparent);
+}
+.se-avatar {
+  flex-shrink: 0;
+  width: 34px; height: 34px;
+  border-radius: 50%;
+  display: grid; place-items: center;
+  font-family: var(--font-display);
+  font-size: 0.8rem;
+  letter-spacing: 0.02em;
+  color: #14100a;
+  background: linear-gradient(150deg, var(--accent-bright), var(--accent-dim));
+}
+.se-npc-ident { flex: 1; min-width: 0; }
+.se .se-npc-name {
+  padding: 2px 6px;
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+  background: transparent;
+  border-color: transparent;
+}
+.se .se-npc-name:focus { background: var(--bg-input); border-color: var(--border-bright); }
+.se-npc-addr {
+  display: block;
+  margin: 1px 0 0 6px;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.7rem;
+  color: var(--text-dim);
+}
+.se-npc-count {
+  flex-shrink: 0;
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.se-npc-body { padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.se-npc-idfield .se-key { max-width: 100%; }
+.ws-report { list-style: none; margin: 4px 0 0; padding: 0; font-size: 0.82rem; }
+.ws-report li { padding: 2px 0; color: var(--text); }
+
+/* Inline per-turn change chips under an AI message */
+.turn-changes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.chg {
+  font-size: 0.74rem;
+  padding: 2px 8px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  /* A chip must never be wider than the column it sits in: an NPC stat like
+     "bandit leader aggression +10" overruns a phone, and the chip row is
+     inside the story text, which has nothing to scroll. The label may break
+     mid-word as a last resort; the value is glued to it by its own nowrap so
+     the sign and number never end up on separate lines. */
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.chg-val { white-space: nowrap; }
+.chg-up { color: var(--player, #4caf82); border-color: color-mix(in srgb, var(--player, #4caf82) 40%, var(--border)); }
+.chg-down { color: var(--danger, #e5484d); border-color: color-mix(in srgb, var(--danger, #e5484d) 40%, var(--border)); }
+.chg-flag { color: var(--accent-bright); }
+.chg-ms { color: var(--accent-bright); border-color: color-mix(in srgb, var(--accent-bright) 40%, var(--border)); }
+/* A refused change, and a clamp that left the value where it started. The
+   dashed border separates it from the changes that took effect. It is not
+   styled as an error, because the rules refusing a change is them working. */
+.chg-refused {
+  border-style: dashed;
+  color: var(--text-dim);
+  border-color: color-mix(in srgb, var(--danger) 30%, var(--border));
+}
+/* A clamp that reduced a change but still moved the value. */
+.chg-limited { opacity: 0.75; font-style: italic; }
+.ws-report code { color: var(--accent-bright); }
+.ws-delta { color: var(--player); font-variant-numeric: tabular-nums; }
+.ws-flag { color: var(--text-dim); font-style: italic; }
+.ws-rejected { color: var(--text-dim); }
+.side-panel-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+.side-panel-header h2 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 1.05rem;
+  color: var(--accent);
+}
+

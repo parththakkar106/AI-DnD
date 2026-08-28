@@ -1,0 +1,203 @@
+/* ---------- Insights ---------- */
+
+.insights-meta { margin-bottom: 16px; font-size: 0.85rem; }
+.insights-mode { color: var(--text-dim); margin-bottom: 8px; }
+.insights-mode button { padding: 2px 8px; font-size: 0.75rem; }
+.token-total { font-size: 1rem; color: var(--text); margin-bottom: 4px; }
+.token-total.over { color: var(--danger); }
+/* Stacked share-of-context bar. Segment colours come from SECTION_COLORS in
+   Play.jsx so the bar, its legend and each section header stay in sync. */
+.token-split {
+  display: flex;
+  height: 14px;
+  background: var(--bg-input);
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+.token-split.over { box-shadow: 0 0 0 1px var(--danger); }
+.token-seg {
+  min-width: 2px; /* a 0.2% section is still worth seeing */
+  border-right: 1px solid var(--bg-panel);
+  transition: opacity 0.15s ease;
+}
+.token-seg:last-child { border-right: none; }
+.token-seg-free { background: transparent; min-width: 0; border-right: none; }
+.token-seg.faded, .token-legend-item.faded { opacity: 0.25; }
+
+.token-legend {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 1px 12px;
+  margin-bottom: 10px;
+}
+.token-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  padding: 2px 5px;
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  text-align: left;
+  transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+.token-legend-item:hover { background: rgba(255, 255, 255, 0.05); color: var(--text); }
+.token-swatch { width: 9px; height: 9px; border-radius: 2px; flex: none; }
+.token-legend-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.token-legend-pct { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.token-legend-tok {
+  width: 4.5em;
+  text-align: right;
+  opacity: 0.65;
+  font-variant-numeric: tabular-nums;
+}
+.token-legend-more {
+  justify-self: start;
+  background: none;
+  border: none;
+  padding: 2px 5px;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+}
+.token-legend-more:hover { color: var(--accent); background: none; }
+.insights-history { color: var(--text-dim); margin-bottom: 8px; }
+.insights-cards div { margin-bottom: 3px; }
+.insights-cards .dropped { color: var(--danger); }
+
+.ctx-section { margin-bottom: 12px; border-left: 3px solid var(--border); background: rgba(255, 255, 255, 0.015); border-radius: 0 6px 6px 0; }
+.ctx-section .ctx-header {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-dim);
+  padding: 5px 10px 3px;
+}
+.ctx-section pre {
+  margin: 0;
+  padding: 6px 10px 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: Consolas, monospace;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: var(--text);
+  max-height: 260px;
+  overflow-y: auto;
+}
+/* Per-section border/header colours are applied inline from SECTION_COLORS
+   (Play.jsx) — one palette drives the bar, the legend and these headers. */
+
+/* ---------- Scripts ---------- */
+
+.slot-tabs { display: flex; gap: 0; margin-bottom: 4px; }
+.slot-tabs button {
+  border-radius: 0;
+  border-right-width: 0;
+  color: var(--text-dim);
+}
+.slot-tabs button:first-child { border-radius: 8px 0 0 8px; }
+.slot-tabs button:last-child { border-radius: 0 8px 8px 0; border-right-width: 1px; }
+.slot-tabs button.active { color: var(--accent-bright); background: var(--bg-panel); }
+.slot-hint { color: var(--text-dim); font-size: 0.8rem; margin-bottom: 8px; }
+
+.cm-editor { border: 1px solid var(--border); border-radius: 8px; font-size: 0.88rem; }
+.cm-editor.cm-focused {
+  outline: none;
+  border-color: var(--accent-dim);
+  box-shadow: 0 0 0 3px rgba(212, 169, 78, 0.1);
+}
+
+.test-run .row { display: flex; gap: 12px; }
+.test-result {
+  margin-top: 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 0.85rem;
+}
+.test-result .label {
+  text-transform: uppercase;
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+  margin-right: 6px;
+}
+.test-result pre {
+  display: inline-block;
+  margin: 2px 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: Consolas, monospace;
+  vertical-align: top;
+}
+.test-error { color: var(--danger); white-space: pre-wrap; }
+
+.script-attach {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 9px 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 6px;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+.script-attach:hover { border-color: var(--border-bright); }
+.script-attach .dim { color: var(--text-dim); font-size: 0.82rem; }
+
+/* ---------- Memory bank (Phase 6) ---------- */
+
+.memory-row {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 12px;
+  margin-bottom: 6px;
+}
+.memory-row.forgotten { opacity: 0.55; }
+.memory-text { font-size: 0.9rem; white-space: pre-wrap; }
+.memory-meta {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 5px;
+  font-size: 0.78rem;
+}
+.memory-meta .dim { color: var(--text-dim); }
+.memory-meta .action-tools { display: inline-flex; gap: 4px; margin-left: auto; }
+.memory-meta .action-tools button {
+  padding: 1px 8px;
+  font-size: 0.72rem;
+  color: var(--text-dim);
+}
+.memory-meta .action-tools button:hover { color: var(--text); }
+.memory-badge {
+  color: var(--accent);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0 8px;
+}
+
+.script-report { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 8px; }
+.script-error { color: var(--danger); font-size: 0.85rem; margin-bottom: 4px; white-space: pre-wrap; }
+.script-logs {
+  background: var(--bg-input);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-family: Consolas, monospace;
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 6px 0;
+}
+

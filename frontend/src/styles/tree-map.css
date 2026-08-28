@@ -1,0 +1,159 @@
+/* ---------- The story tree, drawn (branch map overlay) ---------- */
+
+.branch-map-open {
+  align-self: flex-start;
+  padding: 5px 12px;
+  font-size: 0.74rem;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+  background: transparent;
+  border: 1px solid var(--border-bright);
+}
+.branch-map-open:hover { color: var(--accent-bright); border-color: var(--accent-dim); }
+
+/* The overlay is deliberately wider and shorter than .modal: a tree is read
+   across, and the number of branches decides the height. */
+.branch-map-overlay { z-index: 60; }
+.branch-map {
+  display: flex;
+  flex-direction: column;
+  width: min(1080px, calc(100vw - 40px));
+  max-height: min(760px, calc(100vh - 60px));
+  background: var(--bg-panel);
+  border: 1px solid var(--border-bright);
+  border-radius: 14px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6), 0 0 40px rgba(212, 169, 78, 0.06);
+}
+.branch-map-header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 18px 22px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.branch-map-header h2 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 1.15rem;
+  color: var(--accent-bright);
+}
+.branch-map-scale {
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.branch-map-close {
+  margin-left: auto;
+  align-self: center;
+  padding: 2px 8px;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid transparent;
+}
+.branch-map-close:hover { color: var(--accent-bright); border-color: var(--border); }
+
+.branch-map-canvas {
+  flex: 1;
+  min-height: 120px;
+  /* Height comes from the branch count, so a deep tree scrolls rather than the
+     diagram shrinking until nobody can read it. Width never scrolls — the map
+     is scaled to fit, which is the whole point of drawing it to one clock. */
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 4px 12px 8px;
+}
+.branch-map-svg { display: block; }
+
+.bm-tick line { stroke: var(--border); stroke-width: 1; stroke-dasharray: 2 6; }
+.bm-tick text {
+  fill: var(--text-dim);
+  font-family: var(--font-ui);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.bm-lane { cursor: pointer; }
+.bm-hit { fill: transparent; }
+.bm-lane:hover .bm-hit { fill: rgba(212, 169, 78, 0.035); }
+.bm-lane.picked .bm-hit { fill: rgba(212, 169, 78, 0.07); }
+.bm-lane:focus { outline: none; }
+.bm-lane:focus-visible .bm-hit { fill: rgba(212, 169, 78, 0.12); }
+
+.bm-line {
+  stroke: var(--border-bright);
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+.bm-fork {
+  fill: none;
+  stroke: var(--border-bright);
+  stroke-width: 2;
+}
+.bm-fork-dot, .bm-tip { fill: var(--border-bright); }
+
+.bm-lane:hover .bm-line, .bm-lane.picked .bm-line { stroke: var(--accent-dim); }
+.bm-lane:hover .bm-fork, .bm-lane.picked .bm-fork { stroke: var(--accent-dim); }
+.bm-lane:hover .bm-tip, .bm-lane.picked .bm-tip { fill: var(--accent); }
+
+/* The line being read: brighter, and its tip carries the glow so where you
+   are standing is findable before a word is read. */
+.bm-lane.here .bm-line { stroke: var(--accent); }
+.bm-lane.here .bm-fork { stroke: var(--accent-dim); }
+.bm-lane.here .bm-tip {
+  fill: var(--accent-bright);
+  filter: drop-shadow(0 0 6px var(--accent-glow));
+}
+.bm-lane.here .bm-name { fill: var(--accent-bright); }
+
+.bm-name {
+  fill: var(--text);
+  font-family: var(--font-story);
+  font-size: 15px;
+}
+.bm-meta {
+  fill: var(--text-dim);
+  font-family: var(--font-ui);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.branch-map-hint {
+  margin: 0;
+  padding: 0 22px 10px;
+  color: var(--text-dim);
+  font-size: 0.82rem;
+  line-height: 1.55;
+}
+
+.branch-map-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px 22px 18px;
+  border-top: 1px solid var(--border);
+}
+.branch-map-detail.here { background: rgba(212, 169, 78, 0.05); }
+.bmd-head { display: flex; align-items: center; gap: 8px; }
+.branch-map-detail .branch-name { font-size: 1.05rem; }
+.branch-map-detail.here .branch-name { color: var(--accent-bright); }
+.branch-map-detail .branch-tools button, .branch-map-detail .branch-confirm button {
+  padding: 4px 11px;
+  font-size: 0.74rem;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid var(--border);
+}
+.branch-map-detail .branch-tools button:hover:not(:disabled),
+.branch-map-detail .branch-confirm button:hover:not(:disabled) {
+  color: var(--accent-bright);
+  border-color: var(--border-bright);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .enter, .skeleton-card, .sk, .toast, .thinking i,
+  .story .action, .page {
+    animation: none !important;
+  }
+  .card.tome:hover { transform: none; }
+}
+

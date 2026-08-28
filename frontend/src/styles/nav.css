@@ -1,0 +1,120 @@
+/* ---------- Top navigation ---------- */
+
+.topnav {
+  display: flex;
+  align-items: center;
+  gap: 26px;
+  padding: 0 28px;
+  height: 56px;
+  background: var(--bg-panel-glass);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+.topnav .brand {
+  font-family: var(--font-display);
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: 0.14em;
+  text-shadow: 0 0 18px var(--accent-glow);
+  margin-right: 6px;
+}
+.topnav a.navlink {
+  color: var(--text-dim);
+  padding: 17px 2px 15px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  border-bottom: 2px solid transparent;
+  transition: color 0.15s, border-color 0.2s;
+}
+.topnav a.navlink.active {
+  color: var(--accent-bright);
+  border-bottom-color: var(--accent);
+  text-shadow: 0 0 14px var(--accent-glow);
+}
+.topnav a.navlink:hover { color: var(--text); }
+
+/* On desktop the wrapper is transparent — its children (nav links + account)
+   participate directly in the .topnav flex row, exactly as before. The mobile
+   query below turns it into a dropdown. */
+.nav-links { display: contents; }
+.nav-hamburger {
+  display: none;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 1.2rem;
+  padding: 6px 8px;
+  margin-left: auto;
+  line-height: 1;
+}
+
+/* Phase 8: account area (hosted multi-user mode only) */
+.nav-account {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.nav-account button { padding: 5px 12px; font-size: 0.82rem; }
+.guest-nudge {
+  color: var(--text-dim);
+  font-size: 0.78rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.account-email {
+  color: var(--text-dim);
+  font-size: 0.82rem;
+  max-width: 220px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+button.linklike {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+button.linklike:hover { text-decoration: underline; }
+@media (max-width: 900px) {
+  .guest-nudge { display: none; }
+}
+
+/* Phase 8: demo-key banner (Settings) */
+.demo-banner {
+  border: 1px solid var(--border-bright);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-bottom: 18px;
+  color: var(--text-dim);
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+.demo-banner strong { color: var(--accent-bright); }
+
+.page {
+  flex: 1;
+  width: 100%;
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 28px 24px;
+  animation: page-in 0.35s ease both;
+}
+@keyframes page-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+

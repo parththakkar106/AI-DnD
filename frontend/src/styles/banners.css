@@ -1,0 +1,25 @@
+/* ---------- Play screen error/success banner ----------
+   Persistent (no auto-dismiss) and can carry a Retry action, so it stays
+   separate from the transient global toasts further down this file. */
+
+.play-toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--bg-panel-glass);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--danger);
+  color: var(--text);
+  padding: 11px 20px;
+  border-radius: 10px;
+  z-index: 100;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+  animation: toast-in 0.25s ease both;
+}
+.play-toast.ok { border-color: var(--accent); box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5), 0 0 20px var(--accent-glow); }
+@keyframes toast-in {
+  from { opacity: 0; transform: translate(-50%, 12px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+
