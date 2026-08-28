@@ -231,3 +231,95 @@ old cap made the reset unreachable in one turn.
 
 **Not fixed:** the `initial == max` shape itself. It is now loud rather than
 silent, and the wording removes the usual cause, but the shape is still there.
+
+---
+
+## Driven against Claude, 2026-08-28
+
+The four turns above ran on the free demo model, which ignored two instructions
+that were present and correct in the prompt. To separate model behavior from
+code, the same demo was played again through `backend/tools/claude_shim.py`, an
+OpenAI-compatible endpoint backed by the local `claude` command line tool. The
+model was `sonnet`. See the README for how to run it.
+
+Every one of the five changes worked:
+
+| Turn | Chips |
+|---|---|
+| 1 | `turn +1`, `active pokemon → Wartortle`, `wartortle hp -8`, `milo active hp -46`, dashed `type advantage used refused — no such flag` |
+| 2 | `turn +1`, `milo active hp -52`, `milo pokemon fainted +1`, `milo active pokemon → Onix`, `✓ graveler defeated` |
+| 3 | `turn +1 (limited)`, dashed `milo active hp no change — at its limit` |
+| 4 | `turn +1`, `milo active hp +32`, `✓ type advantage used` |
+
+`graveler_defeated` fired for the first time in five playtests, `world.turn`
+moved every turn, `pokemon_fainted` went 0 to 1 at the faint, and every HP number
+was a signed change rather than a total. The two failures left open above were
+the demo model, not the instructions.
+
+**The refusal loop is verified end to end.** Turn 3 clamped to nothing. Turn 4's
+assembled prompt, read from `GET /api/adventures/1/actions/9/context`, carried
+the correction verbatim:
+
+```
+[Part of your last state block was not applied. Correct it in this turn's block:
+- `npc.milo.active_hp` did not move. It is already at its minimum of 0 (it runs
+  from 0 to 98; it moves at most 98 per turn).]
+```
+
+The model's next delta was `{"world.turn": 1, "npc.milo.active_hp": 32,
+"milestones.type_advantage_used": true}`. That is the loop the whole change
+exists for, and it had never been observed running.
+
+### The one bug that is still a schema fault
+
+At the faint the model set `npc.milo.active_pokemon` to `Onix` and sent no
+positive `active_hp` change, so Onix arrived on the field at 0 of 98 and every
+later hit was refused. Sonnet followed the rest of the scenario closely, so this
+is the schema rather than the model: `active_hp` is one stat with one `max` of
+98, shared by Graveler at 98, Onix at 90, and Kabutops at 88. A switch has to
+raise it, and nothing in the schema can raise it on the referee's side.
+
+The fix is to give Milo's three Pokemon their own NPC entries, which also removes
+the `initial == max` shape from this demo. Not done: the session's remaining time
+went to the guest starter instead.
+
+### Cost
+
+About $0.04 a turn, billed against the Claude subscription rather than a card.
+Roughly 13k of each request's 20k prompt tokens is the command line tool's own
+overhead; the app's prompt is about 7k.
+
+---
+
+## What shipped alongside it, 2026-08-28
+
+**A permanent local test rig.** `backend/tools/claude_shim.py` is now in the
+repo. It finds the `claude` binary through `AIDND_CLAUDE_BIN`, then `PATH`, then
+the per-user install, and takes `--port` and `--claude`.
+
+**The demo says Pokemon in its title, and has a Pokeball for cover art.**
+`05-league-championship.json` is now `[Demo] Pokemon League Championship: Round
+One`. Renaming a seed exposed a fault: `seed.py` matches a seed to its row by
+title, so a rename inserted a second public scenario and stranded the first,
+which is the same failure this file records for "Road to the Champion". Seeds
+now carry `previous_titles`, and `_find_renamed` lands the rename on the
+existing row. The scenario kept its id, and no orphan appeared.
+
+The cover art is a 3.2 kB PNG data URI. An SVG one was tried first and stored as
+an empty `image_url`: `app/images.py` accepts raster formats only, on purpose,
+because SVG can carry script and these bytes are served from the app's own
+origin. `backend/tools/make_pokeball.py` draws the ball with `zlib` alone, so
+regenerating it needs no image library.
+
+**Every new guest gets the played adventure.** `app/starter.py` copies a shipped
+export bundle into each new guest account, from the guest mint in
+`routers/auth.py`. The bundle is this session's adventure trimmed to its first
+two exchanges, which ends on the knockout and shows an applied change, a refused
+one, and a milestone. It stops before the Onix bug above, and the state it
+leaves has Onix at its own 90 HP so a guest can play on from it.
+
+The row building that `POST /adventures/import` did inline moved into
+`bundle.materialize`, which both callers now use. The limit and rate checks
+stayed in the endpoint: the starter writes a file the server ships, so it has no
+untrusted list to cap. `tests/test_starter_adventure.py` covers the file, the
+copy, the chips, the playable end state, and the two failure paths.

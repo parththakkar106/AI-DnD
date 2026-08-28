@@ -86,8 +86,12 @@ nothing still reads `variant_count`/`variant_index` before dropping them, and no
 is the migration shape that rewrites toasted values, so it owes one `VACUUM FULL actions;`
 on the direct (non-`-pooler`) endpoint afterwards.
 
-Ahead of that, `plan/16-world-state-refusals.md` records a set of world-state fixes that
-are merged but **never driven in a browser**. See that file for what to test.
+Ahead of that, `plan/16-world-state-refusals.md` is closed. Its fixes were driven in a
+browser on 2026-08-28, first on the demo model and then on Claude Sonnet through the
+local shim, and all five changes work. One item in it is still open and is the next
+world-state job: **Milo's three Pokemon share one `active_hp` stat**, so a switch leaves
+the newcomer at 0 HP and every later hit is refused. Give them their own NPC entries,
+which also removes the `initial == max` shape from that demo.
 
 **SP9 and SP10 are both on `main`, despite what earlier notes here said.** The branches
 `sp7b-take-pager` and `sp10-memory-bank-eviction` still exist and still read as unmerged
@@ -203,6 +207,47 @@ it back. SP8's migration rewrites every row.
 **The scroll gap is closed.** It was driven by hand on the 602-action `--keep` fixture
 during SP7 — three prepends, 5 px of drift, no throw-to-the-end. What is still missing is
 an automated version; see SP7's entry in `plan/14`.
+
+---
+
+## What happened on 2026-08-28 — world state against a real model
+
+**The refusal loop ran end to end for the first time.** `plan/16` shipped a correction
+that is injected into the next turn's prompt when the engine clamps or rejects a change,
+and nothing had ever observed it working. Turn 3 of the Pokemon demo clamped to nothing,
+turn 4's assembled prompt carried the note verbatim, and the model's next delta was
+correct. The full record, with the four turns and their chips, is at the end of
+`plan/16-world-state-refusals.md`.
+
+**Two failures blamed on the code were the model.** `graveler_defeated` never firing and
+`world.turn` never moving both survived four playtests on the free demo model, with the
+instructions present and correct in the assembled prompt. Both worked on the first try
+against Sonnet. When an instruction is provably in the prompt, the next thing to change
+is the model, not the wording.
+
+**There is now a permanent way to test against a real model.**
+`backend/tools/claude_shim.py` serves an OpenAI-compatible endpoint backed by the local
+`claude` command line tool, so a demo can be played on a real model with no API key.
+About $0.04 a turn against the subscription. The README documents it under **Connect a
+model**.
+
+**Renaming a seed scenario used to strand its old row.** `seed.py` matches a seed file to
+its scenario by title, so changing a title inserted a second public scenario and left the
+first orphaned and public forever. This is the same failure this file already records for
+"Road to the Champion". Seed files now carry `previous_titles`, and the rename lands on
+the existing row. Verified: the Pokemon demo kept its id.
+
+**Every new guest is given a pre-played adventure.** `app/starter.py` copies a shipped
+export bundle into each new guest account. The point is the first screen: real turns with
+their world-state chips, including a refused change and a milestone, before spending any
+of the daily demo turns. The row building inside `POST /adventures/import` moved to
+`bundle.materialize` so both callers share one writer.
+
+**An SVG data URI is not usable as scenario art.** `app/images.py` accepts raster formats
+only, deliberately, because SVG can carry script and the bytes are served from the app's
+own origin. A rejected value is stored but yields an empty `image_url`, which fails
+quietly. The Pokeball is a 3.2 kB PNG, drawn by `backend/tools/make_pokeball.py` with
+`zlib` alone.
 
 ---
 
@@ -899,7 +944,7 @@ the SQLite dev parity this codebase protects on purpose).
 
 ```
 cd backend
-.venv/Scripts/python.exe -m pytest tests/          # 365 tests (~100s)
+.venv/Scripts/python.exe -m pytest tests/          # 539 tests (~180s)
 .venv/Scripts/python.exe -m tools.stress_session   # egress report (SQLite)
 
 # Same harness against a real Postgres. The target must be a THROWAWAY database
@@ -944,6 +989,26 @@ holds the egress ceilings.
 
 On Windows the report's box-drawing characters crash the default cp1252 console;
 prefix with `PYTHONIOENCODING=utf-8`.
+
+**A real model, without an API key.** `tools/claude_shim.py` serves an OpenAI-compatible
+endpoint backed by the local `claude` command line tool. Point Settings at
+`http://127.0.0.1:8787/v1`, put any string in the API key field, and pick `sonnet`. Set
+the reasoning budget to `0` or `-1`: a positive budget sends `reasoning.max_tokens`,
+which Claude 5 models reject with a 400. It costs about $0.04 a turn against the
+subscription, and it does not serve embeddings.
+
+```
+cd backend
+.venv/Scripts/python.exe tools/claude_shim.py      # 127.0.0.1:8787
+```
+
+**To exercise the guest path**, which is off in single-user mode:
+
+```
+cd backend
+AIDND_MULTI_USER=1 AIDND_SECRET_KEY=throwaway AIDND_DB_PATH=$PWD/guest_scratch.db     .venv/Scripts/python.exe -m uvicorn app.main:app --port 8001
+curl -c jar.txt http://127.0.0.1:8001/api/auth/me   # mints a guest and its starter
+```
 
 Port 8000 is shared with the job-pipeline app, which will squat it and silently shadow
 the AI-DnD API — free it before running the backend, or move the vite proxy with

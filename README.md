@@ -76,7 +76,9 @@ isn't the live one starts a new branch.*
   session cookie), can register (email and password) at any point to keep their data, and each
   user gets isolated data plus their own encrypted-at-rest API key. A server-funded **shared
   demo key** with a daily turn cap lets people try it without bringing a key
-  (`backend/app/auth.py`).
+  (`backend/app/auth.py`). Each new guest is also given a copy of a short pre-played
+  adventure, so the first screen shows real turns and their world-state changes without
+  spending a demo turn (`backend/app/starter.py`).
 
 ## Screenshots
 
@@ -127,9 +129,35 @@ Open **Settings** in the app and point it at any OpenAI-compatible endpoint:
 | LM Studio (local) | `http://localhost:1234/v1` | free, private |
 | OpenRouter | `https://openrouter.ai/api/v1` | `:free` models cost nothing (no embeddings on the free tier) |
 | OpenAI / Groq / vLLM / … | provider's `/v1` URL | anything speaking `/v1/chat/completions` |
+| Claude Code CLI (local) | `http://127.0.0.1:8787/v1` | your Claude subscription instead of an API key; see [Playing against Claude locally](#playing-against-claude-locally) |
 
 Model name, API key, generation parameters, and (optionally) summary and embedding models for
 the Memory Bank are all configured there too. No config files and no rebuild are needed.
+
+### Playing against Claude locally
+
+`backend/tools/claude_shim.py` serves an OpenAI-compatible endpoint backed by the
+`claude` command line tool, so you can play the demos against a real model without an
+API key. Each request spawns one `claude --print` process, which suits the turn engine:
+the app assembles the whole prompt every turn and expects a stateless endpoint.
+
+```sh
+cd backend
+.venv/Scripts/python.exe tools/claude_shim.py      # listens on 127.0.0.1:8787
+```
+
+In Settings, choose the OpenAI-compatible provider, set the base URL to
+`http://127.0.0.1:8787/v1`, put any non-empty string in the API key field, and pick
+`sonnet`. The shim ignores the key and authenticates as you, through the CLI. Set the
+reasoning budget to `0` or `-1`: a positive budget sends a `reasoning.max_tokens` field
+that Claude 5 models reject.
+
+Embeddings are not served. Leave the embedding model blank, or point the Memory Bank at
+a real endpoint.
+
+Run it against a local backend only. The endpoint has no authentication, and anything
+reaching it spends your Claude quota. `app/netguard.py` blocks localhost endpoints when
+`AIDND_MULTI_USER` is set, so a deployed instance cannot be pointed at it.
 
 ## How a turn works
 
@@ -174,7 +202,7 @@ development, Vite proxies `/api` to FastAPI.
 
 ## Tests
 
-497 backend tests: unit tests plus full HTTP integration through the real quickjs scripting
+539 backend tests: unit tests plus full HTTP integration through the real quickjs scripting
 engine, with the LLM provider mocked. CI runs them on every push, alongside the frontend
 lint/build and a Docker image build.
 

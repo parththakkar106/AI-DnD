@@ -954,6 +954,14 @@ guest survives with no re-parenting and no migration step. Three kinds of row sh
 users table: local (email NULL, not guest), guest (email NULL, guest), registered (email
 set).
 
+**Guests start with a story already in progress.** `starter.py` copies a shipped export
+bundle into each new guest account at the same point the row is created. An empty account
+gives a visitor nothing to read, and the daily demo turns are limited, so learning what
+the app does used to cost one of them. The copy is the guest's own from the first moment:
+they can edit, branch, delete, or export it, and nothing links it back to the file. The
+guest row is committed before the copy is attempted, so a failure there still leaves them
+with an account, and the copy itself runs inside a savepoint.
+
 **Guests expire; accounts don't.** One row per curious visitor adds up, so `cleanup.py`
 deletes guests idle for `AIDND_GUEST_RETENTION_DAYS` (default 5), measured as
 `COALESCE(last_seen_at, created_at)`, because `_touch` only writes `last_seen_at` hourly
