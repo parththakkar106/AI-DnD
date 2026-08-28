@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import CodeMirror from '@uiw/react-codemirror'
 import { javascript } from '@codemirror/lang-javascript'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { api } from '../api'
 import { Field, downloadJSON } from '../components'
+import { useDebouncedSave } from '../hooks/useDebouncedSave'
 
 const SLOTS = [
   { key: 'library_js', label: 'Library', hint: 'Shared code prepended to all three hooks.' },
@@ -19,7 +20,7 @@ export default function ScriptEditor() {
   const [script, setScript] = useState(null)
   const [slot, setSlot] = useState('input_js')
   const [status, setStatus] = useState('')
-  const saveTimer = useRef(null)
+  const debounceSave = useDebouncedSave()
 
   // Test-run state
   const [testHook, setTestHook] = useState('input')
@@ -33,12 +34,11 @@ export default function ScriptEditor() {
 
   const setField = (field, value) => {
     setScript((prev) => ({ ...prev, [field]: value }))
-    clearTimeout(saveTimer.current)
-    saveTimer.current = setTimeout(async () => {
+    debounceSave(field, async () => {
       await api.updateScript(id, { [field]: value })
       setStatus('Saved')
       setTimeout(() => setStatus(''), 1500)
-    }, 600)
+    })
   }
 
   const runTest = async () => {

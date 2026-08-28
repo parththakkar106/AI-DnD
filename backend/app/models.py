@@ -619,7 +619,6 @@ class Settings(Base):
             "for the player's next action."
         ),
     )
-    stream: Mapped[bool] = mapped_column(Boolean, default=True)
     # Phase 6: auto-summarization + memory bank
     summary_model: Mapped[str] = mapped_column(String(200), default="")  # "" = main model
     embedding_model: Mapped[str] = mapped_column(String(200), default="")  # "" = bank disabled

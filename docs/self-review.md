@@ -125,12 +125,19 @@ break compatibility. This is documented in `engine.py`'s prelude instead. The cl
 
 ## Cleanup backlog (reuse / simplification / efficiency / altitude — not bugs, apply later)
 
-- **R1** `frontend/src/pages/Play.jsx:26` + `ScenarioEditor.jsx:19` + `ScriptEditor.jsx:34`: three copies of the debounced-autosave and story-card handlers. Extract a `useDebouncedSave` hook and a shared StoryCardList component. Fixing bugs #15/#16 properly may accomplish this.
+- **R1** ~~three copies of the debounced-autosave handler.~~
+  **Half applied in phase 17 (2026-08).** All three use
+  `frontend/src/hooks/useDebouncedSave.js`. A shared StoryCardList component is
+  still open.
 - **R2** `backend/seed_demo.py:228`: re-implements create_adventure. Call the router logic instead.
 - **R3** `backend/app/providers/openai_compatible.py:122`: complete() duplicates _request()'s body building. Add a `stream` param to _request().
-- **R4** `backend/app/routers/adventures.py:476`: six copies of child-resource get+owner-check+404. Extract `get_owned_or_404`.
+- **R4** ~~six copies of child-resource get, owner-check, and 404.~~
+  **Applied in phase 17 (2026-08).** All 32 handlers take the `current_adventure`
+  dependency from `routers/adventures/deps.py`.
 - **R5** `frontend/src/api.js:26`: streamSSE duplicates request()'s error extraction. Extract `throwIfNotOk(resp)`.
-- **S1** `backend/app/models.py:210`: `Settings.stream` is dead state (never read). Delete the column and its schema fields.
+- **S1** ~~`Settings.stream` is dead state (never read).~~
+  **Applied in phase 17 (2026-08).** The column, both schema fields, and migration 65
+  drop it. `R4` went with it: the ownership check is the `current_adventure` dependency.
 - **S2** `frontend/src/pages/Play.jsx:6`: MODES and PLAYER_TYPES are identical constants; lastIsAi/canUndo are computed twice.
 - **E1** `backend/app/context/builder.py:119`: joins and tokenizes the entire adventure history every turn for the trigger window. Walk reversed(actions) until budget instead.
 - **E2** `backend/app/scripting/pipeline.py:77`: rebuilds full history dicts, JSON, and a blocking commit per script per hook. Build once per hook, slice to HISTORY_WINDOW first, and commit once.

@@ -297,6 +297,10 @@ MIGRATIONS: list[tuple[int, str | dict[str, str]]] = [
     # under.
     (63, "ALTER TABLE actions ADD COLUMN parent_id INTEGER REFERENCES actions(id) ON DELETE SET NULL"),
     (64, "CREATE INDEX IF NOT EXISTS ix_actions_parent ON actions (parent_id)"),
+    # Phase 17: `Settings.stream` was dead state. Nothing ever read it, and every
+    # turn streams. This is item S1 in `docs/self-review.md`. The table holds one
+    # row per user, so the rewrite is small and needs no VACUUM FULL.
+    (65, "ALTER TABLE settings DROP COLUMN stream"),
 ]
 
 LATEST_VERSION = max((v for v, _ in MIGRATIONS), default=1)
@@ -427,6 +431,25 @@ def _for_dialect(sql: str | dict[str, str], dialect: str) -> str:
 # Matches the ADD COLUMN migrations in this file. Every one is written above,
 # so this pattern parses only SQL this file controls.
 _ADD_COLUMN = re.compile(r"^\s*ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+\"?(\w+)\"?", re.I)
+_DROP_COLUMN = re.compile(r"^\s*ALTER\s+TABLE\s+(\w+)\s+DROP\s+COLUMN\s+\"?(\w+)\"?", re.I)
+
+
+def _column_already_gone(conn, sql: str) -> bool:
+    """Returns `True` when `sql` drops a column the table no longer has.
+
+    This is the counterpart to `_column_already_there`, for the same reason.
+    `create_all` builds the current schema, which is already missing every
+    column a migration drops. Replaying from an older stamp against a database
+    built that way would fail on a column that is not there.
+    """
+    match = _DROP_COLUMN.match(sql)
+    if match is None:
+        return False
+    table, column = match.group(1), match.group(2)
+    inspector = inspect(conn)
+    if table not in inspector.get_table_names():
+        return False
+    return column not in {col["name"] for col in inspector.get_columns(table)}
 
 
 def _column_already_there(conn, sql: str) -> bool:
@@ -946,7 +969,8 @@ def bootstrap(engine: Engine) -> None:
                 statement = _for_dialect(sql, conn.dialect.name)
                 # Skip the DDL when it has already run. The data pass below it
                 # still runs.
-                if not _column_already_there(conn, statement):
+                if not (_column_already_there(conn, statement)
+                        or _column_already_gone(conn, statement)):
                     conn.execute(text(statement))
                 if version == WORLD_DELTA_VERSION:
                     _backfill_world_delta(conn)

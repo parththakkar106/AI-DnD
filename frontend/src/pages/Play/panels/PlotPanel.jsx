@@ -1,21 +1,16 @@
 // The plot panel: the adventure's own copy of the scenario text and cards.
 
-import { useRef, useState } from 'react'
+import { useState } from 'react'
 import { api } from '../../../api'
 import { Field, StoryCardRow, downloadJSON, pickJSONFile, useToast } from '../../../components'
+import { useDebouncedSave } from '../../../hooks/useDebouncedSave'
 import { RefreshModal } from '../RefreshModal'
 
 function PlotPanel({ adventure, setAdventure, onWorldStateChanged }) {
   const toast = useToast()
   const [plan, setPlan] = useState(null)      // non-null while the modal is open
   const [planning, setPlanning] = useState(false)
-  // One timer per field/card: a single shared timer would cancel the pending
-  // save of whatever was edited previously within the debounce window.
-  const saveTimers = useRef(new Map())
-  const debounceSave = (key, fn) => {
-    clearTimeout(saveTimers.current.get(key))
-    saveTimers.current.set(key, setTimeout(fn, 600))
-  }
+  const debounceSave = useDebouncedSave()
 
   const setField = (field, value) => {
     setAdventure({ ...adventure, [field]: value })

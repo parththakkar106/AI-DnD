@@ -449,7 +449,6 @@ class SettingsOut(ORMModel):
     reasoning_max_tokens: int
     context_token_budget: int
     narrator_prompt: str
-    stream: bool
     summary_model: str
     embedding_model: str
     memory_bank_capacity: int
@@ -496,7 +495,6 @@ class SettingsUpdate(BaseModel):
     reasoning_max_tokens: Annotated[int, Field(ge=-1, le=100_000)] | None = None
     context_token_budget: Annotated[int, Field(ge=256, le=200_000)] | None = None
     narrator_prompt: Prose | None = None
-    stream: bool | None = None
     summary_model: Name | None = None
     embedding_model: Name | None = None
     memory_bank_capacity: Annotated[int, Field(ge=1, le=1000)] | None = None
