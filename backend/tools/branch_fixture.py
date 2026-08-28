@@ -105,7 +105,7 @@ db.commit()
 adv_id = adv.id
 db.close()
 
-adventures.OpenAICompatibleProvider = ScriptedProvider
+adventures.turns.OpenAICompatibleProvider = ScriptedProvider
 auth.resolve_provider_config = lambda s: auth.ProviderConfig(
     "http://fake", "k", "test-model", False)
 limits.rate_limit = lambda *a, **k: None

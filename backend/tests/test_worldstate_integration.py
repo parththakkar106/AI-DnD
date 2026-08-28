@@ -8,7 +8,7 @@ import pytest
 from fastapi import Depends
 from fastapi.testclient import TestClient
 
-from app import auth, limits, models
+from app import auth, limits, models, worldstate
 from app.database import Base, SessionLocal, engine, get_db
 from app.main import app
 from app.routers import adventures
@@ -50,7 +50,7 @@ def client(monkeypatch):
     setup.flush()
     adv = models.Adventure(
         user_id=user.id, scenario_id=scenario.id, title="Run",
-        world_state=adventures.worldstate.instantiate(SCHEMA),
+        world_state=worldstate.instantiate(SCHEMA),
     )
     setup.add(adv)
     setup.flush()
@@ -62,7 +62,7 @@ def client(monkeypatch):
     setup.close()
 
     ScriptedProvider.replies = [AI_REPLY]
-    monkeypatch.setattr(adventures, "OpenAICompatibleProvider", ScriptedProvider)
+    monkeypatch.setattr(adventures.turns, "OpenAICompatibleProvider", ScriptedProvider)
     monkeypatch.setattr(auth, "resolve_provider_config", lambda s: auth.ProviderConfig(
         "http://fake", "k", "test-model", False))
     monkeypatch.setattr(limits, "rate_limit", lambda *a, **k: None)
@@ -79,7 +79,7 @@ def client(monkeypatch):
         yield c
     finally:
         app.dependency_overrides.clear()
-        adventures._active_turns.clear()
+        adventures.turns._active_turns.clear()
         Base.metadata.drop_all(bind=engine)
 
 

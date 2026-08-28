@@ -366,9 +366,9 @@ def test_refresh_is_rejected_while_a_turn_is_generating(client):
 
     sid = make_scenario(client, title="Keep", memory="Old")
     adv_id = start(client, sid)
-    adventures._active_turns.add(adv_id)
+    adventures.turns._active_turns.add(adv_id)
     try:
         r = client.post(f"/api/adventures/{adv_id}/refresh", json={})
         assert r.status_code == 409
     finally:
-        adventures._active_turns.discard(adv_id)
+        adventures.turns._active_turns.discard(adv_id)

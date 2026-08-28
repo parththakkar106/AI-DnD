@@ -57,7 +57,7 @@ def client(monkeypatch):
     # Distinct replies so a take can be told apart from its siblings by text.
     ScriptedProvider.replies = [f"Take {n}." for n in range(1, 40)]
     ScriptedProvider.calls = 0
-    monkeypatch.setattr(adventures, "OpenAICompatibleProvider", ScriptedProvider)
+    monkeypatch.setattr(adventures.turns, "OpenAICompatibleProvider", ScriptedProvider)
     monkeypatch.setattr(
         auth,
         "resolve_provider_config",
@@ -76,7 +76,7 @@ def client(monkeypatch):
         yield c
     finally:
         app.dependency_overrides.clear()
-        adventures._active_turns.clear()
+        adventures.turns._active_turns.clear()
         Base.metadata.drop_all(bind=engine)
 
 

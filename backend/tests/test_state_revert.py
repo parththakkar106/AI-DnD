@@ -33,7 +33,7 @@ def db():
     finally:
         session.close()
         Base.metadata.drop_all(bind=engine)
-        adventures._active_turns.clear()
+        adventures.turns._active_turns.clear()
 
 
 def _make_adventure(db, script_state):
@@ -130,15 +130,15 @@ def test_undo_blocked_by_active_turn_lock(db):
     _add(db, adv, 1, "ai", state_after={})
     db.commit()
 
-    adventures.acquire_turn_lock(adv.id)  # a turn is "generating"
+    adventures.turns.acquire_turn_lock(adv.id)  # a turn is "generating"
     try:
         with pytest.raises(HTTPException) as exc:
             adventures.undo_turn(adv.id, db=db, user=user)
         assert exc.value.status_code == 409
         # The failed undo must not have released someone else's lock.
-        assert adv.id in adventures._active_turns
+        assert adv.id in adventures.turns._active_turns
     finally:
-        adventures._active_turns.discard(adv.id)
+        adventures.turns._active_turns.discard(adv.id)
 
 
 def test_undo_prunes_memory_covering_removed_actions(db):
@@ -221,12 +221,12 @@ def test_retry_restores_the_state_the_turn_started_from(db, monkeypatch):
     db.commit()
 
     monkeypatch.setattr(adventures.limits, "rate_limit", lambda *a, **k: None)
-    monkeypatch.setattr(adventures, "check_demo_cap", lambda *a, **k: None)
+    monkeypatch.setattr(adventures.turns, "check_demo_cap", lambda *a, **k: None)
 
     async def _noop(*a, **k):
         if False:
             yield  # make it an async generator
-    monkeypatch.setattr(adventures, "generate_turn", _noop)
+    monkeypatch.setattr(adventures.turns, "generate_turn", _noop)
 
     adventures.retry_action(adv.id, request=None, db=db, user=user)
 
@@ -238,4 +238,4 @@ def test_retry_restores_the_state_the_turn_started_from(db, monkeypatch):
     assert last.live is True
     assert last.variant_count == 0
     assert last.state_after == {"gold": 20}  # its own outcome, untouched
-    adventures._active_turns.discard(adv.id)
+    adventures.turns._active_turns.discard(adv.id)

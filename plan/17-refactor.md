@@ -18,7 +18,7 @@ stage before it is green.
 | Stage | Work | Status | Landed |
 |---|---|---|---|
 | 0 | Hygiene: worktrees, branches, undocumented settings | done, except the branch deletion | 2026-08-29 |
-| 1 | Split the four largest files | not started | |
+| 1 | Split the four largest files | tests share one setup; the router is a package; three files left | |
 | 2 | Remove duplication | not started | |
 | 3 | SP8: drop the legacy columns | not started | |
 | 4 | Documentation | not started | |
@@ -224,6 +224,45 @@ Keep these importable from the package root, because tests import them by name:
 exactly one module, `turns.py`, and every other module must import the module and
 reach through it. If two modules import the set by value, the lock guards two
 different sets and the turn lock stops working.
+
+### What the router split actually did, 2026-08-29
+
+`backend/app/routers/adventures.py` is now a package of 14 modules. The largest
+is `turns.py` at 443 lines. Four modules exist that the table above does not
+list, because the plan's eleven still mixed unrelated work:
+
+| Extra module | Why it exists |
+|---|---|
+| `deps.py` | Holds the `APIRouter` and the ownership check. It imports nothing else in the package, so every endpoint module can import the router without importing its siblings. |
+| `scenario_text.py` | Copying a scenario's text and cards has two callers, `crud.create_adventure` and `refresh`. Leaving it in either one made the other import an endpoint module. |
+| `nodes.py` | Story-tree navigation that four modules use: `last_action`, `next_index`, `next_depth`, `stand_on`, `db_tip`, `delete_turn`. |
+| `actions.py` | The three action endpoints. They page and delete rather than play a turn, so they do not belong in `crud.py`. |
+
+Two decisions differ from the plan above.
+
+**The package root does not re-export `acquire_turn_lock` or `_active_turns`.**
+The plan said to keep them importable, but that makes a broken patch look like a
+working one. Rebinding `adventures.generate_turn` changes the alias and leaves
+every caller reading the original, and the test still passes. Leaving those names
+off the package root raises `AttributeError` instead. Eighteen test call sites and
+four in `backend/tools/` now say `adventures.turns.<name>`. The package root still
+re-exports the pure helpers, so `adventures.ACTION_PAGE`, `adventures.undo_turn`,
+and `chat.py`'s `from .adventures import SSE_HEADERS, sse` are unchanged.
+
+**`world_delta_of` lives in `turns.py`.** It reads as a world-state helper and sat
+beside the world-state endpoints, but `_generate_turn` is its only caller.
+
+`_active_turns` behaved as the plan warned. Every module reaches it as
+`turns._active_turns`, and a check confirms the four modules see one set object
+and one lock.
+
+One test coupled to the router for an unrelated module: it called
+`adventures.worldstate.instantiate`. It imports `app.worldstate` directly now.
+
+The split moved text rather than retyping it. An AST comparison against the
+pre-split file confirms all 86 definitions are identical, once the `turns.`
+prefix is normalized away. The 549 tests pass, and the OpenAPI schema still lists
+the same 35 operations.
 
 ### `worldstate/engine.py` becomes a package
 

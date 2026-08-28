@@ -582,7 +582,7 @@ def build_fixture(args, rng: random.Random) -> tuple[int, int]:
 
 def install_fakes(user_id: int, rng: random.Random) -> None:
     embeddings = FakeEmbeddings(rng)
-    adventures.OpenAICompatibleProvider = FakeProvider
+    adventures.turns.OpenAICompatibleProvider = FakeProvider
     memorybank.embedding_provider = lambda settings: embeddings
     memorybank.summary_provider = lambda settings: FakeProvider()
     auth.resolve_provider_config = lambda s, **k: auth.ProviderConfig(
@@ -812,7 +812,7 @@ def main(argv=None) -> int:
     print(f"{'total across all shapes':<44}{kb(sum(s.total.fetched for s in meter.scopes)):>16}")
 
     app.dependency_overrides.clear()
-    adventures._active_turns.clear()
+    adventures.turns._active_turns.clear()
 
     # After the shapes, not before: make_bootable() writes, and the meter is
     # still attached until the report above is rendered.

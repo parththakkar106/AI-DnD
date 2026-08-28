@@ -163,7 +163,7 @@ class ScriptedProvider:
         yield ("text", prose + block)
 
 
-adventures.OpenAICompatibleProvider = ScriptedProvider
+adventures.turns.OpenAICompatibleProvider = ScriptedProvider
 auth.resolve_provider_config = lambda s: auth.ProviderConfig(
     "http://fake", "k", "test-model", False)
 limits.rate_limit = lambda *a, **k: None
