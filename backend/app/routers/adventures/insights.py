@@ -12,15 +12,16 @@ from ...context import build_context
 from ...database import get_db
 from ..settings import get_settings
 
-from .deps import CurrentUser, get_adventure_or_404, router
+from .deps import CurrentUser, current_adventure, router
 
 
 @router.get("/{adventure_id}/context")
 async def dry_run_context(
-    adventure_id: int, db: Session = Depends(get_db), user: models.User = CurrentUser
+    db: Session = Depends(get_db),
+    user: models.User = CurrentUser,
+    adventure: models.Adventure = Depends(current_adventure),
 ):
     """Returns what the app would send to the AI if the player continued now."""
-    adventure = get_adventure_or_404(adventure_id, db, user)
     settings = get_settings(db, user)
     if auth.resolve_provider_config(settings).using_demo:
         memories = (
@@ -39,9 +40,8 @@ def action_context(
     adventure_id: int,
     action_id: int,
     db: Session = Depends(get_db),
-    user: models.User = CurrentUser,
+    adventure: models.Adventure = Depends(current_adventure),
 ):
-    get_adventure_or_404(adventure_id, db, user)
     action = db.get(models.Action, action_id)
     if action is None or action.adventure_id != adventure_id:
         raise HTTPException(404, "Action not found")

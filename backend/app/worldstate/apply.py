@@ -5,8 +5,103 @@ place. A proposed change that breaks a limit is recorded as refused rather than
 dropped, because the player and the model both need to see that it did not land.
 """
 import copy
+from typing import NamedTuple
 
 from .schema import STAT_SECTIONS, _initials, instantiate, npc_name
+
+
+class _Target(NamedTuple):
+    """Where one path writes, and what the schema says about the value there."""
+
+    kind: str                # "flag", "milestone", or "stat"
+    section: str             # "flags", "milestones", "player", "world", or "npc"
+    key: str                 # the key inside the container
+    stat_def: dict | None    # the stat's definition, or None for a flag or milestone
+    npc_id: str | None       # the character, for `npc.<id>.<stat>`, else None
+    npc_stats: dict | None   # that character's stat defs, used to build a new block
+
+    def container(self, ws: dict) -> dict:
+        """Returns the dict this path writes into, and creates it if it is missing.
+
+        Call this only when you are about to write. Creating the container is a
+        side effect, and a rejected path must not leave an empty section behind.
+        """
+        if self.npc_id is None:
+            return ws.setdefault(self.section, {})
+        return ws.setdefault("npc", {}).setdefault(self.npc_id, _initials(self.npc_stats))
+
+
+def _resolve(path: str, stat_schema: dict) -> tuple[_Target | None, dict | None]:
+    """Routes one path to the value it names, without deciding what happens to it.
+
+    Returns `(target, None)` when the schema defines the path, and
+    `(None, rejection)` when it does not. The rejection is the entry that goes
+    into a report's `rejected` list, with its reason and its fix already worded.
+
+    `apply_delta` and `apply_override` route paths identically and differ only in
+    what they write, so the routing lives here and each function keeps its own
+    write rule.
+    """
+    parts = path.split(".")
+
+    # `flags.<name>` is a boolean the scenario declares.
+    if parts[0] == "flags" and len(parts) == 2:
+        flag_defs = stat_schema.get("flags") or {}
+        if parts[1] not in flag_defs:
+            return None, {
+                "path": path, "reason": "unknown flag",
+                "fix": f"There is no flag `{parts[1]}`. {_names_phrase('flag', flag_defs)}",
+            }
+        return _Target("flag", "flags", parts[1], None, None, None), None
+
+    # `milestones.<id>` records that a milestone is reached.
+    if parts[0] == "milestones" and len(parts) == 2:
+        milestones = stat_schema.get("milestones") or {}
+        if parts[1] not in milestones:
+            return None, {
+                "path": path, "reason": "unknown milestone",
+                "fix": f"There is no milestone `{parts[1]}`. "
+                       f"{_names_phrase('milestone', milestones)}",
+            }
+        return _Target("milestone", "milestones", parts[1], None, None, None), None
+
+    # `world.<stat>` and `player.<stat>`.
+    if parts[0] in STAT_SECTIONS and len(parts) == 2:
+        stat_defs = stat_schema.get(parts[0]) or {}
+        stat_def = stat_defs.get(parts[1])
+        if not isinstance(stat_def, dict):
+            return None, {
+                "path": path, "reason": "unknown stat",
+                "fix": f"`{parts[0]}` has no stat `{parts[1]}`. "
+                       f"{_names_phrase('stat', stat_defs)}",
+            }
+        return _Target("stat", parts[0], parts[1], stat_def, None, None), None
+
+    # `npc.<id>.<stat>`. Each character carries its own stat definitions.
+    if parts[0] == "npc" and len(parts) == 3:
+        npcs = stat_schema.get("npcs") or {}
+        ndef = npcs.get(parts[1])
+        if not isinstance(ndef, dict):
+            return None, {
+                "path": path, "reason": "unknown npc",
+                "fix": f"There is no character `{parts[1]}`. "
+                       f"{_names_phrase('character', npcs)}",
+            }
+        stat_defs = ndef.get("stats") or {}
+        stat_def = stat_defs.get(parts[2])
+        if not isinstance(stat_def, dict):
+            return None, {
+                "path": path, "reason": "unknown npc stat",
+                "fix": f"`{npc_name(ndef, parts[1])}` has no stat `{parts[2]}`. "
+                       f"{_names_phrase('stat', stat_defs)}",
+            }
+        return _Target("stat", "npc", parts[2], stat_def, parts[1], stat_defs), None
+
+    return None, {
+        "path": path, "reason": "unknown path",
+        "fix": f"`{path}` is not a tracked value. Use player.<stat>, "
+               f"world.<stat>, npc.<id>.<stat>, flags.<name> or milestones.<id>.",
+    }
 
 
 def _coerce_number(value):
@@ -177,10 +272,6 @@ def apply_override(world_state: dict, stat_schema: dict, overrides: dict) -> tup
     if not isinstance(overrides, dict):
         return ws, report
 
-    milestones = stat_schema.get("milestones") or {}
-    flag_defs = stat_schema.get("flags") or {}
-    npcs = stat_schema.get("npcs") or {}
-
     def set_stat(container: dict, key: str, stat_def: dict, value, path: str) -> None:
         if stat_def.get("type") == "text":
             if not isinstance(value, str):
@@ -212,80 +303,42 @@ def apply_override(world_state: dict, stat_schema: dict, overrides: dict) -> tup
 
     for raw_path, value in overrides.items():
         path = str(raw_path)
-        parts = path.split(".")
-
-        if parts[0] == "flags" and len(parts) == 2:
-            fid = parts[1]
-            if fid not in flag_defs:
-                report["rejected"].append({"path": path, "reason": "unknown flag"})
-                continue
-            if not isinstance(value, bool):
-                report["rejected"].append({"path": path, "reason": "not a boolean"})
-                continue
-            flags = ws.setdefault("flags", {})
-            old = bool(flags.get(fid, False))
-            flags[fid] = value
-            report["applied"].append({"path": path, "old": old, "new": value})
+        target, rejection = _resolve(path, stat_schema)
+        if rejection is not None:
+            report["rejected"].append(rejection)
             continue
 
-        if parts[0] == "milestones" and len(parts) == 2:
-            mid = parts[1]
-            if mid not in milestones:
-                report["rejected"].append({"path": path, "reason": "unknown milestone"})
-                continue
+        if target.kind == "flag":
             if not isinstance(value, bool):
-                report["rejected"].append({"path": path, "reason": "not a boolean"})
+                report["rejected"].append({
+                    "path": path, "reason": "not a boolean",
+                    "fix": f"`{path}` takes true or false.",
+                })
                 continue
-            reached = ws.setdefault("milestones", {})
-            old = bool(reached.get(mid, {}).get("reached"))
+            flags = target.container(ws)
+            old = bool(flags.get(target.key, False))
+            flags[target.key] = value
+            report["applied"].append({"path": path, "old": old, "new": value})
+
+        elif target.kind == "milestone":
+            # An override toggles a milestone in both directions, so unlike a
+            # delta it takes false as well as true.
+            if not isinstance(value, bool):
+                report["rejected"].append({
+                    "path": path, "reason": "not a boolean",
+                    "fix": f"`{path}` takes true or false.",
+                })
+                continue
+            reached = target.container(ws)
+            old = bool(reached.get(target.key, {}).get("reached"))
             if value:
-                reached[mid] = {"reached": True}
+                reached[target.key] = {"reached": True}
             else:
-                reached.pop(mid, None)
+                reached.pop(target.key, None)
             report["applied"].append({"path": path, "old": old, "new": value})
-            continue
 
-        if parts[0] in STAT_SECTIONS and len(parts) == 2:
-            stat_def = (stat_schema.get(parts[0]) or {}).get(parts[1])
-            if not isinstance(stat_def, dict):
-                report["rejected"].append({
-                    "path": path, "reason": "unknown stat",
-                    "fix": f"`{parts[0]}` has no stat `{parts[1]}`. "
-                           f"{_names_phrase('stat', stat_schema.get(parts[0]) or {})}",
-                })
-                continue
-            container = ws.setdefault(parts[0], {})
-            set_stat(container, parts[1], stat_def, value, path)
-            continue
-
-        if parts[0] == "npc" and len(parts) == 3:
-            ndef = npcs.get(parts[1])
-            if not isinstance(ndef, dict):
-                report["rejected"].append({
-                    "path": path, "reason": "unknown npc",
-                    "fix": f"There is no character `{parts[1]}`. "
-                           f"{_names_phrase('character', npcs)}",
-                })
-                continue
-            stat_defs = ndef.get("stats") or {}
-            stat_def = stat_defs.get(parts[2])
-            if not isinstance(stat_def, dict):
-                report["rejected"].append({
-                    "path": path, "reason": "unknown npc stat",
-                    "fix": f"`{npc_name(ndef, parts[1])}` has no stat `{parts[2]}`. "
-                           f"{_names_phrase('stat', stat_defs)}",
-                })
-                continue
-            npc_state = ws.setdefault("npc", {})
-            container = npc_state.setdefault(parts[1], _initials(stat_defs))
-            set_stat(container, parts[2], stat_def, value, path)
-            continue
-
-        report["rejected"].append({
-            "path": path, "reason": "unknown path",
-            "fix": f"`{path}` is not a tracked value. Use player.<stat>, "
-                   f"world.<stat>, npc.<id>.<stat>, flags.<name> or milestones.<id>.",
-        })
+        else:
+            set_stat(target.container(ws), target.key, target.stat_def, value, path)
 
     return ws, report
 
@@ -307,46 +360,29 @@ def apply_delta(world_state: dict, stat_schema: dict, delta: dict,
     if not isinstance(delta, dict):
         return ws, report
 
-    milestones = stat_schema.get("milestones") or {}
-    flag_defs = stat_schema.get("flags") or {}
-    npcs = stat_schema.get("npcs") or {}
-
     for raw_path, change in delta.items():
         path = str(raw_path)
-        parts = path.split(".")
+        target, rejection = _resolve(path, stat_schema)
+        if rejection is not None:
+            report["rejected"].append(rejection)
+            continue
 
-        # `flags.<name>` is a two-way boolean, and either value is accepted.
-        if parts[0] == "flags" and len(parts) == 2:
-            fid = parts[1]
-            if fid not in flag_defs:
-                report["rejected"].append({
-                    "path": path, "reason": "unknown flag",
-                    "fix": f"There is no flag `{fid}`. {_names_phrase('flag', flag_defs)}",
-                })
-                continue
+        if target.kind == "flag":
+            # A flag goes both ways, so either value is accepted.
             if not isinstance(change, bool):
                 report["rejected"].append({
                     "path": path, "reason": "not a boolean",
                     "fix": f"`{path}` takes true or false.",
                 })
                 continue
-            flags = ws.setdefault("flags", {})
-            old = bool(flags.get(fid, False))
+            flags = target.container(ws)
+            old = bool(flags.get(target.key, False))
             if change != old:
-                flags[fid] = change
+                flags[target.key] = change
                 report["applied"].append({"path": path, "old": old, "new": change})
-            continue
 
-        # `milestones.<id>` is a sticky boolean, and only `true` is accepted.
-        if parts[0] == "milestones" and len(parts) == 2:
-            mid = parts[1]
-            if mid not in milestones:
-                report["rejected"].append({
-                    "path": path, "reason": "unknown milestone",
-                    "fix": f"There is no milestone `{mid}`. "
-                           f"{_names_phrase('milestone', milestones)}",
-                })
-                continue
+        elif target.kind == "milestone":
+            # A milestone is sticky, so only true is accepted.
             if change is not True:
                 report["rejected"].append({
                     "path": path, "reason": "not true",
@@ -354,65 +390,18 @@ def apply_delta(world_state: dict, stat_schema: dict, delta: dict,
                            f"reached once and never taken back.",
                 })
                 continue
-            reached = ws.setdefault("milestones", {})
-            if reached.get(mid, {}).get("reached"):
+            reached = target.container(ws)
+            if reached.get(target.key, {}).get("reached"):
                 continue  # Already reached, so do nothing.
-            reached[mid] = {"reached": True, "at": action_index}
+            reached[target.key] = {"reached": True, "at": action_index}
             report["applied"].append({"path": path, "old": False, "new": True})
-            continue
 
-        # world.<stat> / player.<stat>
-        if parts[0] in STAT_SECTIONS and len(parts) == 2:
-            stat_def = (stat_schema.get(parts[0]) or {}).get(parts[1])
-            if not isinstance(stat_def, dict):
-                report["rejected"].append({
-                    "path": path, "reason": "unknown stat",
-                    "fix": f"`{parts[0]}` has no stat `{parts[1]}`. "
-                           f"{_names_phrase('stat', stat_schema.get(parts[0]) or {})}",
-                })
-                continue
-            container = ws.setdefault(parts[0], {})
-            if stat_def.get("type") == "text":
-                _apply_text_stat(container, parts[1], stat_def, change, path,
-                                 action_index, meta, report)
-            else:
-                _apply_stat(container, parts[1], stat_def, change, path,
-                            action_index, meta, report)
-            continue
+        elif target.stat_def.get("type") == "text":
+            _apply_text_stat(target.container(ws), target.key, target.stat_def, change,
+                             path, action_index, meta, report)
 
-        # `npc.<npcId>.<stat>`. Each NPC has its own stat definitions.
-        if parts[0] == "npc" and len(parts) == 3:
-            ndef = npcs.get(parts[1])
-            if not isinstance(ndef, dict):
-                report["rejected"].append({
-                    "path": path, "reason": "unknown npc",
-                    "fix": f"There is no character `{parts[1]}`. "
-                           f"{_names_phrase('character', npcs)}",
-                })
-                continue
-            stat_defs = ndef.get("stats") or {}
-            stat_def = stat_defs.get(parts[2])
-            if not isinstance(stat_def, dict):
-                report["rejected"].append({
-                    "path": path, "reason": "unknown npc stat",
-                    "fix": f"`{npc_name(ndef, parts[1])}` has no stat `{parts[2]}`. "
-                           f"{_names_phrase('stat', stat_defs)}",
-                })
-                continue
-            npc_state = ws.setdefault("npc", {})
-            container = npc_state.setdefault(parts[1], _initials(stat_defs))
-            if stat_def.get("type") == "text":
-                _apply_text_stat(container, parts[2], stat_def, change, path,
-                                 action_index, meta, report)
-            else:
-                _apply_stat(container, parts[2], stat_def, change, path,
-                            action_index, meta, report)
-            continue
-
-        report["rejected"].append({
-            "path": path, "reason": "unknown path",
-            "fix": f"`{path}` is not a tracked value. Use player.<stat>, "
-                   f"world.<stat>, npc.<id>.<stat>, flags.<name> or milestones.<id>.",
-        })
+        else:
+            _apply_stat(target.container(ws), target.key, target.stat_def, change,
+                        path, action_index, meta, report)
 
     return ws, report

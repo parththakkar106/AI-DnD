@@ -12,7 +12,7 @@ from sqlalchemy.orm.attributes import set_committed_value
 from ... import analytics, attempts, images, limits, memorybank, models, schemas, tree, worldstate
 from ...database import get_db
 
-from .deps import CurrentUser, get_adventure_or_404, router
+from .deps import CurrentUser, current_adventure, router
 from .paging import action_window, annotate_takes
 from .scenario_text import fill_placeholders, scenario_card_specs
 
@@ -229,7 +229,8 @@ def create_adventure(
 
 @router.get("/{adventure_id}", response_model=schemas.AdventureOut)
 def get_adventure(
-    adventure_id: int, db: Session = Depends(get_db), user: models.User = CurrentUser
+    db: Session = Depends(get_db),
+    adventure: models.Adventure = Depends(current_adventure),
 ):
     """Returns the adventure and the newest window of its story.
 
@@ -238,7 +239,6 @@ def get_adventure(
     exist above. `GET /{id}/actions` serves the older pages as the reader
     scrolls up.
     """
-    adventure = get_adventure_or_404(adventure_id, db, user)
     actions, total, _ = action_window(db, adventure)
     # Annotate before handing over the window. This path serializes through the
     # relationship rather than building `ActionOut` itself, so the pager numbers
@@ -259,7 +259,7 @@ def get_adventure(
 
 @router.get("/{adventure_id}/script-state")
 def get_script_state(
-    adventure_id: int, db: Session = Depends(get_db), user: models.User = CurrentUser
+    adventure: models.Adventure = Depends(current_adventure),
 ):
     """Returns the scripting `state` object.
 
@@ -267,21 +267,19 @@ def get_script_state(
     `state.x`, persisted after each hook. It stays `{}` until a script sets a
     variable.
     """
-    adventure = get_adventure_or_404(adventure_id, db, user)
     state = adventure.script_state if isinstance(adventure.script_state, dict) else {}
     return {"state": state}
 
 
 @router.get("/{adventure_id}/world-state")
 def get_world_state(
-    adventure_id: int, db: Session = Depends(get_db), user: models.User = CurrentUser
+    adventure: models.Adventure = Depends(current_adventure),
 ):
     """Returns the live RPG world state and the scenario's `stat_schema`.
 
     The play view uses both to render the character sheet and the milestones.
     `schema` is null when the adventure has no RPG layer.
     """
-    adventure = get_adventure_or_404(adventure_id, db, user)
     schema = adventure.scenario.stat_schema if adventure.scenario else None
     state = adventure.world_state if isinstance(adventure.world_state, dict) else {}
     return {
@@ -292,10 +290,9 @@ def get_world_state(
 
 @router.put("/{adventure_id}/world-state")
 def override_world_state(
-    adventure_id: int,
     overrides: dict = Body(...),
     db: Session = Depends(get_db),
-    user: models.User = CurrentUser,
+    adventure: models.Adventure = Depends(current_adventure),
 ):
     """Edits the live RPG values directly, as a manual correction rather than a turn.
 
@@ -303,7 +300,6 @@ def override_world_state(
     `milestones.y` to their new absolute values. The endpoint rejects unknown
     paths and wrong types one at a time, and applies the rest.
     """
-    adventure = get_adventure_or_404(adventure_id, db, user)
     schema = adventure.scenario.stat_schema if adventure.scenario else None
     if not worldstate.has_schema(schema):
         raise HTTPException(400, "This adventure has no RPG world-state layer")
@@ -316,12 +312,10 @@ def override_world_state(
 
 @router.patch("/{adventure_id}", response_model=schemas.AdventureOut)
 def update_adventure(
-    adventure_id: int,
     payload: schemas.AdventureUpdate,
     db: Session = Depends(get_db),
-    user: models.User = CurrentUser,
+    adventure: models.Adventure = Depends(current_adventure),
 ):
-    adventure = get_adventure_or_404(adventure_id, db, user)
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(adventure, field, value)
     db.commit()
@@ -330,9 +324,10 @@ def update_adventure(
 
 @router.delete("/{adventure_id}", status_code=204)
 def delete_adventure(
-    adventure_id: int, db: Session = Depends(get_db), user: models.User = CurrentUser
+    adventure_id: int,
+    db: Session = Depends(get_db),
+    adventure: models.Adventure = Depends(current_adventure),
 ):
-    adventure = get_adventure_or_404(adventure_id, db, user)
     db.delete(adventure)
     db.commit()
     # No later request reads this adventure's vectors, so drop them now. The

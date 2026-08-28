@@ -11,7 +11,7 @@ from ... import limits, memorybank, models, schemas, tree
 from ...context import lineage
 from ...database import get_db
 
-from .deps import CurrentUser, get_adventure_or_404, router
+from .deps import CurrentUser, current_adventure, router
 
 
 # The columns `schemas.MemoryOut` renders. `embedded` is a real column and
@@ -32,9 +32,10 @@ MEMORY_LIST_COLUMNS = (
 
 @router.get("/{adventure_id}/memories", response_model=list[schemas.MemoryOut])
 def list_memories(
-    adventure_id: int, db: Session = Depends(get_db), user: models.User = CurrentUser
+    adventure_id: int,
+    db: Session = Depends(get_db),
+    adventure: models.Adventure = Depends(current_adventure),
 ):
-    adventure = get_adventure_or_404(adventure_id, db, user)
     # Name the columns in a query rather than walk `adventure.memories`.
     # Retrieval used to walk the relationship, which is why a turn cost
     # megabytes: a relationship load returns whole entities, so it reads
@@ -63,13 +64,12 @@ def list_memories(
 
 @router.post("/{adventure_id}/memories", response_model=schemas.MemoryOut, status_code=201)
 def create_memory(
-    adventure_id: int,
     payload: schemas.MemoryCreate,
     db: Session = Depends(get_db),
     user: models.User = CurrentUser,
+    adventure: models.Adventure = Depends(current_adventure),
 ):
     """Adds a memory manually. The next post-turn pass embeds it."""
-    adventure = get_adventure_or_404(adventure_id, db, user)
     limits.check_row_cap("memories", db, user, adventure=adventure)
     if not payload.text.strip():
         raise HTTPException(400, "Memory text cannot be empty")
@@ -88,9 +88,8 @@ def update_memory(
     memory_id: int,
     payload: schemas.MemoryUpdate,
     db: Session = Depends(get_db),
-    user: models.User = CurrentUser,
+    adventure: models.Adventure = Depends(current_adventure),
 ):
-    get_adventure_or_404(adventure_id, db, user)
     memory = db.get(models.Memory, memory_id)
     if memory is None or memory.adventure_id != adventure_id:
         raise HTTPException(404, "Memory not found")
@@ -108,9 +107,8 @@ def delete_memory(
     adventure_id: int,
     memory_id: int,
     db: Session = Depends(get_db),
-    user: models.User = CurrentUser,
+    adventure: models.Adventure = Depends(current_adventure),
 ):
-    get_adventure_or_404(adventure_id, db, user)
     memory = db.get(models.Memory, memory_id)
     if memory is None or memory.adventure_id != adventure_id:
         raise HTTPException(404, "Memory not found")

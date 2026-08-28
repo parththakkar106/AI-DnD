@@ -11,18 +11,17 @@ from sqlalchemy.orm import Session
 from ... import models, schemas, tree
 from ...database import get_db
 
-from .deps import CurrentUser, get_adventure_or_404, router
+from .deps import CurrentUser, current_adventure, router
 from .nodes import delete_turn
 from .paging import ACTION_PAGE, action_window, annotate_takes
 
 
 @router.get("/{adventure_id}/actions", response_model=schemas.ActionPage)
 def list_actions(
-    adventure_id: int,
     before_id: int | None = None,
     limit: int = ACTION_PAGE,
     db: Session = Depends(get_db),
-    user: models.User = CurrentUser,
+    adventure: models.Adventure = Depends(current_adventure),
 ):
     """Returns a page of the story, working backwards from the newest action.
 
@@ -30,7 +29,6 @@ def list_actions(
     asks for what comes before it. Omit `before_id` for the newest window. See
     `action_window` for why this anchors on a row rather than an offset.
     """
-    adventure = get_adventure_or_404(adventure_id, db, user)
     limit = max(1, min(limit, ACTION_PAGE * 4))
     actions, total, has_more = action_window(
         db, adventure, before_id=before_id, limit=limit
@@ -51,9 +49,8 @@ def update_action(
     action_id: int,
     payload: schemas.ActionUpdate,
     db: Session = Depends(get_db),
-    user: models.User = CurrentUser,
+    adventure: models.Adventure = Depends(current_adventure),
 ):
-    get_adventure_or_404(adventure_id, db, user)
     action = db.get(models.Action, action_id)
     if action is None or action.adventure_id != adventure_id:
         raise HTTPException(404, "Action not found")
@@ -70,9 +67,8 @@ def delete_action(
     adventure_id: int,
     action_id: int,
     db: Session = Depends(get_db),
-    user: models.User = CurrentUser,
+    adventure: models.Adventure = Depends(current_adventure),
 ):
-    adventure = get_adventure_or_404(adventure_id, db, user)
     action = db.get(models.Action, action_id)
     if action is None or action.adventure_id != adventure_id:
         raise HTTPException(404, "Action not found")

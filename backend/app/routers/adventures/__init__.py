@@ -42,17 +42,15 @@ from ... import limits  # noqa: F401  `adventures.limits` is patched by tests.
 from .crud import SNIPPET_MAX, _snippet
 from .paging import ACTION_PAGE
 from .takes import retry_action, undo_turn
-from .turns import SSE_HEADERS, sse, world_delta_of
+from .turns import world_delta_of
 
 __all__ = [
     "ACTION_PAGE",
     "SNIPPET_MAX",
-    "SSE_HEADERS",
     "_snippet",
     "limits",
     "retry_action",
     "router",
-    "sse",
     "undo_turn",
     "world_delta_of",
 ]

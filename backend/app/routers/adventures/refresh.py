@@ -14,7 +14,7 @@ from ... import models, schemas, worldstate
 from ...database import get_db
 
 from . import turns
-from .deps import CurrentUser, get_adventure_or_404, router
+from .deps import CurrentUser, current_adventure, router
 from .scenario_text import (
     CARD_FIELDS, SCENARIO_TEXT_FIELDS, fill_placeholders, scenario_card_specs,
     scenario_placeholder_names,
@@ -113,10 +113,11 @@ def plan_refresh(
 
 @router.get("/{adventure_id}/refresh", response_model=schemas.RefreshPlan)
 def preview_refresh(
-    adventure_id: int, db: Session = Depends(get_db), user: models.User = CurrentUser
+    db: Session = Depends(get_db),
+    user: models.User = CurrentUser,
+    adventure: models.Adventure = Depends(current_adventure),
 ):
     """Returns what "Update from scenario" would change, for the confirm dialog."""
-    adventure = get_adventure_or_404(adventure_id, db, user)
     scenario = resolve_source_scenario(adventure, db, user)
     if scenario is None:
         raise HTTPException(404, "No scenario to update from")
@@ -137,6 +138,7 @@ def refresh_from_scenario(
     payload: schemas.AdventureRefresh = Body(default=schemas.AdventureRefresh()),
     db: Session = Depends(get_db),
     user: models.User = CurrentUser,
+    adventure: models.Adventure = Depends(current_adventure),
 ):
     """Copies the scenario's current plot text, story cards, and stat schema over
     this adventure's copy.
@@ -150,7 +152,6 @@ def refresh_from_scenario(
     cards; and, through `worldstate.reconcile`, the live value of every stat the
     schema still defines.
     """
-    adventure = get_adventure_or_404(adventure_id, db, user)
     scenario = resolve_source_scenario(adventure, db, user)
     if scenario is None:
         raise HTTPException(404, "No scenario to update from")

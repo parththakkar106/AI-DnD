@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from ... import models, schemas
 from ...database import get_db
 
-from .deps import CurrentUser, get_adventure_or_404, router
+from .deps import CurrentUser, current_adventure, router
 
 
 # Fields that are copied from a library Script into its adventure-script
@@ -59,9 +59,10 @@ def _mark_out_of_date(
 
 @router.get("/{adventure_id}/scripts", response_model=list[schemas.AdventureScriptOut])
 def list_adventure_scripts(
-    adventure_id: int, db: Session = Depends(get_db), user: models.User = CurrentUser
+    db: Session = Depends(get_db),
+    user: models.User = CurrentUser,
+    adventure: models.Adventure = Depends(current_adventure),
 ):
-    adventure = get_adventure_or_404(adventure_id, db, user)
     return [_mark_out_of_date(s, db, user) for s in adventure.scripts]
 
 
@@ -74,12 +75,12 @@ def sync_adventure_script(
     adv_script_id: int,
     db: Session = Depends(get_db),
     user: models.User = CurrentUser,
+    adventure: models.Adventure = Depends(current_adventure),
 ):
     """Overwrites this copy's code with the latest from its library script.
 
     `enabled`, `position`, and the adventure's shared `script_state` are kept.
     """
-    get_adventure_or_404(adventure_id, db, user)
     script = db.get(models.AdventureScript, adv_script_id)
     if script is None or script.adventure_id != adventure_id:
         raise HTTPException(404, "Script not found")
@@ -104,9 +105,8 @@ def update_adventure_script(
     adv_script_id: int,
     payload: schemas.AdventureScriptUpdate,
     db: Session = Depends(get_db),
-    user: models.User = CurrentUser,
+    adventure: models.Adventure = Depends(current_adventure),
 ):
-    get_adventure_or_404(adventure_id, db, user)
     script = db.get(models.AdventureScript, adv_script_id)
     if script is None or script.adventure_id != adventure_id:
         raise HTTPException(404, "Script not found")

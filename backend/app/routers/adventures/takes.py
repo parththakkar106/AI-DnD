@@ -16,12 +16,12 @@ from ...context import cursors
 from ...context import lineage
 from ...database import get_db
 from ...scripting import ScriptPipeline
+from ...sse import SSE_HEADERS
 
 from . import turns
-from .deps import CurrentUser, get_adventure_or_404, router
+from .deps import CurrentUser, current_adventure, router
 from .nodes import delete_turn, last_action, stand_on
 from .paging import action_window, annotate_takes, current_window
-from .turns import SSE_HEADERS
 
 
 @router.post("/{adventure_id}/retry")
@@ -30,6 +30,7 @@ def retry_action(
     request: Request,
     db: Session = Depends(get_db),
     user: models.User = CurrentUser,
+    adventure: models.Adventure = Depends(current_adventure),
 ):
     """Regenerates the last AI action and keeps the discarded attempt.
 
@@ -38,7 +39,6 @@ def retry_action(
     attempt is stored as a sibling at the same coordinate. No text the AI wrote
     is rewritten or deleted.
     """
-    adventure = get_adventure_or_404(adventure_id, db, user)
     limits.rate_limit("turn", request, user)
     turns.check_demo_cap(db, user)
     turns.acquire_turn_lock(adventure_id)
@@ -79,7 +79,7 @@ def list_variants(
     adventure_id: int,
     action_id: int,
     db: Session = Depends(get_db),
-    user: models.User = CurrentUser,
+    adventure: models.Adventure = Depends(current_adventure),
 ):
     """Returns every attempt made for one AI turn.
 
@@ -90,7 +90,6 @@ def list_variants(
     Switching changes which row the story tells, and a client that holds an id it
     received a moment ago still has to be able to ask about the same turn.
     """
-    get_adventure_or_404(adventure_id, db, user)
     action = db.get(models.Action, action_id)
     if action is None or action.adventure_id != adventure_id:
         raise HTTPException(404, "Action not found")
@@ -119,7 +118,7 @@ def select_variant(
     action_id: int,
     payload: schemas.VariantSelect,
     db: Session = Depends(get_db),
-    user: models.User = CurrentUser,
+    adventure: models.Adventure = Depends(current_adventure),
 ):
     """Makes an earlier attempt live again and restores the state it produced.
 
@@ -130,7 +129,6 @@ def select_variant(
     would leave the story contradicting itself. The attempts of earlier turns
     stay readable through `list_variants`.
     """
-    adventure = get_adventure_or_404(adventure_id, db, user)
     action = db.get(models.Action, action_id)
     if action is None or action.adventure_id != adventure_id:
         raise HTTPException(404, "Action not found")
@@ -172,7 +170,7 @@ def fork_from_attempt(
     adventure_id: int,
     action_id: int,
     db: Session = Depends(get_db),
-    user: models.User = CurrentUser,
+    adventure: models.Adventure = Depends(current_adventure),
 ):
     """Continues the story from this attempt, forking a branch if one is needed.
 
@@ -184,7 +182,6 @@ def fork_from_attempt(
     * The story has moved past its turn, so the endpoint forks. The attempt gets
       a branch of its own, and the line it leaves keeps every turn it has.
     """
-    adventure = get_adventure_or_404(adventure_id, db, user)
     action = db.get(models.Action, action_id)
     if action is None or action.adventure_id != adventure_id:
         raise HTTPException(404, "Action not found")
@@ -236,6 +233,7 @@ def add_take(
     request: Request,
     db: Session = Depends(get_db),
     user: models.User = CurrentUser,
+    adventure: models.Adventure = Depends(current_adventure),
 ):
     """Plays a turn again, whoever wrote it.
 
@@ -256,7 +254,6 @@ def add_take(
     turn, so the new attempt is written at the same depth under the same parent,
     and the line it leaves is unchanged. No node below is copied.
     """
-    adventure = get_adventure_or_404(adventure_id, db, user)
     limits.rate_limit("turn", request, user)
     limits.check_row_cap("actions", db, user, adventure=adventure)
     turns.check_demo_cap(db, user)
@@ -317,7 +314,9 @@ def add_take(
 
 @router.post("/{adventure_id}/undo", response_model=schemas.ActionPage)
 def undo_turn(
-    adventure_id: int, db: Session = Depends(get_db), user: models.User = CurrentUser
+    adventure_id: int,
+    db: Session = Depends(get_db),
+    adventure: models.Adventure = Depends(current_adventure),
 ):
     """Deletes the last turn: the trailing AI action and its player action, if any.
 
@@ -325,7 +324,6 @@ def undo_turn(
     ran, and it prunes any memory that summarized the removed actions. The turn
     lock prevents an undo while a turn is still generating.
     """
-    adventure = get_adventure_or_404(adventure_id, db, user)
     turns.acquire_turn_lock(adventure_id)
     try:
         # Only the last turn is removed, so fetch the two actions it can

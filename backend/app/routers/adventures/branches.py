@@ -18,14 +18,15 @@ from ...context import lineage
 from ...database import get_db
 
 from . import turns
-from .deps import CurrentUser, get_adventure_or_404, router
+from .deps import CurrentUser, current_adventure, router
 from .nodes import db_tip
 from .paging import current_window
 
 
 @router.get("/{adventure_id}/branches", response_model=list[schemas.BranchOut])
 def list_branches(
-    adventure_id: int, db: Session = Depends(get_db), user: models.User = CurrentUser
+    db: Session = Depends(get_db),
+    adventure: models.Adventure = Depends(current_adventure),
 ):
     """Returns every branch of the adventure and where each one leaves its parent.
 
@@ -35,7 +36,6 @@ def list_branches(
     `actions`, never one query per branch, so a view of a hundred forks does not
     cost a hundred round trips.
     """
-    adventure = get_adventure_or_404(adventure_id, db, user)
     branches = (
         db.query(models.Branch)
         .filter(models.Branch.adventure_id == adventure.id)
@@ -95,11 +95,10 @@ def get_branch_or_404(
     "/{adventure_id}/branches/{branch_id}", response_model=schemas.BranchOut
 )
 def rename_branch(
-    adventure_id: int,
     branch_id: int,
     payload: schemas.BranchRename,
     db: Session = Depends(get_db),
-    user: models.User = CurrentUser,
+    adventure: models.Adventure = Depends(current_adventure),
 ):
     """Names a branch, or clears the name to leave it unnamed.
 
@@ -107,7 +106,6 @@ def rename_branch(
     name anyone chose, and storing one gives the client an empty label to draw
     instead of the fork depth.
     """
-    adventure = get_adventure_or_404(adventure_id, db, user)
     branch = get_branch_or_404(adventure, branch_id, db)
     name = (payload.name or "").strip()
     branch.name = name or None
@@ -145,7 +143,7 @@ def delete_branch(
     adventure_id: int,
     branch_id: int,
     db: Session = Depends(get_db),
-    user: models.User = CurrentUser,
+    adventure: models.Adventure = Depends(current_adventure),
 ):
     """Deletes a branch and everything forked from it.
 
@@ -163,7 +161,6 @@ def delete_branch(
     cascade on `branches.parent_branch_id`, so the delete is a single statement
     however deep the subtree is.
     """
-    adventure = get_adventure_or_404(adventure_id, db, user)
     branch = get_branch_or_404(adventure, branch_id, db)
     if branch.parent_branch_id is None:
         raise HTTPException(
@@ -238,7 +235,7 @@ def switch_branch(
     adventure_id: int,
     branch_id: int,
     db: Session = Depends(get_db),
-    user: models.User = CurrentUser,
+    adventure: models.Adventure = Depends(current_adventure),
 ):
     """Reads and plays a different branch of the story.
 
@@ -249,7 +246,6 @@ def switch_branch(
     another branch's numbers, including the world-state cooldown clock inside the
     snapshot.
     """
-    adventure = get_adventure_or_404(adventure_id, db, user)
     branch = db.get(models.Branch, branch_id)
     if branch is None or branch.adventure_id != adventure.id:
         raise HTTPException(404, "Branch not found")

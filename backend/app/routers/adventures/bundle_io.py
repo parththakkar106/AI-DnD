@@ -10,19 +10,19 @@ from sqlalchemy.orm import Session
 from ... import analytics, bundle, limits, models, schemas
 from ...database import get_db
 
-from .deps import CurrentUser, get_adventure_or_404, router
+from .deps import CurrentUser, current_adventure, router
 
 
 @router.get("/{adventure_id}/export")
 def export_adventure(
-    adventure_id: int, db: Session = Depends(get_db), user: models.User = CurrentUser
+    db: Session = Depends(get_db),
+    adv: models.Adventure = Depends(current_adventure),
 ):
     """Returns a full backup: plot components, story cards, scripts, state, and tree.
 
     `app/bundle.py` owns the format, in both of its versions. A backup outlives
     the schema, so no call site decides anything about its shape.
     """
-    adv = get_adventure_or_404(adventure_id, db, user)
     return bundle.export(db, adv)
 
 

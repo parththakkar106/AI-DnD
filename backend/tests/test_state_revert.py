@@ -81,7 +81,7 @@ def test_undo_reverts_state_to_before_the_turn(db):
     _add(db, adv, 2, "ai", state_after={"gold": 10})
     db.commit()
 
-    adventures.undo_turn(adv.id, db=db, user=user)
+    adventures.undo_turn(adv.id, db=db, adventure=adv)
 
     assert adv.script_state == {"gold": 0}
     assert [a.type for a in adv.actions] == ["start"]
@@ -95,7 +95,7 @@ def test_undo_of_bare_continue_uses_the_node_in_front(db):
     _add(db, adv, 1, "ai", state_after={"gold": 5})
     db.commit()
 
-    adventures.undo_turn(adv.id, db=db, user=user)
+    adventures.undo_turn(adv.id, db=db, adventure=adv)
 
     assert adv.script_state == {"gold": 0}
     assert [a.type for a in adv.actions] == ["start"]
@@ -110,7 +110,7 @@ def test_undo_leaves_state_untouched_when_snapshot_missing(db):
     _add(db, adv, 2, "ai")
     _forget_snapshots(db, adv)
 
-    adventures.undo_turn(adv.id, db=db, user=user)
+    adventures.undo_turn(adv.id, db=db, adventure=adv)
 
     assert adv.script_state == {"gold": 10}
 
@@ -120,7 +120,7 @@ def test_undo_raises_when_nothing_to_undo(db):
     _add(db, adv, 0, "start")
     db.commit()
     with pytest.raises(HTTPException) as exc:
-        adventures.undo_turn(adv.id, db=db, user=user)
+        adventures.undo_turn(adv.id, db=db, adventure=adv)
     assert exc.value.status_code == 400
 
 
@@ -133,7 +133,7 @@ def test_undo_blocked_by_active_turn_lock(db):
     adventures.turns.acquire_turn_lock(adv.id)  # a turn is "generating"
     try:
         with pytest.raises(HTTPException) as exc:
-            adventures.undo_turn(adv.id, db=db, user=user)
+            adventures.undo_turn(adv.id, db=db, adventure=adv)
         assert exc.value.status_code == 409
         # The failed undo must not have released someone else's lock.
         assert adv.id in adventures.turns._active_turns
@@ -151,7 +151,7 @@ def test_undo_prunes_memory_covering_removed_actions(db):
     db.add_all([covering, keep])
     db.commit()
 
-    adventures.undo_turn(adv.id, db=db, user=user)  # removes indexes 2 & 3
+    adventures.undo_turn(adv.id, db=db, adventure=adv)  # removes indexes 2 & 3
 
     texts = {m.text for m in adv.memories}
     assert texts == {"k"}
@@ -228,7 +228,7 @@ def test_retry_restores_the_state_the_turn_started_from(db, monkeypatch):
             yield  # make it an async generator
     monkeypatch.setattr(adventures.turns, "generate_turn", _noop)
 
-    adventures.retry_action(adv.id, request=None, db=db, user=user)
+    adventures.retry_action(adv.id, request=None, db=db, user=user, adventure=adv)
 
     assert adv.script_state == {"gold": 10}
     # Nothing is written until a replacement actually arrives: the attempt on

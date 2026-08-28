@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 from .. import auth, limits, models, schemas
 from ..database import get_db
 from ..providers import OpenAICompatibleProvider, ProviderError
-from .adventures import SSE_HEADERS, sse
+from ..sse import SSE_HEADERS, sse
 from .settings import get_settings, list_endpoint_models
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])

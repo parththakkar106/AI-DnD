@@ -6,7 +6,6 @@ lock guards one set only while one module owns it. And a test that replaces
 `OpenAICompatibleProvider`, `generate_turn`, or `check_demo_cap` patches this
 module, which every caller reads through.
 """
-import json
 import threading
 
 from fastapi import Depends, HTTPException, Request
@@ -20,9 +19,10 @@ from ...context import build_context, cursors
 from ...database import get_db
 from ...providers import OpenAICompatibleProvider, PromptParts, ProviderError
 from ...scripting import ScriptPipeline
+from ...sse import SSE_HEADERS, sse, turn_error
 from ..settings import get_settings
 
-from .deps import CurrentUser, get_adventure_or_404, router
+from .deps import CurrentUser, current_adventure, router
 from .nodes import _move_to_after, next_depth, next_index
 from .paging import annotate_takes
 
@@ -96,27 +96,6 @@ def format_player_input(action_type: str, text: str) -> str:
             text += "."
         return f"> You {text}"
     return text  # The "story" type is appended as raw text.
-
-
-def sse(obj: dict) -> str:
-    return f"data: {json.dumps(obj)}\n\n"
-
-
-def turn_error(detail: str, **extra) -> str:
-    """Returns an SSE error for a turn that could not be produced, and counts it.
-
-    A failed turn is still an HTTP 200 response, so the middleware's status-code
-    tally cannot see it. This metric exists so that a demo whose model refuses
-    every request does not report as healthy.
-    """
-    analytics.record(analytics.M_EVENT, analytics.EV_TURN_ERROR)
-    return sse({"type": "error", "detail": detail, **extra})
-
-
-# `no-cache` stops an intermediary from caching the stream. `X-Accel-Buffering`
-# makes nginx-style reverse proxies, which hosted deploys use, flush each event
-# immediately rather than buffer it.
-SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
 
 
 def action_json(action: models.Action, db: Session | None = None) -> dict:
@@ -425,8 +404,8 @@ def create_action(
     request: Request,
     db: Session = Depends(get_db),
     user: models.User = CurrentUser,
+    adventure: models.Adventure = Depends(current_adventure),
 ):
-    adventure = get_adventure_or_404(adventure_id, db, user)
     limits.rate_limit("turn", request, user)
     limits.check_row_cap("actions", db, user, adventure=adventure)
     check_demo_cap(db, user)
