@@ -16,14 +16,7 @@ place, would silently skip the DDL and test only half the change.
     python -m pytest tests/test_tree_migration.py -v
 """
 import json
-import os
-import tempfile
 
-_tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-_tmp.close()
-os.environ["AIDND_DB_PATH"] = _tmp.name
-os.environ.pop("AIDND_DATABASE_URL", None)
-os.environ.pop("DATABASE_URL", None)
 
 import pytest
 from fastapi import Depends

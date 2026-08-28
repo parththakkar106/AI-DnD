@@ -6,15 +6,6 @@ page.
 
     python -m pytest tests/test_chat.py -v
 """
-import os
-import tempfile
-
-_tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-_tmp.close()
-os.environ["AIDND_DB_PATH"] = _tmp.name
-os.environ.pop("AIDND_DATABASE_URL", None)
-os.environ.pop("DATABASE_URL", None)
-
 import pytest
 from fastapi import Depends
 from fastapi.testclient import TestClient

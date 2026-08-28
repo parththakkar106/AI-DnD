@@ -17,16 +17,9 @@ Three things must hold, and only the first is obvious:
     python -m pytest tests/test_snapshot_compression.py -v
 """
 import json
-import os
 import random
-import tempfile
 import zlib
 
-_tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-_tmp.close()
-os.environ["AIDND_DB_PATH"] = _tmp.name
-os.environ.pop("AIDND_DATABASE_URL", None)
-os.environ.pop("DATABASE_URL", None)
 
 import pytest
 from sqlalchemy import text

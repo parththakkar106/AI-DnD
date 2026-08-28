@@ -4,15 +4,6 @@ undo rolling the world state back.
 
     python -m pytest tests/test_worldstate_integration.py -v
 """
-import os
-import tempfile
-
-_tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-_tmp.close()
-os.environ["AIDND_DB_PATH"] = _tmp.name
-os.environ.pop("AIDND_DATABASE_URL", None)
-os.environ.pop("DATABASE_URL", None)
-
 import pytest
 from fastapi import Depends
 from fastapi.testclient import TestClient
@@ -20,8 +11,9 @@ from fastapi.testclient import TestClient
 from app import auth, limits, models
 from app.database import Base, SessionLocal, engine, get_db
 from app.main import app
-from app.providers import PromptParts
 from app.routers import adventures
+
+from fakes import ScriptedProvider
 
 SCHEMA = {
     "player": {"hp": {"min": 0, "max": 100, "initial": 100, "max_delta_per_turn": 30}},
@@ -43,15 +35,6 @@ AI_REPLY = (
     "The goblin's blade bites deep and Gwen nods at your resolve.\n\n"
     '```state\n{"player.hp": -80, "npc.gwen.trust": 15, "flags.alarm": true, "milestones.win": true}\n```'
 )
-
-
-class FakeProvider:
-    last_usage = None
-    def __init__(self, *a, **k):
-        pass
-
-    async def generate(self, parts: PromptParts, *, temperature, max_tokens):
-        yield ("text", AI_REPLY)
 
 
 @pytest.fixture()
@@ -78,7 +61,8 @@ def client(monkeypatch):
     adv_id, user_id = adv.id, user.id
     setup.close()
 
-    monkeypatch.setattr(adventures, "OpenAICompatibleProvider", FakeProvider)
+    ScriptedProvider.replies = [AI_REPLY]
+    monkeypatch.setattr(adventures, "OpenAICompatibleProvider", ScriptedProvider)
     monkeypatch.setattr(auth, "resolve_provider_config", lambda s: auth.ProviderConfig(
         "http://fake", "k", "test-model", False))
     monkeypatch.setattr(limits, "rate_limit", lambda *a, **k: None)

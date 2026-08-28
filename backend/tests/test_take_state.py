@@ -15,15 +15,6 @@ the line it was on.
 
     python -m pytest tests/test_take_state.py -v
 """
-import os
-import tempfile
-
-_tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-_tmp.close()
-os.environ["AIDND_DB_PATH"] = _tmp.name
-os.environ.pop("AIDND_DATABASE_URL", None)
-os.environ.pop("DATABASE_URL", None)
-
 import pytest
 from fastapi import Depends
 from fastapi.testclient import TestClient
@@ -31,8 +22,9 @@ from fastapi.testclient import TestClient
 from app import auth, limits, models
 from app.database import Base, SessionLocal, engine, get_db
 from app.main import app
-from app.providers import PromptParts
 from app.routers import adventures
+
+from fakes import ScriptedProvider
 
 SCHEMA = {"player": {"hp": {"min": 0, "max": 100, "initial": 100}}}
 
@@ -46,20 +38,6 @@ const modifier = (text) => {
 };
 modifier(text);
 """
-
-
-class ScriptedProvider:
-    last_usage = None
-    replies: list = []
-    calls = 0
-
-    def __init__(self, *a, **k):
-        pass
-
-    async def generate(self, parts: PromptParts, *, temperature, max_tokens):
-        index = min(ScriptedProvider.calls, len(ScriptedProvider.replies) - 1)
-        ScriptedProvider.calls += 1
-        yield ("text", ScriptedProvider.replies[index])
 
 
 @pytest.fixture()

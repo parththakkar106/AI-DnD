@@ -11,17 +11,10 @@ only in their outcome.
 
 Run from the backend dir:  python -m pytest tests/test_state_revert.py -v
 """
-import os
-import tempfile
 
 # Point the app at a throwaway SQLite file before importing anything that
 # binds the engine at import time. `app.database` reads `AIDND_DB_PATH`
 # on import.
-_tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-_tmp.close()
-os.environ["AIDND_DB_PATH"] = _tmp.name
-os.environ.pop("AIDND_DATABASE_URL", None)
-os.environ.pop("DATABASE_URL", None)
 
 import pytest
 from fastapi import HTTPException
