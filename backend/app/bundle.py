@@ -630,6 +630,70 @@ def settle(db: Session, adventure: models.Adventure, story: dict) -> None:
             )
 
 
+
+
+def materialize(
+    db: Session, payload: dict, story: dict, user_id: int | None
+) -> models.Adventure:
+    """Writes a planned bundle into a new adventure owned by `user_id`.
+
+    Call `check_format` and `plan` first, and apply any rate or size limits
+    before calling this. The split exists because those checks belong to the
+    import endpoint alone: the guest starter writes a file the server ships, so
+    it has nothing to rate-limit and no untrusted list to cap.
+
+    The caller commits. Two flushes happen here, because the anchors and the
+    legacy counts describe one boundary in two coordinate systems, and aligning
+    them needs the actions to be queryable.
+    """
+    # A raw-dict import bypasses the schemas, so truncate strings bound for
+    # VARCHAR columns. Postgres enforces the widths. See `schemas.py`.
+    adventure = models.Adventure(
+        user_id=user_id,
+        title=str(payload.get("title") or "Imported Adventure")[:schemas.NAME_MAX],
+        memory=str(payload.get("memory") or ""),
+        authors_note=str(payload.get("authorsNote") or ""),
+        ai_instructions=str(payload.get("aiInstructions") or ""),
+        story_summary=str(payload.get("storySummary") or ""),
+        script_state=payload.get("scriptState") or {},
+        world_state=payload.get("worldState") or {},
+        auto_summarize=bool(payload.get("autoSummarize", False)),
+        memory_bank_enabled=bool(payload.get("memoryBankEnabled", False)),
+    )
+    db.add(adventure)
+    db.flush()
+
+    for card in payload.get("storyCards") or []:
+        if isinstance(card, dict):
+            db.add(models.StoryCard(
+                adventure_id=adventure.id,
+                type=str(card.get("type") or "")[:schemas.CARD_TYPE_MAX],
+                name=str(card.get("name") or "")[:schemas.NAME_MAX],
+                keys=str(card.get("keys") or ""),
+                entry=str(card.get("entry") or ""),
+                notes=str(card.get("notes") or ""),
+            ))
+
+    for i, item in enumerate(payload.get("scripts") or []):
+        if isinstance(item, dict):
+            db.add(models.AdventureScript(
+                adventure_id=adventure.id,
+                position=int(item.get("position", i)),
+                enabled=bool(item.get("enabled", True)),
+                name=str(item.get("name") or "Imported Script")[:schemas.NAME_MAX],
+                description=str(item.get("description") or ""),
+                library_js=str(item.get("library") or ""),
+                input_js=str(item.get("input") or ""),
+                context_js=str(item.get("context") or ""),
+                output_js=str(item.get("output") or ""),
+            ))
+
+    write(db, adventure, story)
+    db.flush()
+    db.expire(adventure, ["actions"])
+    settle(db, adventure, story)
+    return adventure
+
 # ------------------------------------------------------------------ reading
 # Small coercions. A raw-dict import bypasses the schemas, so every value from a
 # bundle is whatever the JSON held.

@@ -1824,56 +1824,7 @@ def import_adventure(
         branches=story["branches"],
     )
 
-    # A raw-dict import bypasses the schemas, so truncate strings bound for
-    # VARCHAR columns. Postgres enforces the widths. See `schemas.py`.
-    adventure = models.Adventure(
-        user_id=user.id,
-        title=str(payload.get("title") or "Imported Adventure")[:schemas.NAME_MAX],
-        memory=str(payload.get("memory") or ""),
-        authors_note=str(payload.get("authorsNote") or ""),
-        ai_instructions=str(payload.get("aiInstructions") or ""),
-        story_summary=str(payload.get("storySummary") or ""),
-        script_state=payload.get("scriptState") or {},
-        world_state=payload.get("worldState") or {},
-        auto_summarize=bool(payload.get("autoSummarize", False)),
-        memory_bank_enabled=bool(payload.get("memoryBankEnabled", False)),
-    )
-    db.add(adventure)
-    db.flush()
-
-    for card in payload.get("storyCards") or []:
-        if isinstance(card, dict):
-            db.add(models.StoryCard(
-                adventure_id=adventure.id,
-                type=str(card.get("type") or "")[:schemas.CARD_TYPE_MAX],
-                name=str(card.get("name") or "")[:schemas.NAME_MAX],
-                keys=str(card.get("keys") or ""),
-                entry=str(card.get("entry") or ""),
-                notes=str(card.get("notes") or ""),
-            ))
-
-    for i, s in enumerate(payload.get("scripts") or []):
-        if isinstance(s, dict):
-            db.add(models.AdventureScript(
-                adventure_id=adventure.id,
-                position=int(s.get("position", i)),
-                enabled=bool(s.get("enabled", True)),
-                name=str(s.get("name") or "Imported Script")[:schemas.NAME_MAX],
-                description=str(s.get("description") or ""),
-                library_js=str(s.get("library") or ""),
-                input_js=str(s.get("input") or ""),
-                context_js=str(s.get("context") or ""),
-                output_js=str(s.get("output") or ""),
-            ))
-
-    bundle.write(db, adventure, story)
-
-    # The anchors and the legacy counts describe the same boundary in two
-    # coordinate systems. Aligning them requires the actions to be queryable,
-    # and this is the only point where both exist.
-    db.flush()
-    db.expire(adventure, ["actions"])
-    bundle.settle(db, adventure, story)
+    adventure = bundle.materialize(db, payload, story, user.id)
 
     db.commit()
     db.refresh(adventure)

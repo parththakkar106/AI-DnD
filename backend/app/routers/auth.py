@@ -3,7 +3,8 @@ import re
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 
-from .. import accesslog, analytics, auth, cleanup, limits, models, schemas, security
+from .. import (accesslog, analytics, auth, cleanup, limits, models, schemas,
+                security, starter)
 from ..database import get_db
 from .settings import get_settings
 
@@ -69,6 +70,10 @@ def me(request: Request, response: Response, db: Session = Depends(get_db)):
             limits.rate_limit("guest", request)
             user = models.User(is_guest=True)
             db.add(user)
+            db.commit()
+            # The guest is committed first, so a failure while copying the
+            # starter adventure still leaves them with an account.
+            starter.give(db, user)
             db.commit()
             _set_session_cookie(response, user.id)
     # This endpoint is the SPA's bootstrap call, so it is where a session first
