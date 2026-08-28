@@ -158,8 +158,11 @@ resize a maximized window.
   the narration ends mid-sentence with `finish_reason: length`.
 - **Every `hp` stat still has the `initial == max` shape.** Now visible when it
   bites, rather than silent, but not designed out.
-- **The stale "Road to the Champion" scenario and adventure 42** are still on
-  production. Deleting them is hand-work and was deliberately not automated.
+- ~~**The stale "Road to the Champion" scenario and adventure 42** are still on
+  production. Deleting them is hand-work and was deliberately not automated.~~
+  Automated on 2026-08-28: `seed.py` now deletes seeded scenarios no seed file
+  claims. Adventure 42 survives with a NULL `scenario_id`, and losing the cover
+  art is the whole cost.
 - **The Bandit Camp demo (`04-rpg-world-state.json`) was not checked** for the
   same milestone problem. Its milestones were equally unnamed to the model
   before this change, so it is worth asking whether one has ever fired there.
@@ -311,12 +314,27 @@ because SVG can carry script and these bytes are served from the app's own
 origin. `backend/tools/make_pokeball.py` draws the ball with `zlib` alone, so
 regenerating it needs no image library.
 
+**Seeded scenarios no seed file claims are deleted.** `previous_titles` stops a
+rename stranding a row, but the rows already stranded still needed deleting by
+hand on every deployment. `_sweep_unclaimed` removes them on the next boot. Only
+a NULL owner with `is_public` is reachable, so nothing a player made can be
+touched, and `adventures.scenario_id` is `ON DELETE SET NULL`, so an adventure
+started from a deleted demo keeps its story and loses only the artwork. The
+sweep is skipped when a seed file fails to parse, and an empty seed directory
+never reaches it: neither reads as an instruction to delete live content.
+
 **Every new guest gets the played adventure.** `app/starter.py` copies a shipped
 export bundle into each new guest account, from the guest mint in
 `routers/auth.py`. The bundle is this session's adventure trimmed to its first
 two exchanges, which ends on the knockout and shows an applied change, a refused
 one, and a milestone. It stops before the Onix bug above, and the state it
 leaves has Onix at its own 90 HP so a guest can play on from it.
+
+An adventure has no cover art of its own and inherits its scenario's, and a
+bundle carries no scenario id, because an id is local to one database. The
+starter file names its source under `scenarioTitle` instead, and
+`starter._link_scenario` looks it up, so the copy shows the Pokeball rather than
+a monogram tile.
 
 The row building that `POST /adventures/import` did inline moved into
 `bundle.materialize`, which both callers now use. The limit and rate checks

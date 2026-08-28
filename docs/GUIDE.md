@@ -954,6 +954,15 @@ guest survives with no re-parenting and no migration step. Three kinds of row sh
 users table: local (email NULL, not guest), guest (email NULL, guest), registered (email
 set).
 
+**A seed file owns its scenario's whole life.** `seed.py` inserts a demo that is
+missing, reconciles one whose file changed, and deletes a seeded row no file claims any
+more. Matching is by title, so a rename needs the old name under `previous_titles` or it
+inserts a second scenario and strands the first. Only rows with a NULL owner and
+`is_public` are seeded rows, which is what keeps the sweep away from anything a player
+made. An adventure started from a demo that is later removed survives:
+`adventures.scenario_id` is `ON DELETE SET NULL`, and the adventure holds its own copies
+of the cards and scripts, so it loses only the inherited cover art.
+
 **Guests start with a story already in progress.** `starter.py` copies a shipped export
 bundle into each new guest account at the same point the row is created. An empty account
 gives a visitor nothing to read, and the daily demo turns are limited, so learning what

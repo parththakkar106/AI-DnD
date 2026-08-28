@@ -8,8 +8,10 @@ adventure copies the scenario's story cards and scripts into the adventure, so
 the seeded scripts run for guests too.
 
 Seed files are the source of truth for demo content: a scenario is inserted if
-missing, and reconciled in place when a seed file's content changes, so an edit
-ships on the next deploy. When a seed already matches, nothing is written, so
+missing, reconciled in place when a seed file's content changes, and deleted
+when no file claims its title any more, so an edit ships on the next deploy.
+Rename a seed by changing its `title` and listing the old one under
+`previous_titles`, which moves the rename onto the existing row. When a seed already matches, nothing is written, so
 this stays cheap to run on every boot. An adventure already started from a demo
 keeps its own copied cards and scripts and is unchanged. Only a new adventure
 picks up the updated content.
@@ -46,18 +48,26 @@ def seed_public_scenarios(engine: Engine) -> None:
     db = SessionLocal()
     try:
         changed = 0
+        # Every title the files claim, including the ones they used to use. The
+        # sweep below deletes the seeded rows this set does not name.
+        claimed: set[str] = set()
+        complete = True
         for path in files:
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError) as exc:
                 logger.warning("Skipping seed file %s: %s", path.name, exc)
+                complete = False
                 continue
 
             title = (data.get("title") or "").strip()
             if not title:
                 continue
 
-            existing = _find_seeded(db, title) or _find_renamed(db, data)
+            claimed.add(title)
+            claimed.update(str(old) for old in data.get("previous_titles") or [])
+
+            existing = find_seeded(db, title) or _find_renamed(db, data)
             if existing is None:
                 _insert_scenario(db, data)
                 changed += 1
@@ -65,6 +75,7 @@ def seed_public_scenarios(engine: Engine) -> None:
                 _update_scenario(db, existing, data)
                 changed += 1
 
+        changed += _sweep_unclaimed(db, claimed) if complete else 0
         if changed:
             db.commit()
             logger.info("Seeded/updated %d public demo scenario(s).", changed)
@@ -76,6 +87,45 @@ def seed_public_scenarios(engine: Engine) -> None:
         db.close()
 
 
+def _sweep_unclaimed(db, claimed: set[str]) -> int:
+    """Deletes seeded scenarios no seed file claims any more, and returns how
+    many went.
+
+    A rename used to strand the row it left behind. `previous_titles` stops new
+    ones appearing, and this removes the ones already out there, which was
+    otherwise hand-work on every deployment. Only rows with a NULL owner and
+    `is_public` are considered, and a player's own scenario is neither, so
+    nothing anybody created can be reached from here.
+
+    An adventure started from a deleted demo survives. `adventures.scenario_id`
+    is `ON DELETE SET NULL`, so the story, its cards, and its scripts are its
+    own copies and stay; the adventure loses the cover art it inherited.
+
+    The caller skips this when a seed file failed to parse. A file that cannot
+    be read claims no title, and deleting on that basis would treat a syntax
+    error as an instruction to remove live content. An empty seed directory
+    never reaches here at all, for the same reason.
+    """
+    stale = (
+        db.query(models.Scenario)
+        .filter(
+            models.Scenario.user_id.is_(None),
+            models.Scenario.is_public.is_(True),
+            models.Scenario.title.notin_(claimed) if claimed else True,
+        )
+        .all()
+    )
+    for scenario in stale:
+        logger.info("Removing seeded scenario %r; no seed file claims it.", scenario.title)
+        # The scripts are joined through a secondary table, so nothing cascades
+        # to them. They have a NULL owner and no other reader.
+        for script in list(scenario.scripts):
+            db.delete(script)
+        scenario.scripts = []
+        db.delete(scenario)
+    return len(stale)
+
+
 def _card_tuple(source, get) -> tuple:
     return tuple(get(source, f) for f in _CARD_FIELDS)
 
@@ -84,7 +134,7 @@ def _script_tuple(source, get) -> tuple:
     return tuple(get(source, f) for f in _SCRIPT_FIELDS)
 
 
-def _find_seeded(db, title: str) -> models.Scenario | None:
+def find_seeded(db, title: str) -> models.Scenario | None:
     """Returns the seeded scenario with this exact title, if there is one."""
     return (
         db.query(models.Scenario)
@@ -110,7 +160,7 @@ def _find_renamed(db, data: dict) -> models.Scenario | None:
     Drop a `previous_titles` entry once every deployment has booted past it.
     """
     for old in data.get("previous_titles") or []:
-        found = _find_seeded(db, str(old))
+        found = find_seeded(db, str(old))
         if found is not None:
             return found
     return None

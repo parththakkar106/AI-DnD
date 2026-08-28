@@ -237,11 +237,20 @@ first orphaned and public forever. This is the same failure this file already re
 "Road to the Champion". Seed files now carry `previous_titles`, and the rename lands on
 the existing row. Verified: the Pokemon demo kept its id.
 
+**A seeded scenario nobody claims is now deleted on boot.** `previous_titles`
+stops a rename stranding a row; the sweep removes the ones already stranded, which
+retires "[Demo] Road to the Champion" without a console. Only rows with a NULL owner
+and `is_public` are reachable, and `adventures.scenario_id` is `ON DELETE SET NULL`, so
+an adventure started from a deleted demo keeps its story and loses only the cover art.
+A seed file that fails to parse, or an empty seed directory, skips the sweep.
+
 **Every new guest is given a pre-played adventure.** `app/starter.py` copies a shipped
 export bundle into each new guest account. The point is the first screen: real turns with
 their world-state chips, including a refused change and a milestone, before spending any
 of the daily demo turns. The row building inside `POST /adventures/import` moved to
-`bundle.materialize` so both callers share one writer.
+`bundle.materialize` so both callers share one writer. The copy is linked back to its
+demo scenario by title, because an adventure has no art of its own and a bundle cannot
+carry an id that means anything in another database.
 
 **An SVG data URI is not usable as scenario art.** `app/images.py` accepts raster formats
 only, deliberately, because SVG can carry script and the bytes are served from the app's
@@ -944,7 +953,7 @@ the SQLite dev parity this codebase protects on purpose).
 
 ```
 cd backend
-.venv/Scripts/python.exe -m pytest tests/          # 539 tests (~180s)
+.venv/Scripts/python.exe -m pytest tests/          # 549 tests (~180s)
 .venv/Scripts/python.exe -m tools.stress_session   # egress report (SQLite)
 
 # Same harness against a real Postgres. The target must be a THROWAWAY database

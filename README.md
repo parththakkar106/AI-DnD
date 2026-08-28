@@ -202,7 +202,7 @@ development, Vite proxies `/api` to FastAPI.
 
 ## Tests
 
-539 backend tests: unit tests plus full HTTP integration through the real quickjs scripting
+549 backend tests: unit tests plus full HTTP integration through the real quickjs scripting
 engine, with the LLM provider mocked. CI runs them on every push, alongside the frontend
 lint/build and a Docker image build.
 
