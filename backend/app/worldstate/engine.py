@@ -66,6 +66,68 @@ def render_delta_block(delta: dict) -> str:
         return ""
     return "```state\n" + json.dumps(delta, ensure_ascii=False) + "\n```"
 
+
+def applied_delta(world_delta: dict | None) -> dict:
+    """Returns the changes the engine accepted, shaped as the AI sends them.
+
+    Replaying the delta the AI sent would show it a refused change standing as
+    though it had been applied, contradicted by the live values in the same
+    prompt. The model has no way to read that as a correction, so it repeats
+    the change. Replaying what was accepted removes the contradiction.
+
+    A numeric change that ended where it started is omitted, because it moved
+    nothing and a zero in the replayed block reads as a value worth sending.
+    """
+    if not isinstance(world_delta, dict):
+        return {}
+    out: dict = {}
+    for entry in world_delta.get("applied") or []:
+        if not isinstance(entry, dict):
+            continue
+        path = str(entry.get("path", ""))
+        old, new = entry.get("old"), entry.get("new")
+        if path.startswith("milestones."):
+            out[path] = True
+        elif path.startswith("flags."):
+            out[path] = bool(new)
+        elif isinstance(old, (int, float)) and isinstance(new, (int, float)):
+            if new != old:
+                out[path] = new - old
+        else:
+            out[path] = new
+    return out
+
+
+def refusals(world_delta: dict | None) -> list[str]:
+    """Returns a correction line for each change the engine did not carry out.
+
+    Covers the changes that were lost: a rejection, and a clamp that left the
+    value where it started. A clamp that reduced a change but still moved the
+    value is deliberately absent. The model's intent landed in that case, and
+    reporting the shortfall invites it to send the remainder on the next turn,
+    which is the swing `max_delta_per_turn` exists to prevent.
+    """
+    if not isinstance(world_delta, dict):
+        return []
+    lines = []
+    for entry in world_delta.get("rejected") or []:
+        if isinstance(entry, dict) and entry.get("fix"):
+            lines.append(str(entry["fix"]))
+    for entry in world_delta.get("clamped") or []:
+        if isinstance(entry, dict) and entry.get("fix"):
+            lines.append(str(entry["fix"]))
+    return lines
+
+
+def render_refusals(world_delta: dict | None) -> str:
+    """Renders `refusals` as the note appended after the most recent AI turn."""
+    lines = refusals(world_delta)
+    if not lines:
+        return ""
+    body = "\n".join(f"- {ln}" for ln in lines)
+    return ("[Part of your last state block was not applied. Correct it in this "
+            f"turn's block:\n{body}]")
+
 # ```state { ... } ``` (also tolerates ```json or an unlabelled fence); DOTALL.
 _FENCE_RE = re.compile(r"```(?:state|json)?\s*(\{.*?\})\s*```", re.DOTALL | re.IGNORECASE)
 # Fallback: a bare JSON object hugging the end of the text.
@@ -316,21 +378,64 @@ def _coerce_number(value):
     return None
 
 
+def _names_phrase(kind: str, defs: dict, limit: int = 12) -> str:
+    """Lists what the model could have written instead, for a wrong name.
+
+    A rejection that only says a name is unknown leaves the model guessing
+    again. Naming the alternatives turns it into a correction it can act on.
+    """
+    names = [k for k in (defs or {}) if isinstance(k, str)]
+    if not names:
+        return f"This scenario tracks no {kind}."
+    shown = ", ".join(f"`{n}`" for n in names[:limit])
+    more = f", and {len(names) - limit} more" if len(names) > limit else ""
+    plural = f"{kind}s" if not kind.endswith("s") else kind
+    return f"The {plural} are: {shown}{more}."
+
+
+def _limits_phrase(stat_def: dict) -> str:
+    """Names a stat's numeric limits, for a correction sent back to the model."""
+    lo, hi = stat_def.get("min"), stat_def.get("max")
+    cap = stat_def.get("max_delta_per_turn")
+    bits = []
+    if isinstance(lo, (int, float)) and isinstance(hi, (int, float)):
+        bits.append(f"it runs from {lo} to {hi}")
+    elif isinstance(lo, (int, float)):
+        bits.append(f"it never goes below {lo}")
+    elif isinstance(hi, (int, float)):
+        bits.append(f"it never goes above {hi}")
+    if isinstance(cap, (int, float)):
+        bits.append(f"it moves at most {cap} per turn")
+    return "; ".join(bits)
+
+
 def _apply_stat(container: dict, key: str, stat_def: dict, change,
                 path: str, action_index: int, meta: dict, report: dict) -> None:
     delta = _coerce_number(change)
     if delta is None:
-        report["rejected"].append({"path": path, "reason": "not a number"})
+        report["rejected"].append({
+            "path": path, "reason": "not a number",
+            "fix": f"`{path}` takes a number, written as a change such as -5 or 8.",
+        })
         return
 
     cooldown = stat_def.get("cooldown") or 0
     last = meta["last_changed"].get(path)
     if cooldown and last is not None and action_index - last < cooldown:
-        report["rejected"].append({"path": path, "reason": "cooldown"})
+        waited = action_index - last
+        report["rejected"].append({
+            "path": path, "reason": "cooldown",
+            "fix": f"`{path}` changed {waited} turn(s) ago and cannot change again "
+                   f"until {cooldown} turns have passed.",
+        })
         return
 
     if stat_def.get("type") == "counter" and delta < 0:
-        report["rejected"].append({"path": path, "reason": "counter can't decrease"})
+        report["rejected"].append({
+            "path": path, "reason": "counter can't decrease",
+            "fix": f"`{path}` only counts up. Send a positive change such as 1, "
+                   f"never a negative and never the running total.",
+        })
         return
 
     clamped = False
@@ -353,6 +458,15 @@ def _apply_stat(container: dict, key: str, stat_def: dict, change,
     container[key] = new
     meta["last_changed"][path] = action_index
     entry = {"path": path, "old": old, "new": new}
+    if clamped and new == old:
+        # The clamp cancelled the change. Nothing moved, so the model needs the
+        # same correction a rejection gets: without it the only evidence is a
+        # value that stayed put, which reads as the change never being asked for.
+        edge = "maximum" if hi is not None and new == hi else "minimum"
+        entry["fix"] = (
+            f"`{path}` did not move. It is already at its {edge} of {new}"
+            + (f" ({_limits_phrase(stat_def)})." if _limits_phrase(stat_def) else ".")
+        )
     report["applied"].append(entry)
     if clamped:
         report["clamped"].append(entry)
@@ -367,13 +481,22 @@ def _apply_text_stat(container: dict, key: str, stat_def: dict, change,
     truncation apply.
     """
     if not isinstance(change, str):
-        report["rejected"].append({"path": path, "reason": "not a string"})
+        report["rejected"].append({
+            "path": path, "reason": "not a string",
+            "fix": f"`{path}` holds text. Send its new value in full, not a number "
+                   f"and not a change.",
+        })
         return
 
     cooldown = stat_def.get("cooldown") or 0
     last = meta["last_changed"].get(path)
     if cooldown and last is not None and action_index - last < cooldown:
-        report["rejected"].append({"path": path, "reason": "cooldown"})
+        waited = action_index - last
+        report["rejected"].append({
+            "path": path, "reason": "cooldown",
+            "fix": f"`{path}` changed {waited} turn(s) ago and cannot change again "
+                   f"until {cooldown} turns have passed.",
+        })
         return
 
     new = change.strip()
@@ -481,7 +604,11 @@ def apply_override(world_state: dict, stat_schema: dict, overrides: dict) -> tup
         if parts[0] in STAT_SECTIONS and len(parts) == 2:
             stat_def = (stat_schema.get(parts[0]) or {}).get(parts[1])
             if not isinstance(stat_def, dict):
-                report["rejected"].append({"path": path, "reason": "unknown stat"})
+                report["rejected"].append({
+                    "path": path, "reason": "unknown stat",
+                    "fix": f"`{parts[0]}` has no stat `{parts[1]}`. "
+                           f"{_names_phrase('stat', stat_schema.get(parts[0]) or {})}",
+                })
                 continue
             container = ws.setdefault(parts[0], {})
             set_stat(container, parts[1], stat_def, value, path)
@@ -490,19 +617,31 @@ def apply_override(world_state: dict, stat_schema: dict, overrides: dict) -> tup
         if parts[0] == "npc" and len(parts) == 3:
             ndef = npcs.get(parts[1])
             if not isinstance(ndef, dict):
-                report["rejected"].append({"path": path, "reason": "unknown npc"})
+                report["rejected"].append({
+                    "path": path, "reason": "unknown npc",
+                    "fix": f"There is no character `{parts[1]}`. "
+                           f"{_names_phrase('character', npcs)}",
+                })
                 continue
             stat_defs = ndef.get("stats") or {}
             stat_def = stat_defs.get(parts[2])
             if not isinstance(stat_def, dict):
-                report["rejected"].append({"path": path, "reason": "unknown npc stat"})
+                report["rejected"].append({
+                    "path": path, "reason": "unknown npc stat",
+                    "fix": f"`{npc_name(ndef, parts[1])}` has no stat `{parts[2]}`. "
+                           f"{_names_phrase('stat', stat_defs)}",
+                })
                 continue
             npc_state = ws.setdefault("npc", {})
             container = npc_state.setdefault(parts[1], _initials(stat_defs))
             set_stat(container, parts[2], stat_def, value, path)
             continue
 
-        report["rejected"].append({"path": path, "reason": "unknown path"})
+        report["rejected"].append({
+            "path": path, "reason": "unknown path",
+            "fix": f"`{path}` is not a tracked value. Use player.<stat>, "
+                   f"world.<stat>, npc.<id>.<stat>, flags.<name> or milestones.<id>.",
+        })
 
     return ws, report
 
@@ -536,10 +675,16 @@ def apply_delta(world_state: dict, stat_schema: dict, delta: dict,
         if parts[0] == "flags" and len(parts) == 2:
             fid = parts[1]
             if fid not in flag_defs:
-                report["rejected"].append({"path": path, "reason": "unknown flag"})
+                report["rejected"].append({
+                    "path": path, "reason": "unknown flag",
+                    "fix": f"There is no flag `{fid}`. {_names_phrase('flag', flag_defs)}",
+                })
                 continue
             if not isinstance(change, bool):
-                report["rejected"].append({"path": path, "reason": "not a boolean"})
+                report["rejected"].append({
+                    "path": path, "reason": "not a boolean",
+                    "fix": f"`{path}` takes true or false.",
+                })
                 continue
             flags = ws.setdefault("flags", {})
             old = bool(flags.get(fid, False))
@@ -552,10 +697,18 @@ def apply_delta(world_state: dict, stat_schema: dict, delta: dict,
         if parts[0] == "milestones" and len(parts) == 2:
             mid = parts[1]
             if mid not in milestones:
-                report["rejected"].append({"path": path, "reason": "unknown milestone"})
+                report["rejected"].append({
+                    "path": path, "reason": "unknown milestone",
+                    "fix": f"There is no milestone `{mid}`. "
+                           f"{_names_phrase('milestone', milestones)}",
+                })
                 continue
             if change is not True:
-                report["rejected"].append({"path": path, "reason": "not true"})
+                report["rejected"].append({
+                    "path": path, "reason": "not true",
+                    "fix": f"`{path}` can only be set to true. A milestone is "
+                           f"reached once and never taken back.",
+                })
                 continue
             reached = ws.setdefault("milestones", {})
             if reached.get(mid, {}).get("reached"):
@@ -568,7 +721,11 @@ def apply_delta(world_state: dict, stat_schema: dict, delta: dict,
         if parts[0] in STAT_SECTIONS and len(parts) == 2:
             stat_def = (stat_schema.get(parts[0]) or {}).get(parts[1])
             if not isinstance(stat_def, dict):
-                report["rejected"].append({"path": path, "reason": "unknown stat"})
+                report["rejected"].append({
+                    "path": path, "reason": "unknown stat",
+                    "fix": f"`{parts[0]}` has no stat `{parts[1]}`. "
+                           f"{_names_phrase('stat', stat_schema.get(parts[0]) or {})}",
+                })
                 continue
             container = ws.setdefault(parts[0], {})
             if stat_def.get("type") == "text":
@@ -583,12 +740,20 @@ def apply_delta(world_state: dict, stat_schema: dict, delta: dict,
         if parts[0] == "npc" and len(parts) == 3:
             ndef = npcs.get(parts[1])
             if not isinstance(ndef, dict):
-                report["rejected"].append({"path": path, "reason": "unknown npc"})
+                report["rejected"].append({
+                    "path": path, "reason": "unknown npc",
+                    "fix": f"There is no character `{parts[1]}`. "
+                           f"{_names_phrase('character', npcs)}",
+                })
                 continue
             stat_defs = ndef.get("stats") or {}
             stat_def = stat_defs.get(parts[2])
             if not isinstance(stat_def, dict):
-                report["rejected"].append({"path": path, "reason": "unknown npc stat"})
+                report["rejected"].append({
+                    "path": path, "reason": "unknown npc stat",
+                    "fix": f"`{npc_name(ndef, parts[1])}` has no stat `{parts[2]}`. "
+                           f"{_names_phrase('stat', stat_defs)}",
+                })
                 continue
             npc_state = ws.setdefault("npc", {})
             container = npc_state.setdefault(parts[1], _initials(stat_defs))
@@ -600,7 +765,11 @@ def apply_delta(world_state: dict, stat_schema: dict, delta: dict,
                             action_index, meta, report)
             continue
 
-        report["rejected"].append({"path": path, "reason": "unknown path"})
+        report["rejected"].append({
+            "path": path, "reason": "unknown path",
+            "fix": f"`{path}` is not a tracked value. Use player.<stat>, "
+                   f"world.<stat>, npc.<id>.<stat>, flags.<name> or milestones.<id>.",
+        })
 
     return ws, report
 
@@ -666,14 +835,18 @@ def render_state_section(world_state: dict, stat_schema: dict,
     if flag_parts:
         lines.append("Flags: " + ", ".join(flag_parts) + ".")
 
+    # Show the id beside each goal, the same as NPCs and flags. The AI marks a
+    # milestone as `milestones.<id>`, and `apply_delta` rejects an id the schema
+    # does not define, so a goal listed by description alone gives the model no
+    # way to name it and it can only guess.
     milestones = stat_schema.get("milestones") or {}
     reached = ws.get("milestones") or {}
-    goals = [d.get("desc", mid) for mid, d in milestones.items()
+    goals = [f"{mid} — {d.get('desc', mid)}" for mid, d in milestones.items()
              if not reached.get(mid, {}).get("reached")]
-    done = [d.get("desc", mid) for mid, d in milestones.items()
+    done = [f"{mid} — {d.get('desc', mid)}" for mid, d in milestones.items()
             if reached.get(mid, {}).get("reached")]
     if goals:
-        lines.append("Goals: " + "; ".join(goals) + ".")
+        lines.append("Goals (mark with milestones.<id>): " + "; ".join(goals) + ".")
     if done:
         lines.append("Achieved: " + "; ".join(done) + ".")
 

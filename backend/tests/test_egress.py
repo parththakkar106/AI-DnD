@@ -166,7 +166,7 @@ def test_world_changes_still_works_without_the_snapshot(client):
     ai = [a for a in r.json()["actions"] if a["type"] == "ai"]
     assert ai, "fixture should have AI actions"
     assert ai[0]["world_changes"] == [
-        {"kind": "stat", "label": "hp", "delta": -15, "value": 85}
+        {"kind": "stat", "label": "hp", "delta": -15, "value": 85, "clamped": False}
     ]
 
 

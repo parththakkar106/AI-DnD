@@ -326,6 +326,17 @@ class StoryCard(Base):
     adventure: Mapped[Adventure | None] = relationship(back_populates="story_cards")
 
 
+def _change_label(parts: list[str]) -> str:
+    """Names a world-state path for the inline turn summary.
+
+    `npc.gwen.trust` becomes "gwen trust". Every other shape uses its last
+    segment, so `player.hp` becomes "hp".
+    """
+    if len(parts) == 3 and parts[0] == "npc":
+        return f"{parts[1]} {parts[2]}"
+    return parts[-1] if parts else ""
+
+
 class Action(Base):
     __tablename__ = "actions"
     # Phase 14: every story read selects one branch up to one depth, then
@@ -470,26 +481,60 @@ class Action(Base):
         under an AI message. Labels are path-based (no schema needed):
         `npc.gwen.trust` -> "gwen trust".
 
+        The summary reports refused changes as well as accepted ones. A stat the
+        engine clamped carries `clamped`, and a stat it refused outright becomes
+        a `rejected` entry carrying the reason. Reporting only the accepted
+        changes made a clamp indistinguishable from a change that never
+        happened: a value the model pushed past its ceiling came back as a
+        delta of 0 and rendered as an ordinary chip, so a refused update read on
+        screen as an applied one.
+
         Reads `world_delta`, never `context_snapshot`. This runs for every
         action in a list response, and touching the deferred snapshot here would
         drag the entire prompt archive out of the database."""
         wd = self.world_delta if isinstance(self.world_delta, dict) else None
         if wd is None:
             return []
-        applied = wd.get("applied") or []
+        clamped_paths = {
+            str(e.get("path", "")) for e in (wd.get("clamped") or []) if isinstance(e, dict)
+        }
         out: list[dict] = []
-        for entry in applied:
-            parts = str(entry.get("path", "")).split(".")
+        for entry in wd.get("applied") or []:
+            path = str(entry.get("path", ""))
+            parts = path.split(".")
             section, name = parts[0], parts[-1]
             if section == "flags":
                 out.append({"kind": "flag", "label": name, "on": bool(entry.get("new"))})
             elif section == "milestones":
                 out.append({"kind": "milestone", "label": name})
             else:
-                label = f"{parts[1]} {parts[2]}" if section == "npc" and len(parts) == 3 else name
                 old, new = entry.get("old"), entry.get("new")
                 delta = new - old if isinstance(old, (int, float)) and isinstance(new, (int, float)) else None
-                out.append({"kind": "stat", "label": label, "delta": delta, "value": new})
+                chip = {
+                    "kind": "stat",
+                    "label": _change_label(parts),
+                    "delta": delta,
+                    "value": new,
+                    "clamped": path in clamped_paths,
+                }
+                # Carried only when the engine wrote one. It is empty for every
+                # accepted change, and a key per chip per action is paid on
+                # every page load.
+                if entry.get("fix"):
+                    chip["fix"] = str(entry["fix"])
+                out.append(chip)
+        for entry in wd.get("rejected") or []:
+            if not isinstance(entry, dict):
+                continue
+            parts = str(entry.get("path", "")).split(".")
+            chip = {
+                "kind": "rejected",
+                "label": _change_label(parts),
+                "reason": str(entry.get("reason", "")),
+            }
+            if entry.get("fix"):
+                chip["fix"] = str(entry["fix"])
+            out.append(chip)
         return out
 
 

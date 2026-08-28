@@ -1174,6 +1174,16 @@ button:disabled { opacity: 0.45; cursor: default; transform: none; box-shadow: n
 .chg-down { color: var(--danger, #e5484d); border-color: color-mix(in srgb, var(--danger, #e5484d) 40%, var(--border)); }
 .chg-flag { color: var(--accent-bright); }
 .chg-ms { color: var(--accent-bright); border-color: color-mix(in srgb, var(--accent-bright) 40%, var(--border)); }
+/* A refused change, and a clamp that left the value where it started. The
+   dashed border separates it from the changes that took effect. It is not
+   styled as an error, because the rules refusing a change is them working. */
+.chg-refused {
+  border-style: dashed;
+  color: var(--text-dim);
+  border-color: color-mix(in srgb, var(--danger) 30%, var(--border));
+}
+/* A clamp that reduced a change but still moved the value. */
+.chg-limited { opacity: 0.75; font-style: italic; }
 .ws-report code { color: var(--accent-bright); }
 .ws-delta { color: var(--player); font-variant-numeric: tabular-nums; }
 .ws-flag { color: var(--text-dim); font-style: italic; }
