@@ -67,6 +67,9 @@ modifier(text);
 
 class ScriptedProvider:
     replies: list = []
+    # The turn engine records the cost of the call, so a stand-in provider has
+    # to carry this attribute even when it never calls anything.
+    last_usage = None
     calls = 0
 
     def __init__(self, *a, **k):

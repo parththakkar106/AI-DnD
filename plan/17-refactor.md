@@ -18,7 +18,7 @@ stage before it is green.
 | Stage | Work | Status | Landed |
 |---|---|---|---|
 | 0 | Hygiene: worktrees, branches, undocumented settings | done, except the branch deletion | 2026-08-29 |
-| 1 | Split the four largest files | tests share one setup; the router is a package; three files left | |
+| 1 | Split the four largest files | done: one test setup, and all four files split | 2026-08-29 |
 | 2 | Remove duplication | not started | |
 | 3 | SP8: drop the legacy columns | not started | |
 | 4 | Documentation | not started | |
@@ -316,6 +316,48 @@ two known places, recorded in `plan/STATUS.md` and in the comments at
 
 **Check:** 549 tests pass, `npm run lint` and `npm run build` are clean, and the
 Play screen works in a browser at desktop and at 500 px wide.
+
+### What Stage 1 actually did to the frontend, 2026-08-29
+
+`Play.jsx` is now `frontend/src/pages/Play/`, twelve files. The largest is
+`index.jsx` at 781 lines. `index.css` is now an `@import` list over
+`frontend/src/styles/`, eighteen files.
+
+Two decisions differ from the plan above.
+
+**`usePlaySession.js` does not exist yet.** The page component still owns all of
+the session state. Moving eighteen `useState` calls and seven `useEffect` calls
+is a rewrite, not a move, and no frontend test would catch a mistake in it
+today. It waits for Stage 5.
+
+**The `@media` blocks stayed where they were.** `responsive.css` still holds one
+`max-width: 720px` block, at the end of the import order. Moving a `@media` block
+next to the rules it overrides moves it earlier in the cascade, which changes
+which of two equal-specificity rules wins. Nothing in the test suite would catch
+that. Do this after Stage 5.
+
+Each split is verified by a different proof, because neither one has a test:
+
+- CSS: the parts rebuild `index.css` byte for byte, and the built bundle is
+  identical before and after at 56686 bytes.
+- JSX: every non-blank line of the original appears exactly once, in order, across
+  the twelve files. A name-resolution check confirms every identifier each file
+  references is defined or imported there, with no unused imports.
+
+The line split stranded a comment at six of the boundaries. A leading comment
+sits above the section it describes, so each boundary cut one loose and left it
+at the end of the file before it. All six moved to the section they describe.
+
+`npm run lint` and `npm run build` are clean, and 549 tests pass. Driving the
+Play screen covered the story view, all five panels, both drawers including the
+world-state edit form, the branch map, the refresh dialog, and the take pager,
+which stepped onto a take that lives on another branch and switched to it. The
+console reported no errors. The extension cannot resize the render viewport and
+the app sends `X-Frame-Options: DENY`, so the narrow-width check ran by setting
+the `max-width` media queries to `all` in the live stylesheet. All 71 narrow
+rules found their elements: the nav collapses to one button, the panel tabs move
+onto the title row, a panel fills the screen, the composer stacks, and both
+drawers become edge tabs.
 
 ## Stage 2: remove duplication
 

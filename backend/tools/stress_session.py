@@ -196,6 +196,10 @@ class FakeProvider:
     time.
     """
 
+    # The turn engine records the cost of the call, so a stand-in provider has
+    # to carry this attribute even when it never calls anything.
+    last_usage = None
+
     def __init__(self, *a, **k):
         pass
 
