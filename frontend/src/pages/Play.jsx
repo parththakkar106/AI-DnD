@@ -1205,7 +1205,27 @@ function BranchPanel({ advId, refreshKey, onSwitched, onTreeChanged, onError }) 
   )
 }
 
+// Reasons the engine gives for refusing a change, in the player's words.
+const REJECT_REASONS = {
+  'not a number': 'expected a number',
+  'not a string': 'expected text',
+  'not a boolean': 'expected on or off',
+  'not true': 'a milestone can only be set',
+  "counter can't decrease": 'this only counts up',
+  cooldown: 'changed too recently',
+  'unknown stat': 'no such stat',
+  'unknown npc': 'no such character',
+  'unknown npc stat': 'no such stat',
+  'unknown flag': 'no such flag',
+  'unknown milestone': 'no such milestone',
+  'unknown path': 'unrecognized name',
+}
+
 // Compact chips shown under an AI message summarizing what state changed.
+//
+// Refused changes appear here too. A clamped stat is marked, and a stat whose
+// clamp left it exactly where it started reads "no change" rather than "+0",
+// which looked like an ordinary update.
 function StateChangeChips({ changes }) {
   if (!changes?.length) return null
   const nice = (s) => String(s).replace(/_/g, ' ')
@@ -1218,12 +1238,32 @@ function StateChangeChips({ changes }) {
         if (c.kind === 'milestone') {
           return <span key={i} className="chg chg-ms">✓ {nice(c.label)}</span>
         }
+        if (c.kind === 'rejected') {
+          const why = REJECT_REASONS[c.reason] || c.reason
+          // The engine's own wording quotes the real limits, so prefer it.
+          return (
+            <span key={i} className="chg chg-refused" title={c.fix || `The story asked to change this and the rules refused: ${why}.`}>
+              {nice(c.label)} <span className="chg-val">refused — {why}</span>
+            </span>
+          )
+        }
         const d = c.delta
-        const dir = typeof d === 'number' ? (d > 0 ? 'up' : d < 0 ? 'down' : 'flat') : 'flat'
-        const txt = typeof d === 'number' ? (d > 0 ? `+${d}` : `${d}`) : `→ ${c.value}`
+        // A clamp that cancels the change entirely is its own outcome. It is
+        // neither an update nor a refusal, and "+0" read as the former.
+        const blocked = c.clamped && d === 0
+        const dir = blocked ? 'refused' : typeof d === 'number' ? (d > 0 ? 'up' : d < 0 ? 'down' : 'flat') : 'flat'
+        const txt = blocked
+          ? 'no change — at its limit'
+          : typeof d === 'number' ? (d > 0 ? `+${d}` : `${d}`) : `→ ${c.value}`
+        const title = blocked
+          ? c.fix || 'The story asked to change this and it is already at the limit the scenario allows.'
+          : c.clamped
+            ? 'The scenario limits how far this can move in one turn, so the change was reduced.'
+            : undefined
         return (
-          <span key={i} className={`chg chg-stat chg-${dir}`}>
+          <span key={i} className={`chg chg-stat chg-${dir}`} title={title}>
             {nice(c.label)} <span className="chg-val">{txt}</span>
+            {c.clamped && !blocked ? <span className="chg-limited"> (limited)</span> : null}
           </span>
         )
       })}

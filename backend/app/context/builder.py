@@ -147,6 +147,12 @@ def _history_text(action: models.Action) -> str:
     and stop emitting state itself. Player turns and turns with no block pass
     through unchanged.
 
+    The block replays the changes the engine ACCEPTED, not the ones the model
+    sent. Replaying what was sent showed the model a refused change standing as
+    though it had been applied, while the live values in the same prompt
+    disagreed with it. Nothing marked which of the two was true, so the model
+    read its own refused change as correct and sent it again.
+
     This function reads `world_delta` rather than `context_snapshot`. It runs
     for every action in the replayed history, and `context_snapshot` is deferred
     so that a turn never loads the prompt archive from the database.
@@ -154,7 +160,7 @@ def _history_text(action: models.Action) -> str:
     text = action.text
     wd = action.world_delta if isinstance(action.world_delta, dict) else None
     if wd:
-        block = worldstate.render_delta_block(wd.get("delta") or {})
+        block = worldstate.render_delta_block(worldstate.applied_delta(wd))
         if block:
             text = f"{text}\n{block}"
     return text
@@ -255,15 +261,21 @@ def build_context(
         lines_text = "\n".join(f"- {m['text']}" for m in memory_bank["used"])
         memories_section = Section("used_memories", f"Memories:\n{lines_text}")
     world_state_section = None
+    refusal_note = ""
     if has_ws:
+        # One read serves both the in-scene NPCs and the refusal note below.
+        recent = history.tail(adventure, NPC_WINDOW, exclude_action_id)
         block = worldstate.render_state_section(
-            adventure.world_state, stat_schema,
-            _visible_npcs(
-                history.tail(adventure, NPC_WINDOW, exclude_action_id), stat_schema
-            ),
+            adventure.world_state, stat_schema, _visible_npcs(recent, stat_schema),
         )
         if block:
             world_state_section = Section("world_state", block)
+        # Corrections for the previous AI turn only. A refusal the model has
+        # already had one chance to fix is stale, and repeating it every turn
+        # would price a correction into the whole rest of the adventure.
+        last_ai = next((a for a in reversed(recent) if a.type == "ai"), None)
+        if last_ai is not None:
+            refusal_note = worldstate.render_refusals(last_ai.world_delta)
 
     authors_note_text = adventure.authors_note.strip()
     if isinstance(script_mem.get("authorsNote"), str) and script_mem["authorsNote"].strip():
@@ -290,6 +302,7 @@ def build_context(
         + count_tokens(front_memory)
         + count_tokens(length_note)
         + (count_tokens(worldstate.EMIT_REMINDER) if has_ws else 0)
+        + count_tokens(refusal_note)
     )
     available = max(256, settings.context_token_budget - reserved)
 
@@ -379,6 +392,10 @@ def build_context(
     # the model acts.
     note_sections.append(Section("length_hint", length_note))
     if has_ws:
+        # A correction for the previous turn sits directly above the reminder
+        # to emit a block, which is the instruction it modifies.
+        if refusal_note:
+            note_sections.append(Section("world_state_refusals", refusal_note))
         # The emit rule sits in the system block, far from where the model
         # generates text, so repeat it last where it has the most effect.
         note_sections.append(Section("world_state_reminder", worldstate.EMIT_REMINDER))

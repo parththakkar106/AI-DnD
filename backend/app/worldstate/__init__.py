@@ -7,6 +7,7 @@ them against a scenario's `stat_schema`.
 from .engine import (
     EMIT_REMINDER,
     EMIT_RULE,
+    applied_delta,
     apply_delta,
     apply_override,
     band_label,
@@ -16,14 +17,17 @@ from .engine import (
     npc_name,
     npc_triggers,
     reconcile,
+    refusals,
     render_delta_block,
     render_reference,
+    render_refusals,
     render_state_section,
 )
 
 __all__ = [
     "EMIT_REMINDER",
     "EMIT_RULE",
+    "applied_delta",
     "apply_delta",
     "apply_override",
     "band_label",
@@ -33,7 +37,9 @@ __all__ = [
     "npc_name",
     "npc_triggers",
     "reconcile",
+    "refusals",
     "render_delta_block",
     "render_reference",
+    "render_refusals",
     "render_state_section",
 ]
