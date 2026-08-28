@@ -16,6 +16,7 @@ import pathlib
 
 from app import models
 from app import worldstate as w
+from app.routers.adventures import world_delta_of
 
 SEED = pathlib.Path(__file__).resolve().parents[1] / "app" / "seed_data"
 
@@ -37,9 +38,40 @@ SCHEMA = {
 
 
 def action(delta, index=1):
-    """Returns an unsaved Action carrying the report `apply_delta` produced."""
+    """Returns an unsaved Action carrying the report `apply_delta` produced.
+
+    The column is filled through `world_delta_of`, the same function the turn
+    endpoint uses, rather than by assembling the dict here. An earlier version
+    of this helper built the shape by hand with every report list present. That
+    hid a live bug: `world_delta_of` stored `applied` alone, so no refusal ever
+    reached a chip or the next prompt while all of these tests passed.
+    """
     ws, report = w.apply_delta(w.instantiate(SCHEMA), SCHEMA, delta, index)
-    return models.Action(world_delta={"delta": delta, **report})
+    snapshot = {"world_state": {"delta": delta, "report": report, "state": ws}}
+    return models.Action(world_delta=world_delta_of(snapshot))
+
+
+def test_world_delta_of_keeps_every_report_list():
+    """The stored column must carry the refusals, not just the successes.
+
+    `Action.world_changes` marks a clamped chip from `clamped` and builds its
+    refusal chips from `rejected`, and `worldstate.refusals` reads both. Dropping
+    either list leaves every consumer unable to tell a refused change from one
+    that worked.
+    """
+    _, report = w.apply_delta(
+        w.instantiate(SCHEMA), SCHEMA,
+        {"player.arrows": 3, "player.nonesuch": 1, "player.hp": -5}, 1,
+    )
+    stored = world_delta_of({"world_state": {"delta": {}, "report": report}})
+    assert [e["path"] for e in stored["applied"]] == ["player.arrows", "player.hp"]
+    assert [e["path"] for e in stored["clamped"]] == ["player.arrows"]
+    assert [e["path"] for e in stored["rejected"]] == ["player.nonesuch"]
+
+
+def test_world_delta_of_survives_a_snapshot_with_no_world_state():
+    assert world_delta_of({"story": "s"}) is None
+    assert world_delta_of(None) is None
 
 
 # --------------------------------------------------------------------------- #

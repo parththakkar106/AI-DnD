@@ -528,16 +528,27 @@ def world_delta_of(snapshot: dict | None) -> dict | None:
     """Returns the bulk-read slice of a context snapshot, for `Action.world_delta`.
 
     `context_snapshot` is deferred because it holds the whole assembled prompt.
-    The two parts that every action needs, the world-change chips and the emit
-    block replayed into history, get their own small column instead. Update this
-    function wherever a snapshot is written.
+    The parts that every action needs get their own small column instead: the
+    world-change chips, the emit block replayed into history, and the refusal
+    note fed back to the model. Update this function wherever a snapshot is
+    written.
+
+    Carry all three report lists, not just `applied`. `Action.world_changes`
+    marks a chip from `clamped` and builds its refusal chips from `rejected`,
+    and `worldstate.refusals` reads both. Storing `applied` alone left every
+    consumer unable to tell a refused change from one that worked, which is the
+    distinction this column exists to carry. The two extra lists are subsets of
+    one turn's block, so they cost a few hundred bytes per action at most.
     """
     ws = (snapshot or {}).get("world_state")
     if not isinstance(ws, dict):
         return None
+    report = ws.get("report") or {}
     return {
         "delta": ws.get("delta") or {},
-        "applied": (ws.get("report") or {}).get("applied") or [],
+        "applied": report.get("applied") or [],
+        "clamped": report.get("clamped") or [],
+        "rejected": report.get("rejected") or [],
     }
 
 
