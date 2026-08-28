@@ -28,8 +28,10 @@ logger = logging.getLogger(__name__)
 
 SEED_DIR = Path(__file__).resolve().parent / "seed_data"
 
-_SCALARS = ("description", "prompt", "memory", "authors_note", "ai_instructions", "tags",
-            "image", "icon")
+# `title` is in this list so that a rename found through `previous_titles` is
+# both detected by `_matches` and written by `_apply_scalars`.
+_SCALARS = ("title", "description", "prompt", "memory", "authors_note", "ai_instructions",
+            "tags", "image", "icon")
 _CARD_FIELDS = ("type", "name", "keys", "entry", "notes")
 _SCRIPT_FIELDS = ("name", "library_js", "input_js", "context_js", "output_js")
 
@@ -55,15 +57,7 @@ def seed_public_scenarios(engine: Engine) -> None:
             if not title:
                 continue
 
-            existing = (
-                db.query(models.Scenario)
-                .filter(
-                    models.Scenario.title == title,
-                    models.Scenario.user_id.is_(None),
-                    models.Scenario.is_public.is_(True),
-                )
-                .first()
-            )
+            existing = _find_seeded(db, title) or _find_renamed(db, data)
             if existing is None:
                 _insert_scenario(db, data)
                 changed += 1
@@ -88,6 +82,38 @@ def _card_tuple(source, get) -> tuple:
 
 def _script_tuple(source, get) -> tuple:
     return tuple(get(source, f) for f in _SCRIPT_FIELDS)
+
+
+def _find_seeded(db, title: str) -> models.Scenario | None:
+    """Returns the seeded scenario with this exact title, if there is one."""
+    return (
+        db.query(models.Scenario)
+        .filter(
+            models.Scenario.title == title,
+            models.Scenario.user_id.is_(None),
+            models.Scenario.is_public.is_(True),
+        )
+        .first()
+    )
+
+
+def _find_renamed(db, data: dict) -> models.Scenario | None:
+    """Returns the row a renamed seed file used to own, so the rename lands on it.
+
+    A seed is matched by title, so renaming one inserts a second scenario and
+    strands the first. The stranded row stays public forever and has to be
+    deleted by hand on every deployment. List the old title under
+    `previous_titles` in the seed file and the rename updates the existing row
+    instead, which also keeps the adventures already started from it pointing at
+    a scenario that still exists.
+
+    Drop a `previous_titles` entry once every deployment has booted past it.
+    """
+    for old in data.get("previous_titles") or []:
+        found = _find_seeded(db, str(old))
+        if found is not None:
+            return found
+    return None
 
 
 def _matches(scenario: models.Scenario, data: dict) -> bool:
