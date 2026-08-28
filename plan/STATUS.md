@@ -3,7 +3,7 @@
 Read this first when picking the project back up. Updated at the end of a working
 session; the per-phase plan files hold the detail, this holds the thread.
 
-**Last updated: 2026-08-22.**
+**Last updated: 2026-08-28.**
 
 ---
 
@@ -78,10 +78,21 @@ needed; nothing requires reading a row of anyone's story.
 
 ## Pick up here
 
-**`plan/14-phase-story-tree.md`, SP9 — merge it.** SP7 shipped, PR #6 merged, and the tree
-went live on 2026-08-18. It was then driven by hand and **found unusable**, which is what
-SP9 exists to fix. SP9 is written, green (**433 tests**) and **driven by hand** on branch
-`sp7b-take-pager`; it is **not merged and not deployed**.
+**`plan/14-phase-story-tree.md`, SP8 — drop the legacy columns.** SP8 was gated on the
+tree being proven live, and it now is: SP9 merged, and production answers `/api/health`
+with the tree schema in place. SP8 drops `index`, `variants`, `variant_index`,
+`variant_count`, the two legacy cursors and the two `*_before` snapshots. Check that
+nothing still reads `variant_count`/`variant_index` before dropping them, and note this
+is the migration shape that rewrites toasted values, so it owes one `VACUUM FULL actions;`
+on the direct (non-`-pooler`) endpoint afterwards.
+
+Ahead of that, `plan/16-world-state-refusals.md` records a set of world-state fixes that
+are merged but **never driven in a browser**. See that file for what to test.
+
+**SP9 and SP10 are both on `main`, despite what earlier notes here said.** The branches
+`sp7b-take-pager` and `sp10-memory-bank-eviction` still exist and still read as unmerged
+to `git branch --no-merged`, because the work landed as squashes. Check the code, not the
+branch list: `actions.parent_id` in `models.py` is SP9, and commit `c0cd6fa` is SP10.
 
 **Driving it found two bugs the suite could not have.** The pager did not appear until the
 page was reloaded — a retry's reply is the second take of its turn, and the SSE stream
