@@ -21,7 +21,7 @@ import pytest
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
-from app import bundle, models, starter
+from app import bundle, models, seed, starter
 from app.database import Base
 from app.migrations import bootstrap
 
@@ -126,3 +126,34 @@ def test_a_broken_bundle_leaves_no_half_written_adventure(db, guest, monkeypatch
     assert starter.give(db, guest) is None
     db.commit()
     assert db.query(models.Adventure).count() == 0
+
+
+def test_the_copy_inherits_the_demo_scenario_art(db, guest):
+    """An adventure has no cover art of its own; it inherits the scenario's.
+
+    A bundle carries no scenario id, so the link is made by title. Without it
+    the starter card shows a monogram while the demo it came from shows its
+    artwork.
+    """
+    title = payload()["scenarioTitle"]
+    data = json.loads((seed.SEED_DIR / "05-league-championship.json").read_text(encoding="utf-8"))
+    # The demo the copy came from, as the seeder would have written it. The
+    # seeder itself opens its own session against the app's engine, so it
+    # cannot be pointed at this fixture's database.
+    assert data["title"] == title, "the starter names a scenario no seed file ships"
+    db.add(models.Scenario(user_id=None, is_public=True, title=title, image=data["image"]))
+    db.commit()
+
+    adventure = starter.give(db, guest)
+    db.commit()
+    scenario = seed.find_seeded(db, title)
+    assert scenario is not None and scenario.image
+    assert adventure.scenario_id == scenario.id
+
+
+def test_a_missing_demo_scenario_only_costs_the_art(db, guest):
+    """Nothing seeds the scenarios in this fixture, so the link finds nothing."""
+    adventure = starter.give(db, guest)
+    db.commit()
+    assert adventure is not None
+    assert adventure.scenario_id is None

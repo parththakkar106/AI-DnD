@@ -23,7 +23,7 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
-from . import bundle, models
+from . import bundle, models, seed
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +63,30 @@ def give(db: Session, user: models.User) -> models.Adventure | None:
         # flush whatever part of the adventure the session still held.
         with db.begin_nested():
             story = bundle.plan(payload, bundle.check_format(payload))
-            return bundle.materialize(db, payload, story, user.id)
+            adventure = bundle.materialize(db, payload, story, user.id)
+            _link_scenario(db, adventure, payload)
+            return adventure
     except Exception:
         logger.exception("Could not give user %s the starter adventure.", user.id)
         return None
+
+
+def _link_scenario(db: Session, adventure: models.Adventure, payload: dict) -> None:
+    """Points the copy at the demo scenario it came from, when that seed exists.
+
+    A bundle does not carry a scenario id, because the id is local to one
+    database and an export outlives it. The link matters anyway: an adventure
+    has no cover art of its own, and inherits the scenario's. Without it the
+    starter shows a monogram tile while the demo it came from shows its own
+    artwork.
+
+    The name is read from `scenarioTitle` in the file. If no seeded scenario
+    answers to it, the adventure keeps a NULL `scenario_id`, which is the same
+    state an imported bundle is in and costs only the artwork.
+    """
+    title = str(payload.get("scenarioTitle") or "").strip()
+    if not title:
+        return
+    scenario = seed.find_seeded(db, title)
+    if scenario is not None:
+        adventure.scenario_id = scenario.id
