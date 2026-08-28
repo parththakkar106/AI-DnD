@@ -2,8 +2,9 @@
 
 Read this before you play the Pokémon demo again. It records why two bugs in
 `plan/15-pokemon-demo-handover.md` were diagnosed wrongly, what the engine was
-actually doing, and what changed. Everything here is merged and green. **None of
-it has been driven in a browser.**
+actually doing, and what changed. Everything here is merged and green. It **has** now been driven in a browser;
+read "Driven in a browser" at the end first, because three of the five changes
+did not work and one bug explains all three.
 
 **Last updated: 2026-08-28.**
 
@@ -116,13 +117,13 @@ to chase. `test_a_clamp_that_still_moved_the_value_says_nothing` pins this.
 
 ## How to test it
 
-530 backend tests pass and the frontend builds. **The whole of the UI work is
-unverified** — this project has no frontend test runner, which is the standing
+532 backend tests pass and the frontend builds. **The UI work has no automated
+cover** — this project has no frontend test runner, which is the standing
 reason its UI bugs are found by hand.
 
 Run the backend from `backend/` with
 `.venv/Scripts/python.exe -m pytest tests/`. The new file is
-`tests/test_change_visibility.py` (21 tests). Each of the three mechanisms fails
+`tests/test_change_visibility.py` (23 tests). Each of the three mechanisms fails
 its own test when disabled; that was checked by sabotage, not assumed.
 
 To drive it, re-seed the scenario and play the demo:
@@ -162,3 +163,71 @@ resize a maximized window.
 - **The Bandit Camp demo (`04-rpg-world-state.json`) was not checked** for the
   same milestone problem. Its milestones were equally unnamed to the model
   before this change, so it is worth asking whether one has ever fired there.
+
+---
+
+## Driven in a browser, 2026-08-28
+
+Adventure 45, four turns, on production against the demo model. Two of the five
+changes worked. Three did not reach anyone, for one reason.
+
+### The bug: the stored column dropped two of the three lists
+
+`world_delta_of` in `routers/adventures.py` wrote `delta` and `applied` only.
+Every consumer that distinguishes outcomes reads the other two:
+
+- `Action.world_changes` builds `clamped_paths` from `world_delta["clamped"]`,
+  so every chip carried `clamped: false`. `Play.jsx`'s `blocked = c.clamped &&
+  d === 0` could never be true, and `(limited)` could never render.
+- With no `rejected` list, a `kind: "rejected"` chip was unreachable.
+- `worldstate.refusals` reads both lists, so `render_refusals` always returned
+  an empty string and no correction ever reached the next prompt.
+
+The `fix` string survived only because the engine stores it inside the `applied`
+entry. Turn 3 is the record: the snapshot's `report.clamped` held
+`npc.ivysaur.hp` and `npc.milo.active_hp` with correct `fix` text, both chips
+came back `clamped: false`, turn 4's prompt contained no correction, and the
+model repeated the same mistake.
+
+`world_delta_of` now carries all three lists.
+
+**Why the 21 tests passed.** The `action()` helper in
+`test_change_visibility.py` built the column by hand as `{"delta": delta,
+**report}`, with every list present. The write path was never exercised. The
+helper now fills the column through `world_delta_of`. Removing the two lines
+again fails 9 of the 23 tests; that was checked, not assumed.
+
+### The two that were not code faults
+
+`graveler_defeated` never fired and `world.turn` never moved. Both instructions
+are present and correct in the assembled prompt: the goals line reads `Goals
+(mark with milestones.<id>): graveler_defeated — …`, and the scenario says to
+add 1 to `world.turn` every reply. The demo model ignores both. Change 3
+landed; the model is the limit.
+
+### The absolutes were coming from the scenario's own wording
+
+The model sent a total, not a change, for almost every number:
+`npc.ivysaur.hp: 96`, `npc.milo.active_hp: 65` then `88`, `player.potions: 2`.
+Because every `hp` has `initial == max`, each one clamped back to where it
+started. `potions` went **up** when the player spent one.
+
+`EMIT_RULE` does say "CHANGES ONLY, as deltas (not new totals)", and
+`EMIT_REMINDER` repeats "deltas only". The scenario contradicted both at closer
+range. `milo.active_hp.desc` said "**Reset this to** the newcomer's full HP",
+which is an instruction to send an absolute, and that desc is injected every
+turn. The bullets said "**Drop** the HP … and **raise** it", naming a direction
+but never a sign. The only line that said "(not a delta)" was
+`player.active_pokemon`, so naming the exception made the rule look optional.
+
+The one stat whose desc used delta wording, `pokemon_fainted` ("Add 1 each
+time"), is the one that worked.
+
+Fixed in `05-league-championship.json`: every `hp` desc and the potion desc now
+state the sign, the bullets do too, and the lead-in says plainly that every
+number is a change with a worked example. `milo.active_hp.max_delta_per_turn`
+went 65 → 98, because a switch legitimately moves that stat a full bar and the
+old cap made the reset unreachable in one turn.
+
+**Not fixed:** the `initial == max` shape itself. It is now loud rather than
+silent, and the wording removes the usual cause, but the shape is still there.
