@@ -19,8 +19,8 @@ stage before it is green.
 |---|---|---|---|
 | 0 | Hygiene: worktrees, branches, undocumented settings | done, except the branch deletion | 2026-08-29 |
 | 1 | Split the four largest files | done: one test setup, and all four files split | 2026-08-29 |
-| 2 | Remove duplication | not started | |
-| 3 | SP8: drop the legacy columns | not started | |
+| 2 | Remove duplication | done: all seven items | 2026-08-29 |
+| 3 | SP8: drop the legacy columns | code done, all eight columns gone; the deploy and `VACUUM FULL` remain | 2026-08-29 |
 | 4 | Documentation | not started | |
 | 5 | A frontend test runner | not started | |
 
@@ -392,6 +392,57 @@ Each item here is small and is covered by tests that already exist.
 **Check:** 549 tests pass. Test count may drop if consolidating fixtures removes a
 duplicate case. If it does, say which case and why in the commit message.
 
+### What Stage 2 actually did, 2026-08-29
+
+All seven items landed. Items 2 and 3 went in early, with the test setup in
+`32cd7c1`, because the conftest had to exist before the router split could move
+any test. Items 1, 4, and 5 are `2c57b1c`. Items 6 and 7 are `e0bf2b6`.
+
+**Item 1, the path resolver.** `_resolve` returns a `_Target` naming the kind,
+the section, the key, the stat definition, and the character, or a rejection.
+The two callers now differ only in the write rule, which is what the item asked
+for. Building the container is a method on `_Target` rather than part of
+resolving, because a rejected path must not leave an empty section behind.
+
+A refactor here is hard to check by reading, so it was checked by running. A
+differential harness fed 3960 generated payloads through the old and the new
+implementation and compared the state and the report. Ignoring `fix`, there are
+zero differences. 674 rejections gained a `fix` string and none lost one, all of
+them in `apply_override`, which had been the terser of the two. That is an
+improvement rather than a regression: `apply_delta` already worded those
+strings, and the world-state editor renders them.
+
+**Item 5, the ownership dependency.** All 32 handlers converted, not the 20 the
+review estimated. Two proofs, because tests alone would not catch a change in
+the order of the checks or in the public HTTP surface:
+
+- An AST pass confirmed the `get_adventure_or_404` call was the first statement
+  in every one of the 32 handlers. If it were not, hoisting it into a dependency
+  would move work that used to run after something else.
+- The generated OpenAPI document was diffed against one built from a `git clone`
+  at `HEAD`. The only difference is that `rename_branch` now lists `branch_id`
+  before `adventure_id`, which is parameter order in the spec and not a route
+  change.
+
+Seven tests in `test_state_revert.py` needed updating. They call handlers as
+plain functions rather than over HTTP, so they have to pass `adventure=` now.
+That file is the only one that does this.
+
+**Item 7 needed a migration guard.** Migration 65 drops `settings.stream`, and
+it is the first migration that drops a column. `_column_already_there` already
+existed for the `ADD COLUMN` case. Dropping needs the mirror, `_column_already_gone`,
+because `create_all` builds the current schema, which is already missing the
+column, and fixtures like `test_tree_migration.pre_tree` stamp an old version
+against a database built that way and replay. Verified by running migration 65
+twice, once against a database that still had the column and once against one
+that did not.
+
+**One duplicate was left alone.** `FakeProvider` in `test_chat.py` is not a copy
+of `ScriptedProvider`. It records the key, model, and endpoint it was
+constructed with, which is how the chat tests assert on what would have gone
+over the wire. `fakes.ScriptedProvider` streams replies and records prompts.
+Merging them would give one class two unrelated jobs.
+
 ## Stage 3: SP8, drop the legacy columns
 
 This is the only stage that touches the production database. Follow
@@ -413,6 +464,50 @@ This is the only stage that touches the production database. Follow
 **Check:** 549 tests pass, `/api/health` answers `{"ok":true}` after the deploy, and
 one existing adventure opens, takes a turn, retries it, and pages back through the
 transcript.
+
+### What Stage 3 actually did, 2026-08-29
+
+Steps 1 and 2 landed. Step 3, the deploy and the `VACUUM FULL`, is still open,
+because it runs against production and belongs with the release, not with the
+branch.
+
+**Step 1, the read audit.** Nothing outside the migrations reads the eight
+columns. `TakePager.jsx` reads `action.take_count` and `action.take_index` only,
+which is what makes dropping the three payload fields safe. The comments in
+`bundle.py` and `context/history.py` were accurate.
+
+**Step 2, the drop.** Migrations 66 to 73 drop one column each. `index` is a
+keyword in SQLite, so migration 71 quotes it. `models.py`, `schemas.py`, and
+`ACTION_LIST_COLUMNS` lost the same eight, `Adventure.actions` now orders by
+`id`, and `attempts.renumber`, `context/history.max_action_index`, and
+`nodes.next_index` are deleted.
+
+Two problems came out of the migration passes rather than the DDL:
+
+- `_split_variants_into_siblings` wrote through `Base.metadata.tables["actions"]`,
+  the live ORM table, so it stopped compiling the moment migration 66 removed
+  five of its columns. It now writes through `_ACTIONS_AT_60`, a frozen `Table`
+  carrying its own `MetaData`. That declaration is a snapshot of a past schema
+  and must not be updated to track `models.py`.
+- Five passes read columns that migrations 66 to 73 drop. A `create_all`
+  database replays every migration against the current schema, so each pass now
+  calls `_has_columns` and returns early when the columns are absent. This is
+  the rule `_column_already_there` applies to DDL, applied to the passes.
+
+`bootstrap` gained a `through` argument. A migration test that asserts on
+something a later migration removes stops at the version it is about, rather
+than reading a schema several versions newer.
+
+**One pre-existing bug found and not fixed.** `bundle._write_nodes` never sets
+`Action.parent_id`, and `paging.annotate_takes` groups on `parent_id`, so an
+imported adventure's take pager reads 1 of 1. The frontend has read only
+`take_count` since SP9, so this predates Stage 3 and is not a regression from
+it. `test_retry_variants.py` documents it.
+
+**Check:** 555 backend tests pass, up from 549. `test_tree_migration.py` gained
+eight parametrized cases asserting each column is gone after a real schema-45
+database migrates all the way. A `create_all` database would pass those without
+running the migration, which is why the fixture is a frozen pre-tree one.
 
 ## Stage 4: documentation
 

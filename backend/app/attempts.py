@@ -2,7 +2,7 @@
 
 A retry used to rewrite the AI action in place and append the discarded attempt
 to a JSON list on the same row. Seven separate bugs came from that arrangement.
-The row's `text` duplicated one entry of a repeating group, `variant_count`
+The row's `text` duplicated one entry of a repeating group, a second column
 duplicated its length, and every reader that touched the story during a retry
 had to be told to ignore the row.
 
@@ -25,10 +25,11 @@ that maintains either one:
   avoid. The prompt therefore moves with the live flag, and a superseded sibling
   keeps only its own slices.
 
-Ordering inside a group comes from `variant_index`, which is an explicit ordinal
-rather than `created_at`. Two attempts made in the same second still have to page
-in the order they were made, and the migration that split the old JSON lists had
-to state the order rather than reconstruct it.
+Ordering inside a group comes from `id`, not from `created_at`. Two attempts made
+in the same second still have to page in the order they were made, and `id`
+increases with every insert. SP8 dropped `variant_index`, an explicit ordinal
+that carried the same order, once a run of the suite confirmed that the two
+agreed in every group.
 """
 
 import copy
@@ -82,7 +83,7 @@ def group(db: Session, action: models.Action) -> list[models.Action]:
                 models.Action.depth == action.depth,
                 models.Action.parent_id.is_(None),
             )
-            .order_by(models.Action.variant_index, models.Action.id)
+            .order_by(models.Action.id)
             .all()
         )
     return (
@@ -91,7 +92,7 @@ def group(db: Session, action: models.Action) -> list[models.Action]:
             models.Action.adventure_id == action.adventure_id,
             models.Action.parent_id == action.parent_id,
         )
-        .order_by(models.Action.variant_index, models.Action.id)
+        .order_by(models.Action.id)
         .all()
     )
 
@@ -190,8 +191,8 @@ def add_attempt(
     """Places `replacement` next to `previous` as the newer attempt at that turn.
 
     The placement is done here rather than through `tree.place_action`, which
-    would read the depth from the legacy `index` and move the head. A sibling is
-    not a new turn. It is another attempt at the turn the head is already on.
+    moves the head. A sibling is not a new turn. It is another attempt at the
+    turn the head is already on.
     """
     replacement.branch_id = previous.branch_id
     replacement.depth = previous.depth
@@ -202,18 +203,10 @@ def add_attempt(
     # away from this turn.
     replacement.parent_id = previous.parent_id
     replacement.live = True
-    # Use the end of the group rather than one past `previous`. The two match
-    # only when `previous` is the newest attempt. Switch a three-attempt turn
-    # back to attempt 1 and retry, and `previous.variant_index + 1` collides with
-    # attempt 2. `renumber` then breaks the tie by id and places the new attempt
-    # between attempts 2 and 3, so the pager walks the attempts in an order they
-    # were not made in. `group` returns oldest first, and `replacement` is not in
-    # it yet.
-    siblings = group(db, previous)
-    replacement.variant_index = 1 + max(
-        (s.variant_index for s in siblings if s.variant_index is not None),
-        default=previous.variant_index or 0,
-    )
+    # The replacement takes its place at the end of the group, because `group`
+    # orders by `id` and this row has no id yet. Switching a three-attempt turn
+    # back to attempt 1 and retrying therefore still pages 1, 2, 3, 4, which is
+    # the order the attempts were made in.
     previous.live = False
     # The replacement was assembled with a fresh snapshot, so the prompt for
     # this turn is now the one it carries. The superseded attempt keeps only the
@@ -226,8 +219,7 @@ def make_live(
 ) -> list[models.Action]:
     """Makes `node` the attempt the story tells, and restores its outcome.
 
-    Returns the group, renumbered, so that a caller reporting on it does not read
-    it twice.
+    Returns the group, so that a caller reporting on it does not read it twice.
     """
     rows = group(db, node)
     previous = live_in(rows)
@@ -236,21 +228,7 @@ def make_live(
     for row in rows:
         row.live = row is node
     restore_state(adventure, node)
-    renumber(rows)
     return rows
-
-
-def renumber(rows: list[models.Action]) -> None:
-    """Refreshes the group-shape cache that the page response reads.
-
-    `variant_count` is 0 rather than 1 for a turn nobody retried, because the
-    pager asks whether there is anything to page through, and for a single
-    attempt the answer is no.
-    """
-    count = len(rows) if len(rows) > 1 else 0
-    for i, row in enumerate(rows):
-        row.variant_index = i
-        row.variant_count = count
 
 
 # ------------------------------------------------- the prompt, stored once

@@ -50,7 +50,7 @@ def story():
     db.add(adventure)
     db.flush()
     for i in range(4):
-        db.add(models.Action(adventure_id=adventure.id, index=i,
+        db.add(models.Action(adventure_id=adventure.id,
                              type="ai" if i % 2 else "do", text=f"[{i}] Onward."))
     db.commit()
     db.expire_all()
@@ -206,7 +206,7 @@ def test_prompt_stays_inside_the_budget_on_a_long_story(story):
     db, adventure, settings, _ = story
     for i in range(4, 120):
         db.add(models.Action(
-            adventure_id=adventure.id, index=i, type="ai" if i % 2 else "do",
+            adventure_id=adventure.id, type="ai" if i % 2 else "do",
             text=f"[{i}] " + "The road bends past the burnt mill and the smoke. " * 12,
         ))
     db.commit()

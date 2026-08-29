@@ -12,6 +12,8 @@ to be scrolling. An anchor means the same thing before and after.
 
     python -m pytest tests/test_action_paging.py -v
 """
+import re
+
 import pytest
 from fastapi import Depends
 from fastapi.testclient import TestClient
@@ -38,7 +40,7 @@ def client(monkeypatch):
     setup.flush()
     for i in range(TOTAL):
         setup.add(models.Action(
-            adventure_id=adventure.id, index=i,
+            adventure_id=adventure.id,
             type="start" if i == 0 else ("ai" if i % 2 else "do"),
             text=f"Action {i}." + "word " * 200,
         ))
@@ -62,6 +64,17 @@ def client(monkeypatch):
         Base.metadata.drop_all(bind=engine)
 
 
+def ordinal(action) -> int:
+    """Returns which turn this is, read out of the fixture's own text.
+
+    The payload used to carry `index`, a story-wide turn number that SP8
+    dropped. Nothing replaced it: a depth is a position along one branch, and
+    the pager keys on ids. The fixture numbers its own actions, so these tests
+    read the number back rather than reintroduce one.
+    """
+    return int(re.match(r"Action (\d+)\.", action["text"]).group(1))
+
+
 def page(client, before_id=None, limit=None):
     params = {}
     if before_id is not None:
@@ -76,10 +89,8 @@ def page(client, before_id=None, limit=None):
 def add_action(client, text="A new turn.") -> int:
     db = SessionLocal()
     try:
-        highest = db.query(models.Action.index).order_by(
-            models.Action.index.desc()).first()[0]
         action = models.Action(
-            adventure_id=client.adv_id, index=highest + 1, type="ai", text=text
+            adventure_id=client.adv_id, type="ai", text=text
         )
         db.add(action)
         db.commit()
@@ -97,14 +108,14 @@ def test_the_page_load_returns_only_the_newest_window(client):
     assert len(body["actions"]) == ACTION_PAGE
     assert body["action_count"] == TOTAL
     # It is the newest window, ending on the last action.
-    assert body["actions"][-1]["index"] == TOTAL - 1
-    assert body["actions"][0]["index"] == TOTAL - ACTION_PAGE
+    assert ordinal(body["actions"][-1]) == TOTAL - 1
+    assert ordinal(body["actions"][0]) == TOTAL - ACTION_PAGE
 
 
 def test_a_short_story_is_returned_whole(client):
     db = SessionLocal()
     try:
-        db.query(models.Action).filter(models.Action.index >= 5).delete()
+        db.query(models.Action).filter(models.Action.depth >= 5).delete()
         db.commit()
     finally:
         db.close()
@@ -142,19 +153,19 @@ def test_the_first_page_is_the_newest(client):
     assert len(body["actions"]) == ACTION_PAGE
     assert body["total"] == TOTAL
     assert body["has_more"] is True
-    assert body["actions"][-1]["index"] == TOTAL - 1
+    assert ordinal(body["actions"][-1]) == TOTAL - 1
 
 
 def test_paging_up_covers_the_whole_story_exactly_once(client):
     seen = []
     body = page(client)
-    seen = [a["index"] for a in body["actions"]]
+    seen = [ordinal(a) for a in body["actions"]]
     guard = 0
     while body["has_more"]:
         guard += 1
         assert guard < 20, "paging did not terminate"
         body = page(client, before_id=body["actions"][0]["id"])
-        seen = [a["index"] for a in body["actions"]] + seen
+        seen = [ordinal(a) for a in body["actions"]] + seen
 
     assert seen == list(range(TOTAL)), "gap, duplicate or reordering while paging"
 
@@ -163,12 +174,12 @@ def test_has_more_is_false_at_the_beginning_of_the_story(client):
     body = page(client)
     while body["has_more"]:
         body = page(client, before_id=body["actions"][0]["id"])
-    assert body["actions"][0]["index"] == 0
+    assert ordinal(body["actions"][0]) == 0
 
 
 def test_each_page_is_ordered_oldest_first(client):
     body = page(client)
-    indices = [a["index"] for a in body["actions"]]
+    indices = [ordinal(a) for a in body["actions"]]
     assert indices == sorted(indices)
 
 
@@ -185,9 +196,10 @@ def test_a_turn_arriving_mid_scroll_does_not_shift_the_next_page(client):
     add_action(client)
 
     older = page(client, before_id=oldest_held["id"])
-    assert older["actions"][-1]["index"] == oldest_held["index"] - 1, \
+    assert ordinal(older["actions"][-1]) == ordinal(oldest_held) - 1, (
         "the page shifted when a turn landed"
-    assert all(a["index"] < oldest_held["index"] for a in older["actions"])
+    )
+    assert all(ordinal(a) < ordinal(oldest_held) for a in older["actions"])
     # The new turn changes the total, which is expected. It must not move the window.
     assert older["total"] == TOTAL + 1
 

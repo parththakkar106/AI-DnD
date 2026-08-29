@@ -41,7 +41,7 @@ def client(monkeypatch):
     adv = models.Adventure(user_id=user.id, title="Cave", script_state={})
     setup.add(adv)
     setup.flush()
-    setup.add(models.Action(adventure_id=adv.id, index=0, type="start", text="You enter a cave."))
+    setup.add(models.Action(adventure_id=adv.id, type="start", text="You enter a cave."))
     setup.add(models.AdventureScript(
         adventure_id=adv.id, position=0, enabled=True, name="Gold",
         output_js=GOLD_SCRIPT,

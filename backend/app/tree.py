@@ -118,8 +118,8 @@ def fork(db: Session, adventure: models.Adventure, node: models.Action) -> model
         raise ValueError("cannot fork from a node that is not on a branch")
     fork_depth = node.depth - 1
     # Read the sibling attempts before moving the node. The session does not
-    # autoflush, so a later read still finds the node here and renumbers it back
-    # into the group it just left.
+    # autoflush, so a later read still finds the node here and hands the live
+    # flag back to it.
     remaining = [
         row for row in db.query(models.Action)
         .filter(
@@ -127,7 +127,7 @@ def fork(db: Session, adventure: models.Adventure, node: models.Action) -> model
             models.Action.branch_id == parent.id,
             models.Action.depth == node.depth,
         )
-        .order_by(models.Action.variant_index, models.Action.id)
+        .order_by(models.Action.id)
         .all()
         if row is not node
     ]
@@ -160,14 +160,12 @@ def fork(db: Session, adventure: models.Adventure, node: models.Action) -> model
     depth = node.depth
     node.branch_id = new_id
     node.live = True
-    node.variant_index = 0
-    node.variant_count = 0
 
+    # The group the node left needs a live attempt again. Taking the oldest is
+    # arbitrary, and it has to be somebody: a coordinate with no live attempt
+    # disappears from the story on the branch it was left on.
     if remaining and not any(row.live for row in remaining):
         remaining[0].live = True
-    for i, row in enumerate(remaining):
-        row.variant_index = i
-        row.variant_count = len(remaining) if len(remaining) > 1 else 0
 
     adventure.head_branch_id = new_id
     adventure.head_depth = depth
@@ -228,9 +226,10 @@ def place_action(
 ) -> models.Branch:
     """Puts `action` on the head branch and moves the head to it.
 
-    `depth` follows `index` while both columns exist. The two must agree,
-    because a read that orders by depth and a cursor that counts in index space
-    describe the same story, and SP2 swaps one for the other in a single step.
+    An action with no `depth` of its own goes one step past the tip, which is
+    where the next turn belongs. The opening of a new adventure lands at 0 that
+    way, because an adventure with nothing played has a head depth of
+    `NO_DEPTH`.
 
     Pass `branch` when you have already resolved the head and are placing
     several nodes at once. See `place_new_nodes` for why that is worth doing.
@@ -244,7 +243,7 @@ def place_action(
     branch = branch or head_branch(db, adventure)
     action.branch_id = branch.id
     if action.depth is None:
-        action.depth = action.index
+        action.depth = adventure.head_depth + 1
     if parent is not None:
         action.parent_id = parent.id
     elif action.parent_id is None and action.depth:

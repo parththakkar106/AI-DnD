@@ -89,15 +89,11 @@ def client(monkeypatch):
     setup.flush()
     for i in range(12):
         setup.add(models.Action(
-            adventure_id=adventure.id, index=i,
+            adventure_id=adventure.id,
             type="ai" if i % 2 else "do", text=f"Action {i}.",
             context_snapshot=BIG_SNAPSHOT,
             world_delta={"delta": {"player.hp": -15},
                          "applied": [{"path": "player.hp", "old": 100, "new": 85}]},
-            # Every AI action has been retried twice, so `variants` is carrying
-            # weight the list response must not pay for.
-            variants=BIG_VARIANTS if i % 2 else None,
-            variant_count=len(BIG_VARIANTS) if i % 2 else 0,
         ))
     setup.commit()
     adv_id, user_id = adventure.id, user.id
@@ -137,16 +133,12 @@ def test_loading_an_adventure_does_not_fetch_context_snapshot(client, sql_log):
 
 
 def test_the_state_snapshots_are_not_fetched_in_bulk(client, sql_log):
-    """All four are rollback snapshots, only ever needed for the single node
-    being undone, retried past or switched to.
-
-    The `_after` pair is the live one since SP4, and the `_before` pair is
-    unused until SP8 drops it. A page load must pay for neither.
+    """Both are rollback snapshots, only ever needed for the single node being
+    undone, retried past or switched to. A page load must pay for neither.
     """
     client.get(f"/api/adventures/{client.adv_id}")
     selects = action_selects(sql_log)
-    for column in ("state_before", "world_state_before",
-                   "state_after", "world_state_after"):
+    for column in ("state_after", "world_state_after"):
         offenders = [s for s in selects if column in s]
         assert offenders == [], f"{column} was fetched in bulk"
 
@@ -159,29 +151,6 @@ def test_world_changes_still_works_without_the_snapshot(client):
     assert ai[0]["world_changes"] == [
         {"kind": "stat", "label": "hp", "delta": -15, "value": 85, "clamped": False}
     ]
-
-
-def test_loading_an_adventure_does_not_fetch_variants(client, sql_log):
-    """Same failure as context_snapshot, one size down: the payload carries
-    only `variant_count`, but loading the column to compute it made every retry
-    a permanent tax on every later load of that adventure."""
-    r = client.get(f"/api/adventures/{client.adv_id}")
-    assert r.status_code == 200, r.text
-
-    selects = action_selects(sql_log)
-    assert selects, "expected at least one SELECT against actions"
-    offenders = [s for s in selects if "variants" in s]
-    assert offenders == [], f"variants was fetched in bulk:\n{offenders[0][:400]}"
-
-
-def test_variant_count_survives_variants_being_deferred(client):
-    """The pager reads this number; it has to be right without the column."""
-    r = client.get(f"/api/adventures/{client.adv_id}")
-    by_type = {}
-    for action in r.json()["actions"]:
-        by_type.setdefault(action["type"], []).append(action)
-    assert all(a["variant_count"] == len(BIG_VARIANTS) for a in by_type["ai"])
-    assert all(a["variant_count"] == 0 for a in by_type["do"])
 
 
 def test_counting_actions_does_not_name_the_deferred_columns(client, sql_log):
@@ -198,8 +167,7 @@ def test_counting_actions_does_not_name_the_deferred_columns(client, sql_log):
         assert history.count(adventure) == 12
         counts = [s for s in sql_log if "count" in s.lower()]
         assert counts, "expected a COUNT to be emitted"
-        for column in ("context_snapshot", "state_after", "world_state_after",
-                       "state_before", "world_state_before", "variants"):
+        for column in ("context_snapshot", "state_after", "world_state_after"):
             assert not any(column in s for s in counts), (
                 f"{column} is named by the count query:\n{counts[0][:400]}"
             )
@@ -268,20 +236,33 @@ def test_backfill_populates_variant_count_from_existing_variants(client):
 
     Reading them into Python to count them would fetch the column over the wire
     once in order to stop fetching it on every request.
+
+    Migration 68 drops `variant_count` and 66 drops `variants`, so this test
+    puts both columns back before it calls the pass, the same way
+    `as_json_snapshot_column` above rebuilds the column migration 36 needs. The
+    assertions read raw SQL, because the model no longer has either attribute.
     """
     db = SessionLocal()
     try:
-        db.execute(text("UPDATE actions SET variant_count = 0"))
+        db.execute(text("ALTER TABLE actions ADD COLUMN variants JSON"))
+        db.execute(text(
+            "ALTER TABLE actions ADD COLUMN variant_count INTEGER NOT NULL DEFAULT 0"
+        ))
+        db.execute(
+            text("UPDATE actions SET variants = :v WHERE type = 'ai'"),
+            {"v": json.dumps(BIG_VARIANTS)},
+        )
         db.commit()
 
         with engine.begin() as conn:
             migrations._backfill_variant_count(conn)
 
-        db.expire_all()
-        actions = db.query(models.Action).order_by(models.Action.index).all()
-        for action in actions:
-            expected = len(BIG_VARIANTS) if action.type == "ai" else 0
-            assert action.variant_count == expected, f"action {action.index}"
+        rows = db.execute(text(
+            "SELECT type, variant_count FROM actions ORDER BY id"
+        )).all()
+        assert rows, "fixture should have actions"
+        for kind, count in rows:
+            assert count == (len(BIG_VARIANTS) if kind == "ai" else 0)
     finally:
         db.close()
 

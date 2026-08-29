@@ -48,7 +48,7 @@ def client(monkeypatch):
     setup.add(adv)
     setup.flush()
     setup.add(
-        models.Action(adventure_id=adv.id, index=0, type="start", text="You enter.")
+        models.Action(adventure_id=adv.id, type="start", text="You enter.")
     )
     setup.commit()
     adv_id, user_id = adv.id, user.id

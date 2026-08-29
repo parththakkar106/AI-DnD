@@ -55,7 +55,7 @@ def client(monkeypatch):
     setup.add(adv)
     setup.flush()
     # "Gwen" in the story text makes her NPC in-scene (matches the "gwen" npc's keys).
-    setup.add(models.Action(adventure_id=adv.id, index=0, type="start",
+    setup.add(models.Action(adventure_id=adv.id, type="start",
                             text="You face a goblin. Gwen watches."))
     setup.commit()
     adv_id, user_id = adv.id, user.id

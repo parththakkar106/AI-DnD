@@ -48,7 +48,7 @@ def _make_adventure(db, script_state):
 
 def _add(db, adv, index, type_, text="x", state_after=None):
     a = models.Action(
-        adventure_id=adv.id, index=index, type=type_, text=text,
+        adventure_id=adv.id, type=type_, text=text,
         state_after=state_after,
     )
     db.add(a)
@@ -186,7 +186,7 @@ def test_forget_node_withdraws_only_what_that_node_produced(db):
 
 def test_snapshot_outcome_is_an_independent_deep_copy(db):
     _, adv = _make_adventure(db, {"nested": {"n": 1}})
-    node = models.Action(adventure_id=adv.id, index=0, type="ai", text="x")
+    node = models.Action(adventure_id=adv.id, type="ai", text="x")
     attempts.snapshot_outcome(adv, node)
     adv.script_state["nested"]["n"] = 99
     assert node.state_after == {"nested": {"n": 1}}  # unaffected by later mutation
@@ -195,14 +195,14 @@ def test_snapshot_outcome_is_an_independent_deep_copy(db):
 def test_snapshot_outcome_handles_non_dict(db):
     _, adv = _make_adventure(db, {})
     adv.script_state = None
-    node = models.Action(adventure_id=adv.id, index=0, type="ai", text="x")
+    node = models.Action(adventure_id=adv.id, type="ai", text="x")
     attempts.snapshot_outcome(adv, node)
     assert node.state_after == {}
 
 
 def test_restore_state_ignores_a_node_with_no_outcome(db):
     _, adv = _make_adventure(db, {"gold": 7})
-    attempts.restore_state(adv, models.Action(adventure_id=adv.id, index=0, type="ai"))
+    attempts.restore_state(adv, models.Action(adventure_id=adv.id, type="ai"))
     assert adv.script_state == {"gold": 7}
     attempts.restore_state(adv, None)
     assert adv.script_state == {"gold": 7}
@@ -236,6 +236,6 @@ def test_retry_restores_the_state_the_turn_started_from(db, monkeypatch):
     assert [a.type for a in adv.actions] == ["start", "do", "ai"]
     last = adv.actions[-1]
     assert last.live is True
-    assert last.variant_count == 0
+    assert len(attempts.group(db, last)) == 1  # no sibling was filed
     assert last.state_after == {"gold": 20}  # its own outcome, untouched
     adventures.turns._active_turns.discard(adv.id)

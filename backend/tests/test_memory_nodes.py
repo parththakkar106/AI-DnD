@@ -67,7 +67,6 @@ def make_branch(db, adventure, parent=None, fork_depth=None):
 def add_node(db, adventure, branch, depth, label, index=None):
     action = models.Action(
         adventure_id=adventure.id,
-        index=depth if index is None else index,
         branch_id=branch.id,
         depth=depth,
         type="ai" if depth % 2 else "do",

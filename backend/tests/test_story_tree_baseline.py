@@ -63,10 +63,10 @@ def _make_world(monkeypatch, *, seeded_actions: int = 0):
     )
     setup.add(adv)
     setup.flush()
-    setup.add(models.Action(adventure_id=adv.id, index=0, type="start", text=OPENING))
+    setup.add(models.Action(adventure_id=adv.id, type="start", text=OPENING))
     for i in range(seeded_actions):
         setup.add(models.Action(
-            adventure_id=adv.id, index=i + 1,
+            adventure_id=adv.id,
             type="ai" if i % 2 else "do",
             text=f"Seeded turn {i}.",
         ))

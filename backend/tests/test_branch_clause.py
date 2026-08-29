@@ -64,7 +64,6 @@ def make_branch(db, adventure, parent=None, fork_depth=None):
 def add_node(db, adventure, branch, depth, label, index=None):
     action = models.Action(
         adventure_id=adventure.id,
-        index=depth if index is None else index,
         branch_id=branch.id,
         depth=depth,
         type="start" if depth == 0 else ("ai" if depth % 2 else "do"),
@@ -328,13 +327,16 @@ def test_a_node_written_without_a_branch_is_placed_anyway(forked):
     """
     db, adventure, ids = forked
     written = models.Action(
-        adventure_id=adventure.id, index=99, type="do", text="C8"
+        adventure_id=adventure.id, type="do", text="C8"
     )
     db.add(written)
     db.commit()
     assert written.branch_id == ids["c"]
-    assert written.depth == 99
-    assert adventure.head_depth == 99
+    # The node lands one step past the tip of C. SP8 dropped `index`, which is
+    # where a caller used to name its own depth, so an unplaced node now always
+    # follows the head.
+    assert written.depth == adventure.head_depth
+    assert adventure.head_depth == 8
     assert labels(history.tail(adventure, 2)) == ["C7", "C8"]
 
 
@@ -362,7 +364,7 @@ def test_placing_a_flush_of_nodes_reads_the_branch_once(forked, emitted_sql):
     emitted_sql.clear()
     for i in range(50):
         db.add(models.Action(
-            adventure_id=adventure.id, index=500 + i, type="do", text=f"bulk {i}"
+            adventure_id=adventure.id, type="do", text=f"bulk {i}"
         ))
     db.commit()
     branch_reads = [s for s in emitted_sql if s.startswith("SELECT") and "FROM branches" in s]
