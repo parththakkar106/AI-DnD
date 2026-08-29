@@ -24,13 +24,10 @@ from ...context import lineage
 # row.
 ACTION_LIST_COLUMNS = (
     models.Action.adventure_id,
-    models.Action.index,
     models.Action.type,
     models.Action.text,
     models.Action.reasoning,
     models.Action.world_delta,
-    models.Action.variant_count,
-    models.Action.variant_index,
     # SP9: the pager's key. If `parent_id` were deferred, every row on the page
     # would cost a lazy load, which is the cost `load_only` is here to prevent.
     # `branch_id` is listed for the same reason. The pager reads it to tell a
@@ -124,33 +121,28 @@ def annotate_takes(
 
     This runs one query for the whole page rather than one per row. The pager
     needs the shape of each turn's attempt group, and calling `attempts.group`
-    per action costs one query per message on screen. `variant_count` was cached
-    to avoid that cost, which is why SP8 could not drop it.
+    per action costs one query per message on screen.
 
     This function reads the siblings rather than counting them. A group holds
     only a few attempts, the page is bounded, and a count still needs a second
-    query for the ordinal. It fetches only the id and the ordering keys, so it
-    stays cheap even when the text is large.
+    query for the ordinal. It fetches only the id and the parent, so it stays
+    cheap even when the text is large.
     """
     parents = {a.parent_id for a in actions if a.parent_id is not None}
     if parents:
         rows = (
-            db.query(
-                models.Action.id,
-                models.Action.parent_id,
-                models.Action.variant_index,
-            )
+            db.query(models.Action.id, models.Action.parent_id)
             .filter(
                 models.Action.adventure_id == adventure_id,
                 models.Action.parent_id.in_(parents),
             )
-            .order_by(models.Action.variant_index, models.Action.id)
+            .order_by(models.Action.id)
             .all()
         )
     else:
         rows = []
     siblings: dict[int, list[int]] = {}
-    for row_id, parent_id, _ in rows:
+    for row_id, parent_id in rows:
         siblings.setdefault(parent_id, []).append(row_id)
     for action in actions:
         ids = siblings.get(action.parent_id) if action.parent_id else None

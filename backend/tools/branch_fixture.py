@@ -99,7 +99,7 @@ adv = models.Adventure(
 db.add(adv)
 db.flush()
 db.add(models.Action(
-    adventure_id=adv.id, index=0, type="start",
+    adventure_id=adv.id, type="start",
     text="The cellar door has been shut since your grandmother died. "
          "Tonight the lantern is lit and the key is in your hand."))
 db.add(models.AdventureScript(

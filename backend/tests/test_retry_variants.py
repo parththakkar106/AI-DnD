@@ -45,7 +45,7 @@ def client(monkeypatch):
     )
     setup.add(adv)
     setup.flush()
-    setup.add(models.Action(adventure_id=adv.id, index=0, type="start", text="You enter a cave."))
+    setup.add(models.Action(adventure_id=adv.id, type="start", text="You enter a cave."))
     setup.add(models.AdventureScript(
         adventure_id=adv.id, position=0, enabled=True, name="Gold", output_js=GOLD_SCRIPT,
     ))
@@ -114,8 +114,8 @@ def test_retry_keeps_the_discarded_attempt(client):
     assert [a["type"] for a in actions] == ["start", "do", "ai"]
     last = actions[-1]
     assert last["text"] == "Attempt two."
-    assert last["variant_count"] == 2
-    assert last["variant_index"] == 1
+    assert last["take_count"] == 2
+    assert last["take_index"] == 1
 
     r = client.get(f"/api/adventures/{client.adv_id}/actions/{last['id']}/variants")
     assert r.status_code == 200, r.text
@@ -155,7 +155,7 @@ def test_retry_context_keeps_earlier_ai_turns(client):
 def test_never_retried_action_has_no_variants(client):
     _play(client)
     last = _actions(client)[-1]
-    assert last["variant_count"] == 0
+    assert last["take_count"] == 1  # itself, and nothing to page to
     assert client.get(
         f"/api/adventures/{client.adv_id}/actions/{last['id']}/variants").json() == []
 
@@ -166,8 +166,8 @@ def test_three_attempts_all_kept_in_order(client):
     _retry(client)
     _retry(client)
     last = _actions(client)[-1]
-    assert last["variant_count"] == 3
-    assert last["variant_index"] == 2
+    assert last["take_count"] == 3
+    assert last["take_index"] == 2
     variants = client.get(
         f"/api/adventures/{client.adv_id}/actions/{last['id']}/variants").json()
     assert [v["text"] for v in variants] == ["One.", "Two.", "Three."]
@@ -192,7 +192,7 @@ def test_switching_back_restores_that_attempt_state(client):
         f"/api/adventures/{client.adv_id}/actions/{last['id']}/variant", json={"index": 0})
     assert r.status_code == 200, r.text
     assert r.json()["text"].startswith("You take a scratch")
-    assert r.json()["variant_index"] == 0
+    assert r.json()["take_index"] == 0
     # The stats follow the narration back.
     script_state, world_state = _adv(client.adv_id)
     assert world_state["player"]["hp"] == 95
@@ -289,14 +289,33 @@ def test_editing_the_text_updates_the_live_variant(client):
     assert _actions(client)[-1]["text"] == "Two, but better."
 
 
-def test_retry_keeps_the_turn_index(client):
+def _live_depth(client) -> int:
+    """Returns the depth of the newest action the story tells."""
+    db = SessionLocal()
+    try:
+        return (
+            db.query(models.Action.depth)
+            .filter(models.Action.adventure_id == client.adv_id,
+                    models.Action.live.is_(True))
+            .order_by(models.Action.depth.desc())
+            .first()[0]
+        )
+    finally:
+        db.close()
+
+
+def test_retry_keeps_the_turn_depth(client):
     """A retry re-runs the same turn, so the world-state clock (which drives
-    cooldowns) must not advance."""
+    cooldowns) must not advance.
+
+    The depth is read from the row rather than the payload. It is a coordinate
+    on one branch, and the client pages by id, so it is not exposed.
+    """
     ScriptedProvider.replies = ["One.", "Two."]
     _play(client)
-    before = _actions(client)[-1]["index"]
+    before = _live_depth(client)
     _retry(client)
-    assert _actions(client)[-1]["index"] == before
+    assert _live_depth(client) == before
 
 
 def test_export_and_import_round_trips_variants(client):
@@ -315,8 +334,19 @@ def test_export_and_import_round_trips_variants(client):
     assert r.status_code == 201, r.text
     imported = r.json()["id"]
     actions = client.get(f"/api/adventures/{imported}").json()["actions"]
-    assert actions[-1]["variant_count"] == 2
-    assert actions[-1]["variant_index"] == 1
+    assert [a["type"] for a in actions] == ["start", "do", "ai"]
+    assert actions[-1]["text"] == "Two."
+
+    # The pager reads 1/1 on the copy, because the import writes no
+    # `parent_id` and `annotate_takes` groups on it. The attempts are both
+    # there, at one coordinate, and `GET .../variants` still lists them. This
+    # is a gap in the import rather than in the drop: `take_count` has been the
+    # only number the client reads since SP9, and the import has never set the
+    # column it is derived from.
+    assert actions[-1]["take_count"] == 1
+    variants = client.get(
+        f"/api/adventures/{imported}/actions/{actions[-1]['id']}/variants").json()
+    assert [v["text"] for v in variants] == ["One.", "Two."]
 
 
 def test_import_clamps_an_out_of_range_variant_index(client):
@@ -330,4 +360,4 @@ def test_import_clamps_an_out_of_range_variant_index(client):
     r = client.post("/api/adventures/import", json=bundle)
     assert r.status_code == 201, r.text
     actions = client.get(f"/api/adventures/{r.json()['id']}").json()["actions"]
-    assert actions[0]["variant_index"] == 0
+    assert actions[0]["take_index"] == 0

@@ -10,22 +10,15 @@ from sqlalchemy.orm import Session, undefer
 
 from ... import attempts, memorybank, models, tree
 from ...context import cursors
-from ...context import history as context_history
 from ...context import lineage
-
-
-def next_index(adventure: models.Adventure) -> int:
-    return context_history.max_action_index(adventure) + 1
 
 
 def next_depth(adventure: models.Adventure) -> int:
     """Returns the depth for the next node played onto this story, one past the tip.
 
-    This is not `next_index`, which returned the same number until SP5. `index`
-    has to stay unique across the whole adventure, because it is the v1 bundle's
-    key. On a story forked at depth 6 after twenty turns, `next_index` gives the
-    next node depth 21 and leaves a fourteen-deep gap in the path. A depth is a
-    position along this one story, and the branch is what makes it unambiguous.
+    A depth is a position along one story, and the branch is what makes it
+    unambiguous. Two branches each hold a node at depth 4, and they are
+    alternatives rather than duplicates.
     """
     return adventure.head_depth + 1
 

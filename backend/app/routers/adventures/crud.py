@@ -206,7 +206,6 @@ def create_adventure(
         if scenario.prompt.strip():
             opening = models.Action(
                 adventure_id=adventure.id,
-                index=0,
                 type="start",
                 text=fill_placeholders(scenario.prompt, values),
             )

@@ -23,7 +23,10 @@ import json
 import re
 from datetime import datetime
 
-from sqlalchemy import inspect, text
+from sqlalchemy import (
+    JSON, Boolean, Column, DateTime, Integer, MetaData, String, Table, Text,
+    inspect, text,
+)
 from sqlalchemy.engine import Engine
 
 from . import compression, vectors
@@ -301,6 +304,34 @@ MIGRATIONS: list[tuple[int, str | dict[str, str]]] = [
     # turn streams. This is item S1 in `docs/self-review.md`. The table holds one
     # row per user, so the rewrite is small and needs no VACUUM FULL.
     (65, "ALTER TABLE settings DROP COLUMN stream"),
+    # Phase 17, SP8: drop the eight columns the story tree replaced. Each one was
+    # kept past the migration that superseded it so that a rollback found a real
+    # value on the rows the newer build wrote. The tree has run in production
+    # since Phase 14, so the rollback window is closed.
+    #
+    # `actions.index` was the global turn number. `depth` replaced it, and the
+    # last reader, the number issued to a new row, went with this migration.
+    # `variants` held the retry history as a repeating group, and `variant_index`
+    # and `variant_count` described that group's shape. Each attempt is its own
+    # row now, ordered by `id`. `state_before` and `world_state_before` recorded
+    # the state a node started from, which every attempt at a turn shares; the
+    # "after" columns record each attempt's own outcome instead.
+    # `adventures.memory_cursor` and `summary_cursor` were positions into a flat
+    # list, and the branch and depth pairs beside them replaced both.
+    #
+    # Dropping a column rewrites the toasted values on Postgres and nothing
+    # reclaims that space on its own. Run `VACUUM FULL actions;` on the direct
+    # Neon endpoint after the deploy, not the pooled one. It takes an ACCESS
+    # EXCLUSIVE lock, so the app blocks on `actions` while it runs.
+    (66, "ALTER TABLE actions DROP COLUMN variants"),
+    (67, "ALTER TABLE actions DROP COLUMN variant_index"),
+    (68, "ALTER TABLE actions DROP COLUMN variant_count"),
+    (69, "ALTER TABLE actions DROP COLUMN state_before"),
+    (70, "ALTER TABLE actions DROP COLUMN world_state_before"),
+    # `index` is a keyword in SQLite, so the column name is quoted.
+    (71, 'ALTER TABLE actions DROP COLUMN "index"'),
+    (72, "ALTER TABLE adventures DROP COLUMN memory_cursor"),
+    (73, "ALTER TABLE adventures DROP COLUMN summary_cursor"),
 ]
 
 LATEST_VERSION = max((v for v, _ in MIGRATIONS), default=1)
@@ -410,6 +441,8 @@ def _backfill_variant_count(conn) -> None:
     in Python would read every stored attempt over the network once in order to
     stop reading it on every request.
     """
+    if not _has_columns(conn, "actions", "variants", "variant_count"):
+        return
     if conn.dialect.name == "sqlite":
         sql = """
             UPDATE actions SET variant_count = json_array_length(variants)
@@ -432,6 +465,22 @@ def _for_dialect(sql: str | dict[str, str], dialect: str) -> str:
 # so this pattern parses only SQL this file controls.
 _ADD_COLUMN = re.compile(r"^\s*ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+\"?(\w+)\"?", re.I)
 _DROP_COLUMN = re.compile(r"^\s*ALTER\s+TABLE\s+(\w+)\s+DROP\s+COLUMN\s+\"?(\w+)\"?", re.I)
+
+
+def _has_columns(conn, table: str, *columns: str) -> bool:
+    """Returns `True` when `table` has every one of `columns`.
+
+    The data passes below read columns that later migrations drop. A pass only
+    ever has real work to do on a database old enough to still carry them, and
+    a `create_all` database is already current, so the guard skips the pass
+    rather than failing on a column that is not there. This is the same rule
+    `_column_already_there` applies to DDL, written for the passes.
+    """
+    inspector = inspect(conn)
+    if table not in inspector.get_table_names():
+        return False
+    present = {col["name"] for col in inspector.get_columns(table)}
+    return all(column in present for column in columns)
 
 
 def _column_already_gone(conn, sql: str) -> bool:
@@ -589,6 +638,8 @@ def _backfill_tree(conn) -> None:
     target being unset, so a run that fails partway through resumes rather than
     applying twice.
     """
+    if not _has_columns(conn, "actions", "index"):
+        return
     sqlite = conn.dialect.name == "sqlite"
 
     # 1. A root branch per adventure. Its lineage names the row's own id, which
@@ -698,6 +749,8 @@ def _backfill_cursor_anchors(conn) -> None:
     two forms return the same answer, because the rows the partition would
     separate are the rows the filter removes.
     """
+    if not _has_columns(conn, "adventures", "memory_cursor", "summary_cursor"):
+        return
     sqlite = conn.dialect.name == "sqlite"
     story = _story_text_sql("text", sqlite)
     for name in ("memory", "summary"):
@@ -750,6 +803,8 @@ def _backfill_state_after(conn) -> None:
     SP4 is the first migration where `depth` and `index` can disagree, and it has
     not run when this pass does.
     """
+    if not _has_columns(conn, "actions", "state_before", "world_state_before"):
+        return
     for column, live in (
         ("state_after", "script_state"),
         ("world_state_after", "world_state"),
@@ -778,6 +833,39 @@ def _backfill_state_after(conn) -> None:
         """))
 
 
+# The `actions` table as migration 60 finds it, declared here rather than read
+# from `Base.metadata`. The split pass writes JSON values, and only a column
+# type knows how to render a dict on this dialect, so it needs a Table. Reading
+# the live one would tie a migration to the current model: migration 66 drops
+# five of these columns, and the pass would then fail to compile on a database
+# that still has them. This declaration is a snapshot of a past schema and must
+# not be updated to track `models.py`.
+#
+# It carries its own `MetaData`, so `create_all` never sees it.
+_ACTIONS_AT_60 = Table(
+    "actions", MetaData(),
+    Column("id", Integer, primary_key=True),
+    Column("adventure_id", Integer),
+    Column("index", Integer),
+    Column("branch_id", Integer),
+    Column("depth", Integer),
+    Column("live", Boolean),
+    Column("type", String(20)),
+    Column("text", Text),
+    Column("reasoning", Text),
+    Column("context_snapshot", compression.CompressedJSON),
+    Column("world_delta", JSON),
+    Column("state_before", JSON),
+    Column("world_state_before", JSON),
+    Column("state_after", JSON),
+    Column("world_state_after", JSON),
+    Column("variants", JSON),
+    Column("variant_count", Integer),
+    Column("variant_index", Integer),
+    Column("created_at", DateTime),
+)
+
+
 def _split_variants_into_siblings(conn) -> None:
     """Gives every discarded retry attempt its own row.
 
@@ -802,7 +890,9 @@ def _split_variants_into_siblings(conn) -> None:
     The pass is resumable. A group that already has as many rows as its
     `variant_count` claims has been split, so it is skipped.
     """
-    actions = Base.metadata.tables["actions"]
+    if not _has_columns(conn, "actions", "variants", "variant_index"):
+        return
+    actions = _ACTIONS_AT_60
     last_id = 0
     while True:
         rows = conn.execute(
@@ -854,7 +944,8 @@ def _split_one_action(conn, actions, row, entries: list) -> None:
         kept["world_state_after"] = live_world
     # Use the Table rather than `text()`, here and below. These values are dicts
     # bound for JSON columns, and the column type is the only thing that knows
-    # how to render one on this dialect.
+    # how to render one on this dialect. The table is `_ACTIONS_AT_60`, frozen
+    # at the schema this pass runs against.
     conn.execute(actions.update().where(actions.c.id == row["id"]).values(**kept))
     siblings = [
         {
@@ -956,16 +1047,23 @@ def _set_version(conn, version: int) -> None:
         conn.execute(text("UPDATE schema_version SET version = :v"), {"v": version})
 
 
-def bootstrap(engine: Engine) -> None:
+def bootstrap(engine: Engine, through: int = LATEST_VERSION) -> None:
+    """Brings the database up to `through`, which defaults to the newest version.
+
+    The app always takes the default. A test passes an older version when it
+    asserts on something a later migration removes. A migration test that stops
+    at the version it is about keeps reading the columns that migration wrote,
+    rather than the schema those columns became several versions later.
+    """
     fresh = not inspect(engine).get_table_names()
     Base.metadata.create_all(bind=engine)
     with engine.begin() as conn:
         if fresh:
-            _set_version(conn, LATEST_VERSION)
+            _set_version(conn, through)
             return
         current = _get_version(conn)
         for version, sql in MIGRATIONS:
-            if version > current:
+            if current < version <= through:
                 statement = _for_dialect(sql, conn.dialect.name)
                 # Skip the DDL when it has already run. The data pass below it
                 # still runs.

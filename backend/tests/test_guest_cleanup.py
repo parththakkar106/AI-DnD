@@ -171,7 +171,7 @@ def test_deletes_the_whole_data_graph(db):
     db.add(adventure)
     db.commit()
     db.add_all([
-        models.Action(adventure_id=adventure.id, index=0, type="ai", text="t"),
+        models.Action(adventure_id=adventure.id, type="ai", text="t"),
         models.Memory(adventure_id=adventure.id, text="m", source_start=0, source_end=0),
         models.StoryCard(adventure_id=adventure.id, name="c"),
         models.Settings(user_id=user.id),

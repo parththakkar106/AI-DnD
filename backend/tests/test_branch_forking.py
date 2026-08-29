@@ -59,7 +59,7 @@ def client(monkeypatch):
     )
     setup.add(adv)
     setup.flush()
-    setup.add(models.Action(adventure_id=adv.id, index=0, type="start", text="You enter a cave."))
+    setup.add(models.Action(adventure_id=adv.id, type="start", text="You enter a cave."))
     setup.add(models.AdventureScript(
         adventure_id=adv.id, position=0, enabled=True, name="Gold", output_js=GOLD_SCRIPT,
     ))
@@ -132,7 +132,7 @@ def _rows(adv_id) -> list[models.Action]:
         return (
             db.query(models.Action)
             .filter(models.Action.adventure_id == adv_id)
-            .order_by(models.Action.depth, models.Action.variant_index)
+            .order_by(models.Action.depth, models.Action.id)
             .all()
         )
     finally:
@@ -233,7 +233,6 @@ def test_the_parent_keeps_a_live_attempt_where_the_fork_left(client):
         # offers a page through attempts that diverged onto another branch.
         parent_turn = per_coordinate[(parent_id, 2)]
         assert len(parent_turn) == 1
-        assert parent_turn[0].variant_count == 0
     finally:
         db.close()
 

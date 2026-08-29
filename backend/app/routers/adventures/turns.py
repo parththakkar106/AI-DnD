@@ -23,7 +23,7 @@ from ...sse import SSE_HEADERS, sse, turn_error
 from ..settings import get_settings
 
 from .deps import CurrentUser, current_adventure, router
-from .nodes import _move_to_after, next_depth, next_index
+from .nodes import _move_to_after, next_depth
 from .paging import annotate_takes
 
 
@@ -275,11 +275,6 @@ async def _generate_turn(
     reasoning = "".join(reasoning_chunks).strip() or None
     ai_action = models.Action(
         adventure_id=adventure.id,
-        # A sibling shares the turn's legacy index for the same reason it
-        # shares its depth: it is the same turn. Two rows then hold one index,
-        # which is safe, because `max_action_index` takes a maximum rather than
-        # a count, and nothing else reads the column.
-        index=retry_of.index if retry_of is not None else next_index(adventure),
         depth=ai_depth,
         type="ai",
         text=text,
@@ -298,8 +293,10 @@ async def _generate_turn(
         # a turn landed on top of it. See `memorybank`.
         memorybank.forget_node(db, adventure, retry_of)
         cursors.rewind_all(adventure, retry_of.branch_id, ai_depth - 1)
+        # Flush so the new attempt has an id. The session does not autoflush,
+        # and attempts page in id order, so a read taken before this point puts
+        # the newest attempt nowhere.
         db.flush()
-        attempts.renumber(attempts.group(db, ai_action))
     else:
         tree.place_action(db, adventure, ai_action)
         db.add(ai_action)
@@ -369,7 +366,6 @@ async def run_player_turn(
             return
         player_action = models.Action(
             adventure_id=adventure.id,
-            index=next_index(adventure),
             depth=next_depth(adventure),
             type=payload.type,
             text=modified,
@@ -384,8 +380,8 @@ async def run_player_turn(
         db.refresh(player_action)
         # The new action was added through its foreign key, so the loaded
         # `adventure.actions` collection is stale. Without this expire,
-        # `build_context` and `next_index` for the AI action do not see the
-        # player action that was just saved.
+        # `build_context` for the AI action does not see the player action
+        # that was just saved.
         db.expire(adventure, ["actions"])
         yield sse({"type": "player", "action": action_json(player_action, db)})
         if stop:

@@ -76,7 +76,7 @@ def adventure(db, settings):
     # returns before ranking anything.
     for i in range(2):
         db.add(models.Action(
-            adventure_id=adv.id, index=i, type="ai", text=f"Something happened {i}."
+            adventure_id=adv.id, type="ai", text=f"Something happened {i}."
         ))
     db.commit()
     return adv

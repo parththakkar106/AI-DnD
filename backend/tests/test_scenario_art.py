@@ -113,11 +113,11 @@ def client(monkeypatch):
     setup.flush()
     # A full turn: opening narration, the player's line, then the AI's reply.
     setup.add_all([
-        models.Action(adventure_id=adventure.id, index=0, type="ai",
+        models.Action(adventure_id=adventure.id, type="ai",
                       text="The door groans open."),
-        models.Action(adventure_id=adventure.id, index=1, type="do",
+        models.Action(adventure_id=adventure.id, type="do",
                       text="I draw my sword."),
-        models.Action(adventure_id=adventure.id, index=2, type="ai",
+        models.Action(adventure_id=adventure.id, type="ai",
                       text="Steel rings.  The\ncorridor  answers."),
     ])
     setup.commit()

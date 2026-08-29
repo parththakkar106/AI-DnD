@@ -396,7 +396,7 @@ def add_second_adventure(db, rng: random.Random, user) -> int:
     db.flush()
     for i in range(6):
         action = models.Action(
-            adventure_id=other.id, index=i,
+            adventure_id=other.id,
             type="ai" if i % 2 else "do",
             text=f"[second adventure] turn {i}. {prose(rng, 200)}",
             state_after=rich_script_state(i),
@@ -507,7 +507,6 @@ def build_fixture(args, rng: random.Random) -> tuple[int, int]:
             for n, body in enumerate(texts):
                 action = models.Action(
                     adventure_id=adventure.id,
-                    index=i,
                     type="ai" if is_ai else "do",
                     text=body,
                     # The turn's assembled prompt is stored once, on the
