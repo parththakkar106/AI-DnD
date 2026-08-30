@@ -3,15 +3,6 @@ story cards and stat schema back down over a running adventure's copy.
 
     python -m pytest tests/test_scenario_refresh.py -v
 """
-import os
-import tempfile
-
-_tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-_tmp.close()
-os.environ["AIDND_DB_PATH"] = _tmp.name
-os.environ.pop("AIDND_DATABASE_URL", None)
-os.environ.pop("DATABASE_URL", None)
-
 import pytest
 from fastapi import Depends
 from fastapi.testclient import TestClient
@@ -375,9 +366,9 @@ def test_refresh_is_rejected_while_a_turn_is_generating(client):
 
     sid = make_scenario(client, title="Keep", memory="Old")
     adv_id = start(client, sid)
-    adventures._active_turns.add(adv_id)
+    adventures.turns._active_turns.add(adv_id)
     try:
         r = client.post(f"/api/adventures/{adv_id}/refresh", json={})
         assert r.status_code == 409
     finally:
-        adventures._active_turns.discard(adv_id)
+        adventures.turns._active_turns.discard(adv_id)

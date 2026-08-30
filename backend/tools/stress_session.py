@@ -196,6 +196,10 @@ class FakeProvider:
     time.
     """
 
+    # The turn engine records the cost of the call, so a stand-in provider has
+    # to carry this attribute even when it never calls anything.
+    last_usage = None
+
     def __init__(self, *a, **k):
         pass
 
@@ -336,6 +340,16 @@ def rich_attempts(rng: random.Random, index: int) -> tuple[list[str], int]:
     return texts, (0 if index % 18 == 1 else count - 1)
 
 
+def rich_cursor_positions(action_count: int) -> tuple[int, int]:
+    """Return the memory and summary mark positions for the rich fixture.
+
+    The marks start out as positions because that is the form a pre-SP3
+    database holds. `build_fixture` turns them into anchors once the actions
+    they point at exist.
+    """
+    return max(0, action_count - 8), max(0, action_count - 20)
+
+
 def add_rich_extras(db, args, rng: random.Random, user, adventure) -> None:
     """Adds everything `--rich` contributes apart from the actions themselves.
 
@@ -356,14 +370,10 @@ def add_rich_extras(db, args, rng: random.Random, user, adventure) -> None:
     adventure.world_state = rich_world_state(schema, args.actions)
     adventure.script_state = rich_script_state(args.actions)
     # The post-turn passes do nothing unless summarization is on and the marks
-    # are past the start. They are written here as positions and translated into
-    # anchors once the actions exist. See `build_fixture`. A database being
-    # migrated to SP3 still holds positions, so the fixture carries both forms
-    # and the two have to agree.
+    # are past the start. `build_fixture` translates the marks into anchors
+    # once the actions exist. See `rich_cursor_positions`.
     adventure.auto_summarize = True
     adventure.story_summary = RICH_SUMMARY
-    adventure.memory_cursor = max(0, args.actions - 8)
-    adventure.summary_cursor = max(0, args.actions - 20)
 
     for kind, name, keys, entry in RICH_CARDS:
         db.add(models.StoryCard(
@@ -392,7 +402,7 @@ def add_second_adventure(db, rng: random.Random, user) -> int:
     db.flush()
     for i in range(6):
         action = models.Action(
-            adventure_id=other.id, index=i,
+            adventure_id=other.id,
             type="ai" if i % 2 else "do",
             text=f"[second adventure] turn {i}. {prose(rng, 200)}",
             state_after=rich_script_state(i),
@@ -500,10 +510,17 @@ def build_fixture(args, rng: random.Random) -> tuple[int, int]:
                     NARRATION if is_ai else PLAYER_INPUT
                 ]
                 live = 0
+            # The attempts at one turn share that turn's coordinate. Only the
+            # first one moves the head, so the rest copy the placement of the
+            # first instead of going through `tree.place_action`, which would
+            # read each of them as a new turn. This mirrors
+            # `attempts.add_attempt`, which the fixture cannot call directly
+            # because it makes the newest attempt live and the fixture needs a
+            # live attempt that is often not the newest.
+            first_attempt = None
             for n, body in enumerate(texts):
                 action = models.Action(
                     adventure_id=adventure.id,
-                    index=i,
                     type="ai" if is_ai else "do",
                     text=body,
                     # The turn's assembled prompt is stored once, on the
@@ -521,8 +538,6 @@ def build_fixture(args, rng: random.Random) -> tuple[int, int]:
                     # Every third AI turn was retried once, so a turn is
                     # sometimes several rows sharing one coordinate.
                     live=(n == live),
-                    variant_index=n,
-                    variant_count=len(texts) if len(texts) > 1 else 0,
                     # Under `--rich` the value increases with the turn, so an
                     # incorrect rollback shows a wrong number rather than no
                     # value. Otherwise `tree.stamp_outcome` writes the
@@ -538,7 +553,13 @@ def build_fixture(args, rng: random.Random) -> tuple[int, int]:
                 # sees it. The fixture has to stamp its own nodes, or it would
                 # be the one database in the project whose actions have no
                 # branch.
-                tree.place_action(db, adventure, action)
+                if first_attempt is None:
+                    tree.place_action(db, adventure, action)
+                    first_attempt = action
+                else:
+                    action.branch_id = first_attempt.branch_id
+                    action.depth = first_attempt.depth
+                    action.parent_id = first_attempt.parent_id
                 db.add(action)
 
         for i in range(args.memories):
@@ -569,8 +590,9 @@ def build_fixture(args, rng: random.Random) -> tuple[int, int]:
             # fixture stamped LATEST never runs a migration, so skipping this
             # would leave the one database whose marks are only positions.
             db.flush()
-            cursors.anchor_at_position(adventure, cursors.MEMORY, adventure.memory_cursor)
-            cursors.anchor_at_position(adventure, cursors.SUMMARY, adventure.summary_cursor)
+            memory_position, summary_position = rich_cursor_positions(args.actions)
+            cursors.anchor_at_position(adventure, cursors.MEMORY, memory_position)
+            cursors.anchor_at_position(adventure, cursors.SUMMARY, summary_position)
             add_second_adventure(db, rng, user)
             _assert_live_variant_invariant(db, adventure.id)
 
@@ -582,7 +604,7 @@ def build_fixture(args, rng: random.Random) -> tuple[int, int]:
 
 def install_fakes(user_id: int, rng: random.Random) -> None:
     embeddings = FakeEmbeddings(rng)
-    adventures.OpenAICompatibleProvider = FakeProvider
+    adventures.turns.OpenAICompatibleProvider = FakeProvider
     memorybank.embedding_provider = lambda settings: embeddings
     memorybank.summary_provider = lambda settings: FakeProvider()
     auth.resolve_provider_config = lambda s, **k: auth.ProviderConfig(
@@ -812,7 +834,7 @@ def main(argv=None) -> int:
     print(f"{'total across all shapes':<44}{kb(sum(s.total.fetched for s in meter.scopes)):>16}")
 
     app.dependency_overrides.clear()
-    adventures._active_turns.clear()
+    adventures.turns._active_turns.clear()
 
     # After the shapes, not before: make_bootable() writes, and the meter is
     # still attached until the report above is rendered.

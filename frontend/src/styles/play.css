@@ -1,0 +1,316 @@
+/* ---------- Play page ---------- */
+
+.play-page {
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100dvh - 56px);
+  /* Room to scroll the last beat clear of a composer lifted by the keyboard
+     (see --kb-inset in keyboard.js); 0 on desktop and on browsers that shrink
+     the layout viewport themselves. Margin, not padding — .page already sets
+     padding and a longhand here would drop its bottom gutter. */
+  margin-bottom: var(--kb-inset, 0px);
+}
+
+/* Keep the Plot/Memory/Scripts/Insights toggles reachable while the story
+   scrolls — pin the header just below the 56px top nav. */
+.play-page .page-header {
+  position: sticky;
+  top: 56px;
+  z-index: 5;
+  background: var(--bg);
+  margin-bottom: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.story {
+  flex: 1;
+  font-family: var(--font-story);
+  font-size: 1.14rem;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  padding-bottom: 16px;
+}
+/* The head of a windowed transcript: how much story is still above, and the
+   way back to it. Deliberately quiet — it is a seam in the page, not a
+   feature — and it sits inside .story so it inherits the story face. */
+.story-earlier {
+  text-align: center;
+  margin: 4px 0 22px;
+  font-size: 0.9rem;
+  /* No action-in animation here: this appears above content the reader is
+     already looking at, and a fade would read as the story moving. */
+}
+.story-earlier .dim { color: var(--text-dim); font-style: italic; }
+.story-earlier button {
+  background: none;
+  border: none;
+  border-bottom: 1px solid rgba(159, 199, 209, 0.3);
+  color: var(--text-dim);
+  font: inherit;
+  font-style: italic;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+.story-earlier button:hover {
+  color: var(--accent-bright);
+  border-bottom-color: var(--accent-bright);
+}
+.story .action {
+  position: relative;
+  margin-bottom: 15px;
+  padding-right: 56px;
+  animation: action-in 0.4s ease both;
+}
+@keyframes action-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+.story .action.player {
+  color: var(--player);
+  border-left: 2px solid rgba(159, 199, 209, 0.35);
+  padding-left: 14px;
+  font-style: italic;
+}
+.story .action.streaming { color: var(--text); }
+.story .cursor {
+  color: var(--accent-bright);
+  text-shadow: 0 0 8px var(--accent-glow);
+  animation: blink 1s steps(1) infinite;
+}
+@keyframes blink { 50% { opacity: 0; } }
+
+/* Reasoning-model thinking, collapsed above the AI's response */
+.story .reasoning {
+  margin: 0 0 8px;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: var(--text-dim);
+  font-style: normal;
+}
+.story .reasoning summary {
+  cursor: pointer;
+  user-select: none;
+  color: var(--text-dim);
+  opacity: 0.8;
+}
+.story .reasoning summary:hover { opacity: 1; }
+.story .reasoning .reasoning-text {
+  margin-top: 6px;
+  padding: 8px 12px;
+  border-left: 2px solid var(--border);
+  opacity: 0.85;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.story .action-tools {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: inline-flex;
+  gap: 4px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+.story .action:hover .action-tools { opacity: 1; pointer-events: auto; }
+.story .action-tools button {
+  padding: 1px 8px;
+  font-size: 0.72rem;
+  font-family: var(--font-ui);
+  color: var(--text-dim);
+  background: var(--bg-panel-glass);
+  backdrop-filter: blur(6px);
+}
+.story .action-tools button:hover { color: var(--text); }
+
+/* The takes of one turn: ‹ 2/4 ›. Stays quiet until hovered — it's a footnote
+   on the message, not part of the prose.
+
+   Small and unemphatic on purpose. Stepping through takes reads them and does
+   nothing else, so it should not carry the visual weight of a decision; the
+   decision is made by writing, which happens in the composer below. */
+.take-pager {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-top: 6px;
+  font-family: var(--font-ui);
+  opacity: 0.45;
+  transition: opacity 0.15s;
+}
+.story .action:hover .take-pager,
+.take-pager:focus-within { opacity: 1; }
+.take-pager button {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  font-size: 0.9rem;
+  line-height: 1;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+}
+.take-pager button:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--border-bright);
+}
+.take-pager button:disabled { opacity: 0.3; cursor: default; }
+.take-count {
+  min-width: 30px;
+  text-align: center;
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+}
+/* Only while a take that isn't the live one is on screen: it says what the
+   next thing typed will do, because that is the click that forks. */
+.take-note {
+  margin-left: 6px;
+  font-size: 0.72rem;
+  font-style: italic;
+  color: var(--accent-dim);
+}
+
+/* ---------- Branches panel (Phase 14, SP7) ---------- */
+
+.panel-empty {
+  padding: 18px 0;
+  color: var(--text-dim);
+  font-size: 0.85rem;
+}
+.branch-panel { display: flex; flex-direction: column; gap: 14px; }
+.branch-intro {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 0.82rem;
+  line-height: 1.55;
+}
+.branch-list { display: flex; flex-direction: column; gap: 8px; }
+.branch-row {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-input);
+}
+.branch-row.here {
+  border-color: var(--accent-dim);
+  background: rgba(212, 169, 78, 0.07);
+}
+.branch-head { display: flex; align-items: center; gap: 7px; }
+.branch-glyph { color: var(--border-bright); font-size: 0.85rem; }
+.branch-row.here .branch-glyph { color: var(--accent); }
+.branch-name {
+  font-family: var(--font-story);
+  font-size: 0.98rem;
+  color: var(--text);
+}
+.branch-row.here .branch-name { color: var(--accent-bright); }
+.branch-here {
+  margin-left: auto;
+  font-size: 0.64rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent-dim);
+}
+.branch-rename {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 7px;
+  font-family: var(--font-story);
+  font-size: 0.95rem;
+}
+.branch-meta {
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.branch-tools, .branch-confirm { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.branch-tools button, .branch-confirm button {
+  padding: 3px 9px;
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid var(--border);
+}
+.branch-tools button:hover:not(:disabled),
+.branch-confirm button:hover:not(:disabled) {
+  color: var(--accent-bright);
+  border-color: var(--border-bright);
+}
+.branch-tools button.danger:hover:not(:disabled),
+.branch-confirm button.danger:hover:not(:disabled) {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.branch-tools button:disabled, .branch-confirm button:disabled { opacity: 0.4; cursor: default; }
+.branch-confirm span {
+  font-size: 0.74rem;
+  color: var(--danger);
+  flex-basis: 100%;
+}
+
+.action-edit { margin-bottom: 14px; }
+/* Sized by AutoTextarea to fit the text being edited — an AI beat is usually
+   several paragraphs, and the old fixed 110px turned that into a keyhole.
+   min-height keeps a short player action from collapsing; max-height stops a
+   very long beat from pushing Save/Cancel off the screen (it scrolls instead).
+   resize stays on, so the height is a starting point, not a cage. */
+.action-edit textarea {
+  min-height: 110px;
+  max-height: 65vh;
+  overflow-y: auto;
+  font-family: inherit;
+  font-size: inherit;
+}
+.action-edit .edit-buttons { display: flex; gap: 8px; margin-top: 6px; }
+
+.play-controls {
+  position: sticky;
+  /* Sits on the keyboard's top edge when one is open, on the viewport bottom
+     otherwise — --kb-inset is 0 unless a virtual keyboard is covering us. */
+  bottom: var(--kb-inset, 0px);
+  background: linear-gradient(to top, var(--bg) 75%, transparent);
+  padding: 18px 0 16px;
+  border-top: 1px solid var(--border);
+}
+.turn-buttons { display: flex; gap: 8px; margin-bottom: 10px; }
+.turn-buttons button { font-size: 0.78rem; padding: 4px 12px; color: var(--text-dim); }
+.turn-buttons button:hover:not(:disabled) { color: var(--text); }
+
+.input-bar { display: flex; gap: 8px; align-items: flex-end; }
+.input-bar input { flex: 1; }
+/* Auto-growing action box: starts at one line, grows to ~4, then scrolls. */
+.input-bar textarea {
+  flex: 1;
+  resize: none;
+  min-height: 0;
+  max-height: calc(6em + 20px); /* ~4 lines (1.5em each) + padding/border */
+  overflow-y: auto;
+  line-height: 1.5;
+}
+
+.mode-select { display: flex; }
+.mode-select button {
+  border-radius: 0;
+  border-right-width: 0;
+  padding: 7px 14px;
+  color: var(--text-dim);
+  text-transform: capitalize;
+}
+.mode-select button:first-child { border-radius: 8px 0 0 8px; }
+.mode-select button:last-child { border-radius: 0 8px 8px 0; border-right-width: 1px; }
+.mode-select button.active {
+  color: var(--accent-bright);
+  background: var(--bg-panel);
+  border-color: var(--accent-dim);
+  border-right-width: 1px;
+  box-shadow: inset 0 0 12px rgba(212, 169, 78, 0.08);
+}
+.mode-select button.active + button { border-left-width: 0; }
+

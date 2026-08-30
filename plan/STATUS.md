@@ -78,6 +78,10 @@ needed; nothing requires reading a row of anyone's story.
 
 ## Pick up here
 
+**`plan/17-refactor.md` is the active phase.** It carries its own progress table, which
+is the first thing to read when you pick the work back up. It runs in six stages, and
+SP8 below is stage 3 of it. Nothing in it changes what the app does.
+
 **`plan/14-phase-story-tree.md`, SP8 — drop the legacy columns.** SP8 was gated on the
 tree being proven live, and it now is: SP9 merged, and production answers `/api/health`
 with the tree schema in place. SP8 drops `index`, `variants`, `variant_index`,

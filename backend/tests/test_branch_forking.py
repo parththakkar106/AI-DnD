@@ -12,15 +12,6 @@ that makes borrowing possible lives in `lineage`.
 
     python -m pytest tests/test_branch_forking.py -v
 """
-import os
-import tempfile
-
-_tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-_tmp.close()
-os.environ["AIDND_DB_PATH"] = _tmp.name
-os.environ.pop("AIDND_DATABASE_URL", None)
-os.environ.pop("DATABASE_URL", None)
-
 import pytest
 from fastapi import Depends
 from fastapi.testclient import TestClient
@@ -29,8 +20,9 @@ from app import auth, limits, models
 from app.context import cursors, lineage
 from app.database import Base, SessionLocal, engine, get_db
 from app.main import app
-from app.providers import PromptParts
 from app.routers import adventures
+
+from fakes import ScriptedProvider
 
 # `hp` moves freely. `mana` has a cooldown of 2 turns, so an incorrect
 # advance shows up as a change the referee should have rejected.
@@ -50,22 +42,6 @@ modifier(text);
 """
 
 
-class ScriptedProvider:
-    last_usage = None
-    replies: list = []
-    calls = 0
-    prompts: list = []
-
-    def __init__(self, *a, **k):
-        pass
-
-    async def generate(self, parts: PromptParts, *, temperature, max_tokens):
-        index = min(ScriptedProvider.calls, len(ScriptedProvider.replies) - 1)
-        ScriptedProvider.calls += 1
-        ScriptedProvider.prompts.append((parts.system, parts.story))
-        yield ("text", ScriptedProvider.replies[index])
-
-
 @pytest.fixture()
 def client(monkeypatch):
     Base.metadata.create_all(bind=engine)
@@ -83,7 +59,7 @@ def client(monkeypatch):
     )
     setup.add(adv)
     setup.flush()
-    setup.add(models.Action(adventure_id=adv.id, index=0, type="start", text="You enter a cave."))
+    setup.add(models.Action(adventure_id=adv.id, type="start", text="You enter a cave."))
     setup.add(models.AdventureScript(
         adventure_id=adv.id, position=0, enabled=True, name="Gold", output_js=GOLD_SCRIPT,
     ))
@@ -94,7 +70,7 @@ def client(monkeypatch):
     ScriptedProvider.replies = ["A reply."]
     ScriptedProvider.calls = 0
     ScriptedProvider.prompts = []
-    monkeypatch.setattr(adventures, "OpenAICompatibleProvider", ScriptedProvider)
+    monkeypatch.setattr(adventures.turns, "OpenAICompatibleProvider", ScriptedProvider)
     monkeypatch.setattr(auth, "resolve_provider_config", lambda s: auth.ProviderConfig(
         "http://fake", "k", "test-model", False))
     monkeypatch.setattr(limits, "rate_limit", lambda *a, **k: None)
@@ -110,7 +86,7 @@ def client(monkeypatch):
         yield c
     finally:
         app.dependency_overrides.clear()
-        adventures._active_turns.clear()
+        adventures.turns._active_turns.clear()
         Base.metadata.drop_all(bind=engine)
 
 
@@ -156,7 +132,7 @@ def _rows(adv_id) -> list[models.Action]:
         return (
             db.query(models.Action)
             .filter(models.Action.adventure_id == adv_id)
-            .order_by(models.Action.depth, models.Action.variant_index)
+            .order_by(models.Action.depth, models.Action.id)
             .all()
         )
     finally:
@@ -257,7 +233,6 @@ def test_the_parent_keeps_a_live_attempt_where_the_fork_left(client):
         # offers a page through attempts that diverged onto another branch.
         parent_turn = per_coordinate[(parent_id, 2)]
         assert len(parent_turn) == 1
-        assert parent_turn[0].variant_count == 0
     finally:
         db.close()
 

@@ -67,6 +67,9 @@ modifier(text);
 
 class ScriptedProvider:
     replies: list = []
+    # The turn engine records the cost of the call, so a stand-in provider has
+    # to carry this attribute even when it never calls anything.
+    last_usage = None
     calls = 0
 
     def __init__(self, *a, **k):
@@ -96,7 +99,7 @@ adv = models.Adventure(
 db.add(adv)
 db.flush()
 db.add(models.Action(
-    adventure_id=adv.id, index=0, type="start",
+    adventure_id=adv.id, type="start",
     text="The cellar door has been shut since your grandmother died. "
          "Tonight the lantern is lit and the key is in your hand."))
 db.add(models.AdventureScript(
@@ -105,7 +108,7 @@ db.commit()
 adv_id = adv.id
 db.close()
 
-adventures.OpenAICompatibleProvider = ScriptedProvider
+adventures.turns.OpenAICompatibleProvider = ScriptedProvider
 auth.resolve_provider_config = lambda s: auth.ProviderConfig(
     "http://fake", "k", "test-model", False)
 limits.rate_limit = lambda *a, **k: None

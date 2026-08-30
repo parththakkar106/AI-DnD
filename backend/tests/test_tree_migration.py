@@ -16,14 +16,7 @@ place, would silently skip the DDL and test only half the change.
     python -m pytest tests/test_tree_migration.py -v
 """
 import json
-import os
-import tempfile
 
-_tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-_tmp.close()
-os.environ["AIDND_DB_PATH"] = _tmp.name
-os.environ.pop("AIDND_DATABASE_URL", None)
-os.environ.pop("DATABASE_URL", None)
 
 import pytest
 from fastapi import Depends
@@ -223,7 +216,7 @@ def test_every_action_lands_on_its_adventure_root_branch(pre_tree):
 
 
 def test_depth_is_the_old_index_gaps_included(pre_tree):
-    migrations.bootstrap(engine)
+    migrations.bootstrap(engine, through=migrations.TREE_BACKFILL_VERSION)
 
     assert rows('SELECT "index", depth FROM actions WHERE depth != "index"') == []
     depths = [
@@ -295,7 +288,7 @@ def test_the_cursors_become_the_nodes_they_named(pre_tree):
     """SP3, migration 56. A count of covered actions and a depth become
     different numbers as soon as the story has a gap in it, and every
     adventure with a deleted action has one."""
-    migrations.bootstrap(engine)
+    migrations.bootstrap(engine, through=migrations.CURSOR_ANCHOR_VERSION)
 
     def marks(title):
         [row] = rows(
@@ -353,7 +346,7 @@ def test_the_branch_clause_index_exists(pre_tree):
 
 
 def test_running_it_again_changes_nothing(pre_tree):
-    migrations.bootstrap(engine)
+    migrations.bootstrap(engine, through=migrations.CURSOR_ANCHOR_VERSION)
     snapshot = (
         rows("SELECT id, branch_id, depth FROM actions ORDER BY id"),
         rows("SELECT id, adventure_id, lineage FROM branches ORDER BY id"),
@@ -367,7 +360,7 @@ def test_running_it_again_changes_nothing(pre_tree):
     # stops the first run, the NULL guards stop the second, and a
     # migration that only survives because of the stamp is one bad rescue
     # away from doubling every branch.
-    migrations.bootstrap(engine)
+    migrations.bootstrap(engine, through=migrations.CURSOR_ANCHOR_VERSION)
     with engine.begin() as conn:
         migrations._backfill_tree(conn)
         migrations._backfill_cursor_anchors(conn)
@@ -529,7 +522,7 @@ def test_deleting_the_newest_action_moves_the_head_back(client):
     db = SessionLocal()
     try:
         adventure = db.get(models.Adventure, adventure_id)
-        extra = models.Action(adventure_id=adventure_id, index=1, type="do", text="Look.")
+        extra = models.Action(adventure_id=adventure_id, type="do", text="Look.")
         tree.place_action(db, adventure, extra)
         db.add(extra)
         db.commit()
@@ -654,7 +647,7 @@ def _attempts(adventure_id) -> list[tuple]:
 
 
 def test_each_attempt_becomes_a_row_at_the_turns_coordinate(pre_split):
-    migrations.bootstrap(engine)
+    migrations.bootstrap(engine, through=migrations.SIBLING_SPLIT_VERSION)
 
     assert _attempts(pre_split) == [
         (0, "Attempt one.", 0, 3),
@@ -676,7 +669,7 @@ def test_the_live_attempt_is_the_one_the_row_was_mirroring(pre_split):
     """`variant_index` is the only record of which take the player was reading,
     and it survives as the `live` flag. Guessing "the newest" instead would
     silently rewrite the story of anyone who had paged back."""
-    migrations.bootstrap(engine)
+    migrations.bootstrap(engine, through=migrations.SIBLING_SPLIT_VERSION)
 
     live = rows(
         "SELECT text FROM actions WHERE adventure_id = :a AND live = 1 "
@@ -686,7 +679,7 @@ def test_the_live_attempt_is_the_one_the_row_was_mirroring(pre_split):
 
 
 def test_the_prompt_stays_on_the_live_attempt_and_nowhere_else(pre_split):
-    migrations.bootstrap(engine)
+    migrations.bootstrap(engine, through=migrations.SIBLING_SPLIT_VERSION)
 
     holders = []
     for variant_index, snapshot in rows(
@@ -703,7 +696,7 @@ def test_the_prompt_stays_on_the_live_attempt_and_nowhere_else(pre_split):
 
 
 def test_each_attempt_keeps_the_outcome_it_produced(pre_split):
-    migrations.bootstrap(engine)
+    migrations.bootstrap(engine, through=migrations.SIBLING_SPLIT_VERSION)
 
     parsed = [
         (i, json.loads(state), json.loads(world) if world else None)
@@ -727,7 +720,7 @@ def test_each_attempt_keeps_the_outcome_it_produced(pre_split):
 
 
 def test_state_after_is_the_state_before_of_the_turn_in_front(pre_split):
-    migrations.bootstrap(engine)
+    migrations.bootstrap(engine, through=migrations.SIBLING_SPLIT_VERSION)
 
     after = dict(rows(
         'SELECT "index", state_after FROM actions WHERE adventure_id = :a '
@@ -741,11 +734,11 @@ def test_state_after_is_the_state_before_of_the_turn_in_front(pre_split):
 
 
 def test_the_split_survives_being_run_again(pre_split):
-    migrations.bootstrap(engine)
+    migrations.bootstrap(engine, through=migrations.SIBLING_SPLIT_VERSION)
     snapshot = _attempts(pre_split)
     before = scalar("SELECT count(*) FROM actions")
 
-    migrations.bootstrap(engine)
+    migrations.bootstrap(engine, through=migrations.SIBLING_SPLIT_VERSION)
     with engine.begin() as conn:
         migrations._backfill_state_after(conn)
         migrations._split_variants_into_siblings(conn)
@@ -768,3 +761,36 @@ def test_the_migrated_story_reads_back_as_one_turn(pre_split):
         assert history.count(adventure) == 4
     finally:
         db.close()
+
+
+# ------------------------------------------------------- SP8: the columns go
+
+# The columns migrations 66 to 73 drop, paired with the table they sat on.
+DROPPED_COLUMNS = [
+    ("actions", "index"),
+    ("actions", "variants"),
+    ("actions", "variant_index"),
+    ("actions", "variant_count"),
+    ("actions", "state_before"),
+    ("actions", "world_state_before"),
+    ("adventures", "memory_cursor"),
+    ("adventures", "summary_cursor"),
+]
+
+
+@pytest.mark.parametrize("table,column", DROPPED_COLUMNS)
+def test_the_legacy_columns_are_dropped(pre_tree, table, column):
+    """A pre-tree database that migrates all the way ends without these eight.
+
+    The fixture is a real schema-45 database, so each column starts present and
+    the `ALTER TABLE` statements have something to remove. A `create_all`
+    database never has them, and would pass this test without running the
+    migration at all.
+    """
+    before = {row[1] for row in rows(f"PRAGMA table_info({table})")}
+    assert column in before, "the fixture must start with the column"
+
+    migrations.bootstrap(engine)
+
+    after = {row[1] for row in rows(f"PRAGMA table_info({table})")}
+    assert column not in after

@@ -1,0 +1,63 @@
+/* ---------- Cards & lists ---------- */
+
+.card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }
+.card {
+  position: relative;
+  background: linear-gradient(170deg, #17172400, #17172400 60%, rgba(212, 169, 78, 0.03)), var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 18px;
+  cursor: pointer;
+  transition: border-color 0.2s, transform 0.2s, box-shadow 0.2s;
+  overflow: hidden;
+}
+.card::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--accent-dim), transparent);
+  opacity: 0;
+  transition: opacity 0.25s;
+}
+.card:hover {
+  border-color: var(--border-bright);
+  transform: translateY(-3px);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45), 0 0 20px rgba(212, 169, 78, 0.06);
+}
+.card:hover::before { opacity: 1; }
+.card h3 {
+  margin: 0 0 6px;
+  font-family: var(--font-display);
+  font-size: 1.02rem;
+  color: var(--accent);
+}
+.card p { margin: 0; color: var(--text-dim); font-size: 0.88rem; line-height: 1.5; }
+.card .meta { margin-top: 12px; font-size: 0.75rem; color: var(--text-dim); }
+
+.page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
+.page-header h1 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 1.55rem;
+  color: var(--accent-bright);
+  text-shadow: 0 0 24px var(--accent-glow);
+}
+
+.empty { color: var(--text-dim); text-align: center; padding: 60px 0; font-style: italic; font-family: var(--font-story); font-size: 1.05rem; }
+
+/* ---------- Story card editor ---------- */
+
+.storycard {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent-dim);
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 10px;
+  transition: border-color 0.15s;
+}
+.storycard:focus-within { border-color: var(--accent-dim); }
+.storycard .row { display: flex; gap: 10px; margin-bottom: 8px; }
+.storycard .row > * { flex: 1; }
+

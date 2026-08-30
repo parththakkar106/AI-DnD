@@ -267,6 +267,12 @@ that takes about 30 to 60 seconds to wake it. Point any keep-warm pinger at `/ap
 which deliberately doesn't touch the database: waking the database around the clock costs far
 more than the cold start saves.
 
+If you put another proxy or CDN in front of Render, set `AIDND_TRUSTED_PROXY_HOPS` to the
+number of proxies in the chain. It defaults to 1. The rate limiter reads the client IP that
+many entries from the right of `X-Forwarded-For`, because the trusted edge appends the real
+one last. Leave it at 1 behind two proxies and the limiter reads an entry the caller
+supplied, so anyone can rotate the header for a fresh rate-limit bucket per request.
+
 ## Repo notes
 
 - `plan/` holds the phased implementation plan this project was built from, kept as a build

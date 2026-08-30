@@ -252,7 +252,7 @@ try:
     for position, s in enumerate(SCRIPTS):
         db.add(models.AdventureScript(adventure_id=adventure.id, position=position, **s))
     opening = models.Action(
-        adventure_id=adventure.id, index=0, type="start", text=scenario.prompt
+        adventure_id=adventure.id, type="start", text=scenario.prompt
     )
     # Through the same door create_adventure uses, so the seeded adventure has a
     # story tree like every other one.

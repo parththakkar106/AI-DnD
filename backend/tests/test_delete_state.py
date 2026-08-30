@@ -15,15 +15,6 @@ change comes back refused as "changed too recently".
 
     python -m pytest tests/test_delete_state.py -v
 """
-import os
-import tempfile
-
-_tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-_tmp.close()
-os.environ["AIDND_DB_PATH"] = _tmp.name
-os.environ.pop("AIDND_DATABASE_URL", None)
-os.environ.pop("DATABASE_URL", None)
-
 import pytest
 from fastapi import Depends
 from fastapi.testclient import TestClient
@@ -31,8 +22,8 @@ from fastapi.testclient import TestClient
 from app import auth, limits, models
 from app.database import Base, SessionLocal, engine, get_db
 from app.main import app
-from app.providers import PromptParts
 from app.routers import adventures
+from fakes import ScriptedProvider
 
 # `mana` carries a cooldown, so a clock that was not rolled back shows up as
 # a refusal rather than as a number that is merely off.
@@ -56,20 +47,6 @@ modifier(text);
 DRAIN = 'Drained.\n```state\n{"player.mana": -10}\n```'
 
 
-class ScriptedProvider:
-    last_usage = None
-    replies: list = []
-    calls = 0
-
-    def __init__(self, *a, **k):
-        pass
-
-    async def generate(self, parts: PromptParts, *, temperature, max_tokens):
-        index = min(ScriptedProvider.calls, len(ScriptedProvider.replies) - 1)
-        ScriptedProvider.calls += 1
-        yield ("text", ScriptedProvider.replies[index])
-
-
 @pytest.fixture()
 def client(monkeypatch):
     Base.metadata.create_all(bind=engine)
@@ -87,7 +64,7 @@ def client(monkeypatch):
     )
     setup.add(adv)
     setup.flush()
-    setup.add(models.Action(adventure_id=adv.id, index=0, type="start", text="You begin."))
+    setup.add(models.Action(adventure_id=adv.id, type="start", text="You begin."))
     setup.add(models.AdventureScript(
         adventure_id=adv.id, position=0, enabled=True, name="Gold", output_js=GOLD_SCRIPT,
     ))
@@ -97,7 +74,7 @@ def client(monkeypatch):
 
     ScriptedProvider.replies = [DRAIN]
     ScriptedProvider.calls = 0
-    monkeypatch.setattr(adventures, "OpenAICompatibleProvider", ScriptedProvider)
+    monkeypatch.setattr(adventures.turns, "OpenAICompatibleProvider", ScriptedProvider)
     monkeypatch.setattr(auth, "resolve_provider_config", lambda s: auth.ProviderConfig(
         "http://fake", "k", "test-model", False))
     monkeypatch.setattr(limits, "rate_limit", lambda *a, **k: None)
@@ -113,7 +90,7 @@ def client(monkeypatch):
         yield c
     finally:
         app.dependency_overrides.clear()
-        adventures._active_turns.clear()
+        adventures.turns._active_turns.clear()
         Base.metadata.drop_all(bind=engine)
 
 
@@ -227,11 +204,11 @@ def test_delete_is_blocked_while_a_turn_is_generating(client):
     _play(client)
     action_id = _ai_rows(client.adv_id)[-1].id
 
-    adventures.acquire_turn_lock(client.adv_id)  # a turn is "generating"
+    adventures.turns.acquire_turn_lock(client.adv_id)  # a turn is "generating"
     try:
         assert _delete(client, action_id).status_code == 409
         # The refused delete must not have released someone else's lock.
-        assert client.adv_id in adventures._active_turns
+        assert client.adv_id in adventures.turns._active_turns
     finally:
-        adventures._active_turns.discard(client.adv_id)
+        adventures.turns._active_turns.discard(client.adv_id)
     assert len(_ai_rows(client.adv_id)) == 1, "and the turn is still there"

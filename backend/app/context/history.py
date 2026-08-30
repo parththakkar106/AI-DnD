@@ -417,30 +417,6 @@ def newest(adventure: models.Adventure) -> models.Action | None:
     return rows[0] if rows else None
 
 
-def max_action_index(adventure: models.Adventure) -> int:
-    """Highest `Action.index` in the adventure, story text or not. -1 if empty.
-
-    This is the only read in the module that is deliberately not scoped to a
-    path. `index` is a legacy column that remains unread until SP8 drops it. Its
-    one remaining job is to give the next row a number that no other row holds,
-    which is a fact about the adventure rather than about the story being
-    played. Scoping the query to a branch would let two branches issue the same
-    index.
-    """
-    loaded = _loaded_actions(adventure)
-    if loaded is not None:
-        return max((a.index for a in loaded), default=-1)
-    db = _session(adventure)
-    if db is None:
-        return -1
-    highest = (
-        db.query(func.max(models.Action.index))
-        .filter(models.Action.adventure_id == adventure.id)
-        .scalar()
-    )
-    return -1 if highest is None else highest
-
-
 def window_covering(
     adventure: models.Adventure,
     budget_tokens: int,

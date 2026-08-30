@@ -16,15 +16,8 @@ Two things are easy to break here:
 
     python -m pytest tests/test_length_hint.py -v
 """
-import os
 import re
-import tempfile
 
-_tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-_tmp.close()
-os.environ["AIDND_DB_PATH"] = _tmp.name
-os.environ.pop("AIDND_DATABASE_URL", None)
-os.environ.pop("DATABASE_URL", None)
 
 import pytest
 
@@ -57,7 +50,7 @@ def story():
     db.add(adventure)
     db.flush()
     for i in range(4):
-        db.add(models.Action(adventure_id=adventure.id, index=i,
+        db.add(models.Action(adventure_id=adventure.id,
                              type="ai" if i % 2 else "do", text=f"[{i}] Onward."))
     db.commit()
     db.expire_all()
@@ -213,7 +206,7 @@ def test_prompt_stays_inside_the_budget_on_a_long_story(story):
     db, adventure, settings, _ = story
     for i in range(4, 120):
         db.add(models.Action(
-            adventure_id=adventure.id, index=i, type="ai" if i % 2 else "do",
+            adventure_id=adventure.id, type="ai" if i % 2 else "do",
             text=f"[{i}] " + "The road bends past the burnt mill and the smoke. " * 12,
         ))
     db.commit()

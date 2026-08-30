@@ -118,15 +118,8 @@ class Adventure(Base):
     # Phase 6: opt-in per adventure (extra AI calls)
     auto_summarize: Mapped[bool] = mapped_column(Boolean, default=False)
     memory_bank_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
-    # Legacy columns from Phase 6. Each holds a count of the actions that were
-    # folded into the memories or the story summary, expressed as a position in
-    # the story. Nothing has read them since SP3, and nothing writes them except
-    # a v1 import. They remain for one release so that a rollback resumes from a
-    # real number. SP8 drops them along with `actions.index`. The columns below
-    # hold the marks that this code actually uses.
-    memory_cursor: Mapped[int] = mapped_column(Integer, default=0)
-    summary_cursor: Mapped[int] = mapped_column(Integer, default=0)
-    # Phase 14, SP3: the same two marks expressed as coordinates. Each pair
+    # Phase 14, SP3: how far the memory pass and the summary pass have read,
+    # each as a coordinate. Each pair
     # holds the branch and depth of the last action that pass covered. A
     # position moves when an action in front of it is deleted, so the mark
     # silently starts covering an action it never read. A depth is a coordinate
@@ -168,7 +161,7 @@ class Adventure(Base):
     actions: Mapped[list["Action"]] = relationship(
         back_populates="adventure",
         cascade="all, delete-orphan",
-        order_by="Action.index",
+        order_by="Action.id",
     )
     scripts: Mapped[list["AdventureScript"]] = relationship(
         back_populates="adventure",
@@ -261,8 +254,7 @@ class Memory(Base):
     )
     # The stretch of story this memory summarizes, given as depths on
     # `branch_id`. Both are NULL for a hand-written memory, which summarizes no
-    # actions. Before SP3 these columns held `Action.index` values, which were
-    # the same numbers. `source_end` is the depth of the node the memory
+    # actions. `source_end` is the depth of the node the memory
     # attaches to, and `depth` below mirrors it. `source_start` is where the
     # stretch begins, which is where the summarizer resumes if the memory is
     # withdrawn.
@@ -283,10 +275,9 @@ class Memory(Base):
         ForeignKey("branches.id", ondelete="CASCADE"), nullable=True
     )
     depth: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    # Whether `embedding_blob` is set. `memorybank.set_vector` keeps this
-    # column current, for the same reason that `actions.variant_count` sits
-    # beside `actions.variants`. Readers need only the yes-or-no answer, and
-    # fetching six kilobytes of vector to get it is too expensive.
+    # Whether `embedding_blob` is set. `memorybank.set_vector` keeps this column
+    # current. Readers need only the yes-or-no answer, and fetching six
+    # kilobytes of vector to get it is too expensive.
     embedded: Mapped[bool] = mapped_column(Boolean, default=False)
     pinned: Mapped[bool] = mapped_column(Boolean, default=False)
     forgotten: Mapped[bool] = mapped_column(Boolean, default=False)  # evicted, kept for UI
@@ -346,18 +337,15 @@ class Action(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     adventure_id: Mapped[int] = mapped_column(ForeignKey("adventures.id", ondelete="CASCADE"))
-    index: Mapped[int] = mapped_column(Integer)
     # Phase 14: the node's place in the tree. `depth` is a position along one
     # path rather than a global turn number. Node A4 and node B4 are
-    # alternatives, not duplicates. `depth` replaces `index` as the ordering
-    # key.
+    # alternatives, not duplicates.
     #
     # Both columns are nullable because ALTER TABLE cannot add a NOT NULL column
     # without a default, and no default makes sense for a branch. The migration
     # fills these columns for existing rows, and `tree.place_action` fills them
     # for new rows. From SP2 onward, a NULL `branch_id` marks a row that no read
-    # can see. The legacy `index` column stays alongside, unread, until the tree
-    # is proven in production. SP8 drops it.
+    # can see.
     branch_id: Mapped[int | None] = mapped_column(
         ForeignKey("branches.id", ondelete="CASCADE"), nullable=True
     )
@@ -417,20 +405,6 @@ class Action(Base):
     # and for re-attaching the emit block when replaying history to the model.
     # Mirrors the active variant, same as text/reasoning/context_snapshot.
     world_delta: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    # Legacy columns from before SP4. They hold `Adventure.script_state` and
-    # `Adventure.world_state` as they were immediately before this action's
-    # script hooks ran. Nothing has written or read them since SP4. The pair of
-    # "after" columns below replaced them, because each sibling attempt needs
-    # its own outcome and every attempt at a turn shares the same starting
-    # state. These columns remain for one release so that a rolled-back build
-    # still finds a real snapshot on the rows it wrote. SP8 drops them along
-    # with `index` and `variants`.
-    state_before: Mapped[dict | None] = mapped_column(
-        JSON, nullable=True, deferred=True
-    )
-    world_state_before: Mapped[dict | None] = mapped_column(
-        JSON, nullable=True, deferred=True
-    )
     # Phase 14, SP4: the shared script state and the RPG world state as they
     # stood after this node was played. These columns record the node's outcome
     # rather than its starting position.
@@ -453,24 +427,6 @@ class Action(Base):
     world_state_after: Mapped[dict | None] = mapped_column(
         JSON, nullable=True, deferred=True
     )
-    # A legacy column from before SP4. It holds the retry history as a repeating
-    # group inside a JSON list. Every attempt at a turn is now its own row, as
-    # described on `live` above and in `app/attempts.py`, so nothing reads this
-    # column. It remains until SP8 for the same reason `index` does. Migration
-    # 60 reads it once more, to turn each entry into a sibling row.
-    variants: Mapped[list | None] = mapped_column(JSON, nullable=True, deferred=True)
-    # Where the row sits in its sibling group. `variant_index` is this
-    # attempt's ordinal, counting from the oldest. `variant_count` is the number
-    # of attempts in the group. It is 0 rather than 1 when the turn was never
-    # retried, which the pager treats as having nothing to page through.
-    #
-    # Both columns are caches, and `attempts.renumber` is the only place that
-    # maintains them. The reason matches why `variant_count` once cached
-    # `len(variants)`: a page response needs both numbers for every row and
-    # cannot afford one query per turn. SP7 replaces the pager with the branch
-    # view, and SP8 drops both columns.
-    variant_count: Mapped[int] = mapped_column(Integer, default=0)
-    variant_index: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     adventure: Mapped[Adventure] = relationship(back_populates="actions")
@@ -619,7 +575,6 @@ class Settings(Base):
             "for the player's next action."
         ),
     )
-    stream: Mapped[bool] = mapped_column(Boolean, default=True)
     # Phase 6: auto-summarization + memory bank
     summary_model: Mapped[str] = mapped_column(String(200), default="")  # "" = main model
     embedding_model: Mapped[str] = mapped_column(String(200), default="")  # "" = bank disabled

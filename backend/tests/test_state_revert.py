@@ -11,17 +11,10 @@ only in their outcome.
 
 Run from the backend dir:  python -m pytest tests/test_state_revert.py -v
 """
-import os
-import tempfile
 
 # Point the app at a throwaway SQLite file before importing anything that
 # binds the engine at import time. `app.database` reads `AIDND_DB_PATH`
 # on import.
-_tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-_tmp.close()
-os.environ["AIDND_DB_PATH"] = _tmp.name
-os.environ.pop("AIDND_DATABASE_URL", None)
-os.environ.pop("DATABASE_URL", None)
 
 import pytest
 from fastapi import HTTPException
@@ -40,7 +33,7 @@ def db():
     finally:
         session.close()
         Base.metadata.drop_all(bind=engine)
-        adventures._active_turns.clear()
+        adventures.turns._active_turns.clear()
 
 
 def _make_adventure(db, script_state):
@@ -55,7 +48,7 @@ def _make_adventure(db, script_state):
 
 def _add(db, adv, index, type_, text="x", state_after=None):
     a = models.Action(
-        adventure_id=adv.id, index=index, type=type_, text=text,
+        adventure_id=adv.id, type=type_, text=text,
         state_after=state_after,
     )
     db.add(a)
@@ -88,7 +81,7 @@ def test_undo_reverts_state_to_before_the_turn(db):
     _add(db, adv, 2, "ai", state_after={"gold": 10})
     db.commit()
 
-    adventures.undo_turn(adv.id, db=db, user=user)
+    adventures.undo_turn(adv.id, db=db, adventure=adv)
 
     assert adv.script_state == {"gold": 0}
     assert [a.type for a in adv.actions] == ["start"]
@@ -102,7 +95,7 @@ def test_undo_of_bare_continue_uses_the_node_in_front(db):
     _add(db, adv, 1, "ai", state_after={"gold": 5})
     db.commit()
 
-    adventures.undo_turn(adv.id, db=db, user=user)
+    adventures.undo_turn(adv.id, db=db, adventure=adv)
 
     assert adv.script_state == {"gold": 0}
     assert [a.type for a in adv.actions] == ["start"]
@@ -117,7 +110,7 @@ def test_undo_leaves_state_untouched_when_snapshot_missing(db):
     _add(db, adv, 2, "ai")
     _forget_snapshots(db, adv)
 
-    adventures.undo_turn(adv.id, db=db, user=user)
+    adventures.undo_turn(adv.id, db=db, adventure=adv)
 
     assert adv.script_state == {"gold": 10}
 
@@ -127,7 +120,7 @@ def test_undo_raises_when_nothing_to_undo(db):
     _add(db, adv, 0, "start")
     db.commit()
     with pytest.raises(HTTPException) as exc:
-        adventures.undo_turn(adv.id, db=db, user=user)
+        adventures.undo_turn(adv.id, db=db, adventure=adv)
     assert exc.value.status_code == 400
 
 
@@ -137,15 +130,15 @@ def test_undo_blocked_by_active_turn_lock(db):
     _add(db, adv, 1, "ai", state_after={})
     db.commit()
 
-    adventures.acquire_turn_lock(adv.id)  # a turn is "generating"
+    adventures.turns.acquire_turn_lock(adv.id)  # a turn is "generating"
     try:
         with pytest.raises(HTTPException) as exc:
-            adventures.undo_turn(adv.id, db=db, user=user)
+            adventures.undo_turn(adv.id, db=db, adventure=adv)
         assert exc.value.status_code == 409
         # The failed undo must not have released someone else's lock.
-        assert adv.id in adventures._active_turns
+        assert adv.id in adventures.turns._active_turns
     finally:
-        adventures._active_turns.discard(adv.id)
+        adventures.turns._active_turns.discard(adv.id)
 
 
 def test_undo_prunes_memory_covering_removed_actions(db):
@@ -158,7 +151,7 @@ def test_undo_prunes_memory_covering_removed_actions(db):
     db.add_all([covering, keep])
     db.commit()
 
-    adventures.undo_turn(adv.id, db=db, user=user)  # removes indexes 2 & 3
+    adventures.undo_turn(adv.id, db=db, adventure=adv)  # removes indexes 2 & 3
 
     texts = {m.text for m in adv.memories}
     assert texts == {"k"}
@@ -193,7 +186,7 @@ def test_forget_node_withdraws_only_what_that_node_produced(db):
 
 def test_snapshot_outcome_is_an_independent_deep_copy(db):
     _, adv = _make_adventure(db, {"nested": {"n": 1}})
-    node = models.Action(adventure_id=adv.id, index=0, type="ai", text="x")
+    node = models.Action(adventure_id=adv.id, type="ai", text="x")
     attempts.snapshot_outcome(adv, node)
     adv.script_state["nested"]["n"] = 99
     assert node.state_after == {"nested": {"n": 1}}  # unaffected by later mutation
@@ -202,14 +195,14 @@ def test_snapshot_outcome_is_an_independent_deep_copy(db):
 def test_snapshot_outcome_handles_non_dict(db):
     _, adv = _make_adventure(db, {})
     adv.script_state = None
-    node = models.Action(adventure_id=adv.id, index=0, type="ai", text="x")
+    node = models.Action(adventure_id=adv.id, type="ai", text="x")
     attempts.snapshot_outcome(adv, node)
     assert node.state_after == {}
 
 
 def test_restore_state_ignores_a_node_with_no_outcome(db):
     _, adv = _make_adventure(db, {"gold": 7})
-    attempts.restore_state(adv, models.Action(adventure_id=adv.id, index=0, type="ai"))
+    attempts.restore_state(adv, models.Action(adventure_id=adv.id, type="ai"))
     assert adv.script_state == {"gold": 7}
     attempts.restore_state(adv, None)
     assert adv.script_state == {"gold": 7}
@@ -228,14 +221,14 @@ def test_retry_restores_the_state_the_turn_started_from(db, monkeypatch):
     db.commit()
 
     monkeypatch.setattr(adventures.limits, "rate_limit", lambda *a, **k: None)
-    monkeypatch.setattr(adventures, "check_demo_cap", lambda *a, **k: None)
+    monkeypatch.setattr(adventures.turns, "check_demo_cap", lambda *a, **k: None)
 
     async def _noop(*a, **k):
         if False:
             yield  # make it an async generator
-    monkeypatch.setattr(adventures, "generate_turn", _noop)
+    monkeypatch.setattr(adventures.turns, "generate_turn", _noop)
 
-    adventures.retry_action(adv.id, request=None, db=db, user=user)
+    adventures.retry_action(adv.id, request=None, db=db, user=user, adventure=adv)
 
     assert adv.script_state == {"gold": 10}
     # Nothing is written until a replacement actually arrives: the attempt on
@@ -243,6 +236,6 @@ def test_retry_restores_the_state_the_turn_started_from(db, monkeypatch):
     assert [a.type for a in adv.actions] == ["start", "do", "ai"]
     last = adv.actions[-1]
     assert last.live is True
-    assert last.variant_count == 0
+    assert len(attempts.group(db, last)) == 1  # no sibling was filed
     assert last.state_after == {"gold": 20}  # its own outcome, untouched
-    adventures._active_turns.discard(adv.id)
+    adventures.turns._active_turns.discard(adv.id)

@@ -8,15 +8,6 @@ story, and the arrangement costs neither an extra prompt nor an extra turn.
 
     python -m pytest tests/test_attempt_siblings.py -v
 """
-import os
-import tempfile
-
-_tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-_tmp.close()
-os.environ["AIDND_DB_PATH"] = _tmp.name
-os.environ.pop("AIDND_DATABASE_URL", None)
-os.environ.pop("DATABASE_URL", None)
-
 import pytest
 from fastapi import Depends
 from fastapi.testclient import TestClient
@@ -26,8 +17,9 @@ from app import attempts, auth, limits, models, tree
 from app.context import cursors, history
 from app.database import Base, SessionLocal, engine, get_db
 from app.main import app
-from app.providers import PromptParts
 from app.routers import adventures
+
+from fakes import ScriptedProvider
 
 SCHEMA = {"player": {"hp": {"min": 0, "max": 100, "initial": 100}}}
 
@@ -38,22 +30,6 @@ const modifier = (text) => {
 };
 modifier(text);
 """
-
-
-class ScriptedProvider:
-    last_usage = None
-    replies: list = []
-    calls = 0
-    prompts: list = []
-
-    def __init__(self, *a, **k):
-        pass
-
-    async def generate(self, parts: PromptParts, *, temperature, max_tokens):
-        index = min(ScriptedProvider.calls, len(ScriptedProvider.replies) - 1)
-        ScriptedProvider.calls += 1
-        ScriptedProvider.prompts.append((parts.system, parts.story))
-        yield ("text", ScriptedProvider.replies[index])
 
 
 @pytest.fixture()
@@ -73,7 +49,7 @@ def client(monkeypatch):
     )
     setup.add(adv)
     setup.flush()
-    setup.add(models.Action(adventure_id=adv.id, index=0, type="start", text="You enter a cave."))
+    setup.add(models.Action(adventure_id=adv.id, type="start", text="You enter a cave."))
     setup.add(models.AdventureScript(
         adventure_id=adv.id, position=0, enabled=True, name="Gold", output_js=GOLD_SCRIPT,
     ))
@@ -84,7 +60,7 @@ def client(monkeypatch):
     ScriptedProvider.replies = ["Attempt one."]
     ScriptedProvider.calls = 0
     ScriptedProvider.prompts = []
-    monkeypatch.setattr(adventures, "OpenAICompatibleProvider", ScriptedProvider)
+    monkeypatch.setattr(adventures.turns, "OpenAICompatibleProvider", ScriptedProvider)
     monkeypatch.setattr(auth, "resolve_provider_config", lambda s: auth.ProviderConfig(
         "http://fake", "k", "test-model", False))
     monkeypatch.setattr(limits, "rate_limit", lambda *a, **k: None)
@@ -100,7 +76,7 @@ def client(monkeypatch):
         yield c
     finally:
         app.dependency_overrides.clear()
-        adventures._active_turns.clear()
+        adventures.turns._active_turns.clear()
         Base.metadata.drop_all(bind=engine)
 
 
@@ -136,7 +112,7 @@ def _rows(adv_id) -> list[models.Action]:
                 undefer(models.Action.world_state_after),
                 undefer(models.Action.context_snapshot),
             )
-            .order_by(models.Action.depth, models.Action.variant_index)
+            .order_by(models.Action.depth, models.Action.id)
             .all()
         )
     finally:
@@ -354,16 +330,22 @@ def test_a_memory_on_an_earlier_turn_survives_a_retry(client):
 
 # -------------------------------------------------------------- the group
 
-def test_the_group_cache_is_renumbered_as_attempts_arrive(client):
+def test_the_group_grows_in_the_order_the_attempts_arrive(client):
+    """The attempts page in the order they were made, and the pager counts them.
+
+    Ordering used to come from `variant_index`, an explicit ordinal that SP8
+    dropped. `id` carries the same order, because a row is inserted when its
+    attempt is made.
+    """
     ScriptedProvider.replies = ["One.", "Two.", "Three."]
     _play(client)
-    assert _page(client)["actions"][-1]["variant_count"] == 0  # never retried
+    assert _page(client)["actions"][-1]["take_count"] == 1  # never retried
     _retry(client)
     _retry(client)
 
     ai = [a for a in _rows(client.adv_id) if a.type == "ai"]
-    assert [a.variant_index for a in ai] == [0, 1, 2]
-    assert {a.variant_count for a in ai} == {3}
+    assert [a.text for a in ai] == ["One.", "Two.", "Three."]
+    assert _page(client)["actions"][-1]["take_count"] == 3
 
 
 def test_attempts_module_agrees_with_the_endpoint(client):
@@ -418,9 +400,8 @@ def test_a_retry_after_switching_back_files_the_new_attempt_last(client):
     `add_attempt` used to number a new take one past the take it replaced.
     That numbering is correct only when the story is standing on the newest
     take. Switch a three-take turn back to the first and retry, and the new
-    attempt collides with take 2. `renumber` broke the tie by id and placed
-    the new attempt between takes 2 and 3, so the pager listed them in an
-    order the player never produced.
+    attempt collided with take 2, which put it between takes 2 and 3. The
+    group orders by `id` now, so a new attempt is always last.
     """
     ScriptedProvider.replies = ["One.", "Two.", "Three.", "Four."]
     _play(client)
@@ -438,7 +419,6 @@ def test_a_retry_after_switching_back_files_the_new_attempt_last(client):
     _retry(client)
     ai = [a for a in _rows(client.adv_id) if a.type == "ai"]
     assert [a.text for a in ai] == ["One.", "Two.", "Three.", "Four."]
-    assert [a.variant_index for a in ai] == [0, 1, 2, 3]
     assert attempts.live_in(ai).text == "Four."
 
 

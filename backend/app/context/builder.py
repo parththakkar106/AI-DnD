@@ -353,7 +353,7 @@ def build_context(
                 # Even the newest action alone is over budget: hard-truncate it.
                 included_actions.append(
                     models.Action(
-                        adventure_id=action.adventure_id, index=action.index,
+                        adventure_id=action.adventure_id,
                         type=action.type,
                         text=truncate_to_last_tokens(action.text, history_budget),
                     )

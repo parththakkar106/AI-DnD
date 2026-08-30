@@ -23,14 +23,7 @@ happened.
     python -m pytest tests/test_memory_settling.py -v
 """
 import asyncio
-import os
-import tempfile
 
-_tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-_tmp.close()
-os.environ["AIDND_DB_PATH"] = _tmp.name
-os.environ.pop("AIDND_DATABASE_URL", None)
-os.environ.pop("DATABASE_URL", None)
 
 import pytest
 
@@ -75,7 +68,7 @@ def make_adventure(db, action_count: int) -> models.Adventure:
     db.flush()
     for i in range(action_count):
         db.add(models.Action(
-            adventure_id=adventure.id, index=i,
+            adventure_id=adventure.id,
             type="ai" if i % 2 else "do", text=f"Action {i}.",
         ))
     db.commit()
@@ -88,11 +81,8 @@ def cover(db, adventure, position: int) -> None:
 
     Written as a position and translated to the node it names, because that is
     what every adventure in the database looked like before SP3 and what a v1
-    bundle still carries. `memory_cursor` keeps the old number so the two
-    coordinate systems can be compared where a test cares.
+    bundle still carries.
     """
-    adventure.memory_cursor = position
-    adventure.summary_cursor = position
     cursors.anchor_at_position(adventure, cursors.MEMORY, position)
     cursors.anchor_at_position(adventure, cursors.SUMMARY, position)
     db.commit()
@@ -144,7 +134,7 @@ def test_the_first_memory_lands_at_memory_start(db, monkeypatch):
     assert stub.excerpts == []  # too short to have started at all
 
     db.add(models.Action(
-        adventure_id=adventure.id, index=memorybank.MEMORY_START - 1,
+        adventure_id=adventure.id,
         type="do", text="Later.",
     ))
     db.commit()
@@ -176,7 +166,7 @@ def test_legacy_caught_up_adventure_is_not_rewound(db, monkeypatch):
 
     # Grow the story and let the next block form.
     for i in range(12, 25):
-        db.add(models.Action(adventure_id=adventure.id, index=i, type="do", text=f"Action {i}."))
+        db.add(models.Action(adventure_id=adventure.id, type="do", text=f"Action {i}."))
     db.commit()
     db.refresh(adventure)
     run_memories(db, adventure, StubSummarizer(), monkeypatch)
@@ -220,7 +210,7 @@ def summarized_adventure(db):
     adventure = make_adventure(db, 13)
     for text, start, end in (("A", 0, 5), ("B", 6, 11)):
         node = db.query(models.Action).filter_by(
-            adventure_id=adventure.id, index=end
+            adventure_id=adventure.id, depth=end
         ).one()
         memory = models.Memory(
             adventure_id=adventure.id, text=text, source_start=start, source_end=end
@@ -244,7 +234,7 @@ def test_deleting_a_middle_action_leaves_the_mark_where_it_was(db):
     # Node 4 is inside memory A's block but is not the node it hangs off,
     # so nothing is withdrawn. The old code read it the same way: only a
     # memory whose end had fallen off the story was pruned.
-    victim = db.query(models.Action).filter_by(adventure_id=adventure.id, index=4).one()
+    victim = db.query(models.Action).filter_by(adventure_id=adventure.id, depth=4).one()
 
     assert memorybank.forget_node(db, adventure, victim) == 0
     db.delete(victim)
@@ -258,7 +248,7 @@ def test_deleting_a_middle_action_leaves_the_mark_where_it_was(db):
 
 def test_deleting_a_later_action_leaves_the_mark_alone(db):
     adventure = summarized_adventure(db)
-    victim = db.query(models.Action).filter_by(adventure_id=adventure.id, index=12).one()
+    victim = db.query(models.Action).filter_by(adventure_id=adventure.id, depth=12).one()
 
     memorybank.forget_node(db, adventure, victim)
     db.delete(victim)
@@ -279,7 +269,7 @@ def test_deleting_a_summarized_node_withdraws_its_memory(db):
     is a lookup.
     """
     adventure = summarized_adventure(db)
-    victim = db.query(models.Action).filter_by(adventure_id=adventure.id, index=11).one()
+    victim = db.query(models.Action).filter_by(adventure_id=adventure.id, depth=11).one()
 
     assert memorybank.forget_node(db, adventure, victim) == 1
     db.delete(victim)

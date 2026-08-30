@@ -17,16 +17,9 @@ Three things must hold, and only the first is obvious:
     python -m pytest tests/test_snapshot_compression.py -v
 """
 import json
-import os
 import random
-import tempfile
 import zlib
 
-_tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-_tmp.close()
-os.environ["AIDND_DB_PATH"] = _tmp.name
-os.environ.pop("AIDND_DATABASE_URL", None)
-os.environ.pop("DATABASE_URL", None)
 
 import pytest
 from sqlalchemy import text
@@ -102,7 +95,7 @@ def test_unpack_rejects_nothing_it_wrote():
 def test_the_column_stores_bytes_and_returns_a_dict(db, adventure):
     value = snapshot(3)
     action = models.Action(
-        adventure_id=adventure.id, index=0, type="ai", text="t",
+        adventure_id=adventure.id, type="ai", text="t",
         context_snapshot=value,
     )
     db.add(action)
@@ -122,7 +115,7 @@ def test_the_column_stores_bytes_and_returns_a_dict(db, adventure):
 def test_the_column_is_smaller_than_the_json_it_holds(db, adventure):
     value = snapshot(4, 200_000)
     action = models.Action(
-        adventure_id=adventure.id, index=0, type="ai", text="t",
+        adventure_id=adventure.id, type="ai", text="t",
         context_snapshot=value,
     )
     db.add(action)
@@ -137,7 +130,7 @@ def test_the_column_is_smaller_than_the_json_it_holds(db, adventure):
 
 def test_null_stays_null(db, adventure):
     action = models.Action(
-        adventure_id=adventure.id, index=0, type="do", text="t",
+        adventure_id=adventure.id, type="do", text="t",
         context_snapshot=None,
     )
     db.add(action)
@@ -151,7 +144,7 @@ def test_an_unreadable_snapshot_reads_as_none_rather_than_raising(db, adventure)
     it. The snapshot is a debugging view. The story is what actually
     matters."""
     action = models.Action(
-        adventure_id=adventure.id, index=0, type="ai", text="t",
+        adventure_id=adventure.id, type="ai", text="t",
         context_snapshot={"a": "b"},
     )
     db.add(action)
@@ -184,14 +177,14 @@ def seed_pre_43(db, adventure, count: int = 4) -> dict[int, dict]:
     ids = []
     for i in range(count):
         action = models.Action(
-            adventure_id=adventure.id, index=i, type="ai", text=f"t{i}"
+            adventure_id=adventure.id, type="ai", text=f"t{i}"
         )
         db.add(action)
         db.flush()
         ids.append(action.id)
     # One action with no snapshot at all, which must survive as NULL.
     plain = models.Action(
-        adventure_id=adventure.id, index=count, type="do", text="look"
+        adventure_id=adventure.id, type="do", text="look"
     )
     db.add(plain)
     db.commit()

@@ -25,13 +25,7 @@ than assumed.
     python -m pytest tests/test_prompt_caching.py -v
 """
 import os
-import tempfile
 
-_tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-_tmp.close()
-os.environ["AIDND_DB_PATH"] = _tmp.name
-os.environ.pop("AIDND_DATABASE_URL", None)
-os.environ.pop("DATABASE_URL", None)
 
 import pytest
 
@@ -140,7 +134,7 @@ def story():
     db.add(adventure)
     db.flush()
     for i in range(6):
-        db.add(models.Action(adventure_id=adventure.id, index=i,
+        db.add(models.Action(adventure_id=adventure.id,
                              type="ai" if i % 2 else "do",
                              text=f"[{i}] The road bends onward past the treeline."))
     db.commit()
@@ -208,7 +202,7 @@ def test_live_sections_are_still_charged_to_the_budget(story):
     db, adventure, settings = story
     for i in range(6, 90):
         db.add(models.Action(
-            adventure_id=adventure.id, index=i, type="do",
+            adventure_id=adventure.id, type="do",
             text=f"[{i}] " + "The road bends onward past the treeline. " * 6,
         ))
     settings.context_token_budget = 4000
@@ -232,7 +226,7 @@ def test_a_new_turn_only_appends_to_the_cached_prefix(story):
     prefix has to still contain the whole static block and the older history."""
     db, adventure, settings = story
     system_a, story_a, _ = builder.build_context(adventure, settings)
-    db.add(models.Action(adventure_id=adventure.id, index=6, type="do",
+    db.add(models.Action(adventure_id=adventure.id, type="do",
                          text="[6] You step into the clearing."))
     db.commit()
     db.expire_all()

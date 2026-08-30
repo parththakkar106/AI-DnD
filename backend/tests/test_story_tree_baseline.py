@@ -17,15 +17,6 @@ those subphases, the change is wrong, not the test. SP4 is the first
 subphase allowed to move it, and only for the variant-count semantics
 called out in plan/14.
 """
-import os
-import tempfile
-
-_tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-_tmp.close()
-os.environ["AIDND_DB_PATH"] = _tmp.name
-os.environ.pop("AIDND_DATABASE_URL", None)
-os.environ.pop("DATABASE_URL", None)
-
 import pytest
 from fastapi import Depends
 from fastapi.testclient import TestClient
@@ -33,8 +24,9 @@ from fastapi.testclient import TestClient
 from app import auth, limits, models
 from app.database import Base, SessionLocal, engine, get_db
 from app.main import app
-from app.providers import PromptParts
 from app.routers import adventures
+
+from fakes import ScriptedProvider
 
 # A world-state schema, so the RPG layer is exercised rather than skipped.
 SCHEMA = {"player": {"hp": {"min": 0, "max": 100, "initial": 100}}}
@@ -50,27 +42,6 @@ modifier(text);
 """
 
 OPENING = "You enter a cave."
-
-
-class ScriptedProvider:
-    """Streams the next canned reply each call, so successive turns differ."""
-    last_usage = None
-
-    replies: list = []
-    calls = 0
-    prompts: list = []  # every assembled (system, story) pair
-
-    def __init__(self, *a, **k):
-        pass
-
-    async def generate(self, parts: PromptParts, *, temperature, max_tokens):
-        index = min(ScriptedProvider.calls, len(ScriptedProvider.replies) - 1)
-        ScriptedProvider.calls += 1
-        ScriptedProvider.prompts.append((parts.system, parts.story))
-        reply = ScriptedProvider.replies[index]
-        if isinstance(reply, Exception):
-            raise reply
-        yield ("text", reply)
 
 
 def _make_world(monkeypatch, *, seeded_actions: int = 0):
@@ -92,10 +63,10 @@ def _make_world(monkeypatch, *, seeded_actions: int = 0):
     )
     setup.add(adv)
     setup.flush()
-    setup.add(models.Action(adventure_id=adv.id, index=0, type="start", text=OPENING))
+    setup.add(models.Action(adventure_id=adv.id, type="start", text=OPENING))
     for i in range(seeded_actions):
         setup.add(models.Action(
-            adventure_id=adv.id, index=i + 1,
+            adventure_id=adv.id,
             type="ai" if i % 2 else "do",
             text=f"Seeded turn {i}.",
         ))
@@ -109,7 +80,7 @@ def _make_world(monkeypatch, *, seeded_actions: int = 0):
     ScriptedProvider.replies = ["A reply."]
     ScriptedProvider.calls = 0
     ScriptedProvider.prompts = []
-    monkeypatch.setattr(adventures, "OpenAICompatibleProvider", ScriptedProvider)
+    monkeypatch.setattr(adventures.turns, "OpenAICompatibleProvider", ScriptedProvider)
     monkeypatch.setattr(auth, "resolve_provider_config", lambda s: auth.ProviderConfig(
         "http://fake", "k", "test-model", False))
     monkeypatch.setattr(limits, "rate_limit", lambda *a, **k: None)
@@ -131,7 +102,7 @@ def client(monkeypatch):
         yield c
     finally:
         app.dependency_overrides.clear()
-        adventures._active_turns.clear()
+        adventures.turns._active_turns.clear()
         Base.metadata.drop_all(bind=engine)
 
 
@@ -143,7 +114,7 @@ def long_client(monkeypatch):
         yield c
     finally:
         app.dependency_overrides.clear()
-        adventures._active_turns.clear()
+        adventures.turns._active_turns.clear()
         Base.metadata.drop_all(bind=engine)
 
 

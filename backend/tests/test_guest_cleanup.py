@@ -6,15 +6,8 @@ deleted.
 
     python -m pytest tests/test_guest_cleanup.py -v
 """
-import os
-import tempfile
 from datetime import timedelta
 
-_tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-_tmp.close()
-os.environ["AIDND_DB_PATH"] = _tmp.name
-os.environ.pop("AIDND_DATABASE_URL", None)
-os.environ.pop("DATABASE_URL", None)
 
 import pytest
 from sqlalchemy import create_engine, event
@@ -178,7 +171,7 @@ def test_deletes_the_whole_data_graph(db):
     db.add(adventure)
     db.commit()
     db.add_all([
-        models.Action(adventure_id=adventure.id, index=0, type="ai", text="t"),
+        models.Action(adventure_id=adventure.id, type="ai", text="t"),
         models.Memory(adventure_id=adventure.id, text="m", source_start=0, source_end=0),
         models.StoryCard(adventure_id=adventure.id, name="c"),
         models.Settings(user_id=user.id),

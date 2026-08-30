@@ -4,24 +4,16 @@ undo rolling the world state back.
 
     python -m pytest tests/test_worldstate_integration.py -v
 """
-import os
-import tempfile
-
-_tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-_tmp.close()
-os.environ["AIDND_DB_PATH"] = _tmp.name
-os.environ.pop("AIDND_DATABASE_URL", None)
-os.environ.pop("DATABASE_URL", None)
-
 import pytest
 from fastapi import Depends
 from fastapi.testclient import TestClient
 
-from app import auth, limits, models
+from app import auth, limits, models, worldstate
 from app.database import Base, SessionLocal, engine, get_db
 from app.main import app
-from app.providers import PromptParts
 from app.routers import adventures
+
+from fakes import ScriptedProvider
 
 SCHEMA = {
     "player": {"hp": {"min": 0, "max": 100, "initial": 100, "max_delta_per_turn": 30}},
@@ -45,15 +37,6 @@ AI_REPLY = (
 )
 
 
-class FakeProvider:
-    last_usage = None
-    def __init__(self, *a, **k):
-        pass
-
-    async def generate(self, parts: PromptParts, *, temperature, max_tokens):
-        yield ("text", AI_REPLY)
-
-
 @pytest.fixture()
 def client(monkeypatch):
     Base.metadata.create_all(bind=engine)
@@ -67,18 +50,19 @@ def client(monkeypatch):
     setup.flush()
     adv = models.Adventure(
         user_id=user.id, scenario_id=scenario.id, title="Run",
-        world_state=adventures.worldstate.instantiate(SCHEMA),
+        world_state=worldstate.instantiate(SCHEMA),
     )
     setup.add(adv)
     setup.flush()
     # "Gwen" in the story text makes her NPC in-scene (matches the "gwen" npc's keys).
-    setup.add(models.Action(adventure_id=adv.id, index=0, type="start",
+    setup.add(models.Action(adventure_id=adv.id, type="start",
                             text="You face a goblin. Gwen watches."))
     setup.commit()
     adv_id, user_id = adv.id, user.id
     setup.close()
 
-    monkeypatch.setattr(adventures, "OpenAICompatibleProvider", FakeProvider)
+    ScriptedProvider.replies = [AI_REPLY]
+    monkeypatch.setattr(adventures.turns, "OpenAICompatibleProvider", ScriptedProvider)
     monkeypatch.setattr(auth, "resolve_provider_config", lambda s: auth.ProviderConfig(
         "http://fake", "k", "test-model", False))
     monkeypatch.setattr(limits, "rate_limit", lambda *a, **k: None)
@@ -95,7 +79,7 @@ def client(monkeypatch):
         yield c
     finally:
         app.dependency_overrides.clear()
-        adventures._active_turns.clear()
+        adventures.turns._active_turns.clear()
         Base.metadata.drop_all(bind=engine)
 
 

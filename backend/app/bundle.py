@@ -14,8 +14,8 @@ Version 2 carries the tree. It holds three things version 1 could not, and each
 one is required:
 
 * The branches, because a forked adventure is two stories and a flat list holds
-  one. A version 1 export interleaved them by `index`, which read as a garbled
-  story rather than as lost data.
+  one. A version 1 export interleaved them by turn number, which read as a
+  garbled story rather than as lost data.
 * `live`, because a coordinate can hold several attempts at one turn and exactly
   one of them is the story.
 * Both after-snapshots, because they are what a branch switch and an undo
@@ -26,22 +26,14 @@ one is required:
 
 A bundle carries what was chosen, never what is derived. The head branch, the
 fork points, the live flags, and the anchors are decisions somebody made, so
-they are in the file. `lineage`, the head depth, `index`, and the variant
-ordinals are all computed from those, and the import recomputes them:
+they are in the file. `lineage` and the head depth are computed from those, and
+the import recomputes them:
 
 * `lineage` is a cache of `parent` plus `fork_depth`. Shipping it as well would
   put a second source of truth for one fact into a file anyone can hand-edit,
   and the two could then disagree without any read reporting it.
 * The head depth is the tip of the head branch, which is a fact about the nodes
   that arrived with it.
-* `index` is the legacy column SP8 drops. Its one remaining job is to give the
-  next row a number nothing else holds, which is a fact about the adventure
-  rather than about a path, so `depth` cannot serve: two branches each have a
-  node at depth 4. The import allocates one index per turn instead, which keeps
-  `max_action_index` correct and keeps siblings sharing an index the way SP4
-  leaves them.
-* `attempts.renumber` maintains the variant ordinals, and it is the only place
-  allowed to.
 
 Every hand-editable coordinate is therefore checked before a row is written, in
 `plan`, rather than repaired afterwards. An import that fails partway leaves an
@@ -98,8 +90,7 @@ def export(db: Session, adventure: models.Adventure) -> dict:
             undefer(models.Action.world_state_after),
         )
         .order_by(
-            models.Action.branch_id, models.Action.depth,
-            models.Action.variant_index, models.Action.id,
+            models.Action.branch_id, models.Action.depth, models.Action.id,
         )
         .all()
     )
@@ -168,8 +159,7 @@ def _exported_branch(branch: models.Branch, local: dict[int, int]) -> dict:
 def _exported_node(action: models.Action, local: dict[int, int]) -> dict:
     node = {
         "branch": _local(action.branch_id, local),
-        # A pre-tree row's depth is the number `index` already holds.
-        "depth": action.depth if action.depth is not None else action.index,
+        "depth": action.depth,
         "live": bool(action.live),
         "type": action.type,
         "text": action.text,
@@ -496,24 +486,17 @@ def _write_nodes(
 ) -> None:
     """Writes the nodes, grouped into the turns they are attempts at.
 
-    Two values are allocated here rather than read from the file. `index` is
-    issued once per turn, in the order the bundle lists them, so siblings share
-    one index and no two coordinates do. `max_action_index` needs that to keep
-    issuing numbers nothing holds. Exactly one attempt in each group is also made
-    live, because a file can name none or several, and a turn with no live node
-    disappears from the story.
+    One value is decided here rather than read from the file. Exactly one
+    attempt in each group is made live, because a file can name none or several,
+    and a turn with no live node disappears from the story.
     """
     groups: dict[tuple[int, int], list[models.Action]] = {}
-    indices: dict[tuple[int, int], int] = {}
     for spec in specs:
         key = (spec["branch"], spec["depth"])
-        if key not in indices:
-            indices[key] = len(indices)
         action = models.Action(
             adventure_id=adventure.id,
             branch_id=ids[spec["branch"]],
             depth=spec["depth"],
-            index=indices[key],
             type=spec["type"],
             text=spec["text"],
             reasoning=spec["reasoning"],
@@ -531,7 +514,6 @@ def _write_nodes(
         live = next((row for row in rows if row.live), rows[0])
         for row in rows:
             row.live = row is live
-        attempts.renumber(rows)
 
 
 def _write_memories(
@@ -605,31 +587,22 @@ def _write_anchors(
         cursor.anchor(adventure, ids[branch] if branch is not None else None, depth)
 
 
-def settle(db: Session, adventure: models.Adventure, story: dict) -> None:
-    """Aligns the two coordinate systems, once the nodes exist.
+def settle(adventure: models.Adventure, story: dict) -> None:
+    """Resolves a version 1 bundle's counts into anchors, once the nodes exist.
 
-    The anchors and the legacy counts describe the same boundary in different
-    terms, and each version of the bundle carries one of them. A version 1 file
-    carries the count, so the anchor is found by counting that far along the
-    story. A version 2 file carries the anchor, so the count is read back from
-    it. The legacy columns are written either way, because a rolled-back build
-    reads them.
+    A version 1 file records how far the memories and the summary have read as
+    a count, so the anchor is found by counting that far along the story. A
+    version 2 file carries the anchor itself, which `_write_anchors` has
+    already stored, so there is nothing left to do.
 
-    The caller runs this after the flush, because both directions need the
-    actions to be queryable.
+    The caller runs this after the flush, because counting needs the actions to
+    be queryable.
     """
     positions = story["positions"]
+    if positions is None:
+        return
     for cursor in cursors.ALL:
-        if positions is not None:
-            setattr(adventure, f"{cursor.name}_cursor", positions[cursor.name])
-            cursors.anchor_at_position(adventure, cursor, positions[cursor.name])
-        else:
-            setattr(
-                adventure, f"{cursor.name}_cursor",
-                cursors.position_of(adventure, cursor.depth(db, adventure)),
-            )
-
-
+        cursors.anchor_at_position(adventure, cursor, positions[cursor.name])
 
 
 def materialize(
@@ -691,7 +664,7 @@ def materialize(
     write(db, adventure, story)
     db.flush()
     db.expire(adventure, ["actions"])
-    settle(db, adventure, story)
+    settle(adventure, story)
     return adventure
 
 # ------------------------------------------------------------------ reading

@@ -23,15 +23,6 @@ importer a file that does disagree with itself.
 
     python -m pytest tests/test_bundle_v2.py -v
 """
-import os
-import tempfile
-
-_tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-_tmp.close()
-os.environ["AIDND_DB_PATH"] = _tmp.name
-os.environ.pop("AIDND_DATABASE_URL", None)
-os.environ.pop("DATABASE_URL", None)
-
 import pytest
 from fastapi import Depends
 from fastapi.testclient import TestClient
@@ -40,8 +31,9 @@ from app import auth, bundle, limits, models
 from app.context import lineage
 from app.database import Base, SessionLocal, engine, get_db
 from app.main import app
-from app.providers import PromptParts
 from app.routers import adventures
+
+from fakes import ScriptedProvider
 
 SCHEMA = {"player": {"hp": {"min": 0, "max": 100, "initial": 100}}}
 
@@ -56,20 +48,6 @@ modifier(text);
 """
 
 OPENING = "You enter a cave."
-
-
-class ScriptedProvider:
-    last_usage = None
-    replies: list = []
-    calls = 0
-
-    def __init__(self, *a, **k):
-        pass
-
-    async def generate(self, parts: PromptParts, *, temperature, max_tokens):
-        index = min(ScriptedProvider.calls, len(ScriptedProvider.replies) - 1)
-        ScriptedProvider.calls += 1
-        yield ("text", ScriptedProvider.replies[index])
 
 
 @pytest.fixture()
@@ -89,7 +67,7 @@ def client(monkeypatch):
     )
     setup.add(adv)
     setup.flush()
-    setup.add(models.Action(adventure_id=adv.id, index=0, type="start", text=OPENING))
+    setup.add(models.Action(adventure_id=adv.id, type="start", text=OPENING))
     setup.add(models.AdventureScript(
         adventure_id=adv.id, position=0, enabled=True, name="Gold", output_js=GOLD_SCRIPT,
     ))
@@ -99,7 +77,7 @@ def client(monkeypatch):
 
     ScriptedProvider.replies = ["A reply."]
     ScriptedProvider.calls = 0
-    monkeypatch.setattr(adventures, "OpenAICompatibleProvider", ScriptedProvider)
+    monkeypatch.setattr(adventures.turns, "OpenAICompatibleProvider", ScriptedProvider)
     monkeypatch.setattr(auth, "resolve_provider_config", lambda s: auth.ProviderConfig(
         "http://fake", "k", "test-model", False))
     monkeypatch.setattr(limits, "rate_limit", lambda *a, **k: None)
@@ -115,7 +93,7 @@ def client(monkeypatch):
         yield c
     finally:
         app.dependency_overrides.clear()
-        adventures._active_turns.clear()
+        adventures.turns._active_turns.clear()
         Base.metadata.drop_all(bind=engine)
 
 
@@ -185,7 +163,7 @@ def _rows(adv_id) -> list[models.Action]:
             db.query(models.Action)
             .filter(models.Action.adventure_id == adv_id)
             .order_by(models.Action.branch_id, models.Action.depth,
-                      models.Action.variant_index)
+                      models.Action.id)
             .all()
         )
     finally:
@@ -363,29 +341,20 @@ def test_the_lineage_is_rebuilt_rather_than_carried(client):
     assert lineage.entries_of(forked) == [(forked.id, None), (root.id, forked.fork_depth)]
 
 
-def test_the_legacy_index_is_reissued_so_two_branches_never_share_one(client):
-    """`index` describes the adventure. `depth` describes a path.
+def test_two_branches_each_keep_their_own_node_at_one_depth(client):
+    """A depth describes a path, not the adventure.
 
-    Two branches can each have a node at depth 3, so depth cannot be the
-    number `max_action_index` hands out next. The import allocates one
-    index per turn instead. Siblings share an index, the way SP4 leaves
-    them, and no two coordinates share one.
+    The fork and the branch it left both hold a turn at depth 2, and they are
+    not the same turn. The import used to issue a global `index` per turn as
+    well, so that every coordinate had a number nothing else held. SP8 dropped
+    that column, so the coordinate is all there is, and it has to survive the
+    round trip on its own.
     """
     copy = _imported(client, _export(client, _forked_story(client)))
     rows = _rows(copy)
-    by_index: dict[int, set] = {}
-    for row in rows:
-        by_index.setdefault(row.index, set()).add((row.branch_id, row.depth))
-    assert all(len(coords) == 1 for coords in by_index.values()), \
-        "one index per turn, whatever branch it is on"
-    assert len(by_index) == len({(r.branch_id, r.depth) for r in rows})
 
-    # This is the case that makes the rule necessary: the fork and the
-    # branch it left both hold a turn at depth 2, and they are not the
-    # same turn.
     at_depth_2 = [r for r in rows if r.depth == 2]
     assert len({r.branch_id for r in at_depth_2}) == 2
-    assert len({r.index for r in at_depth_2}) == 2, "same depth, different turns"
 
 
 # ------------------------------------------------------- a file that is wrong
@@ -509,7 +478,6 @@ def test_a_v1_bundle_with_a_cursor_lands_it_on_a_node(client):
     db = SessionLocal()
     try:
         adventure = db.get(models.Adventure, copy)
-        assert adventure.memory_cursor == 2, "the legacy count is kept as given"
         assert adventure.memory_cursor_branch_id is not None
         assert adventure.memory_cursor_depth == 1, "the second story action"
     finally:
@@ -517,8 +485,7 @@ def test_a_v1_bundle_with_a_cursor_lands_it_on_a_node(client):
 
 
 def test_a_v2_bundle_brings_its_anchors_back(client):
-    """The other direction: v2 carries the anchor directly, and the legacy
-    count is derived from it."""
+    """The other direction: v2 carries the anchor directly."""
     original = _forked_story(client)
     tip = [a for a in _rows(original) if a.live][-1]
     db = SessionLocal()
@@ -540,7 +507,6 @@ def test_a_v2_bundle_brings_its_anchors_back(client):
         branches = [b.id for b in _branch_rows(copy)]
         assert branches.index(adventure.memory_cursor_branch_id) == 1
         assert adventure.memory_cursor_depth == tip.depth
-        assert adventure.memory_cursor > 0, "the legacy count was read back off it"
     finally:
         db.close()
 

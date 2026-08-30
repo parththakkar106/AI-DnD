@@ -1,0 +1,219 @@
+/* ============================================================
+   Mobile / narrow screens (≤ 720px)
+   The desktop Play screen is a horizontal row of up to four columns
+   (two left rails + story + right side-panel). Phones can't fit that,
+   so here we collapse to a single story column and turn the rails and
+   side-panel into full-height overlays. Everything above this query is
+   the untouched desktop design.
+   ============================================================ */
+@media (max-width: 720px) {
+
+  /* ---------- Top nav → hamburger dropdown ---------- */
+  .topnav { gap: 12px; padding: 0 16px; }
+  .nav-hamburger { display: block; }
+  .nav-links {
+    display: none;
+    position: absolute;
+    top: 56px;
+    left: 0;
+    right: 0;
+    flex-direction: column;
+    align-items: stretch;
+    background: var(--bg-panel);
+    border-bottom: 1px solid var(--border);
+    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.55);
+    padding: 4px 0;
+  }
+  .nav-links.open { display: flex; }
+  .topnav a.navlink {
+    padding: 13px 20px;
+    border-bottom: none;
+    border-left: 3px solid transparent;
+  }
+  .topnav a.navlink.active {
+    border-bottom-color: transparent;
+    border-left-color: var(--accent);
+  }
+  .nav-account {
+    margin-left: 0;
+    padding: 12px 20px;
+    border-top: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+  .account-email { max-width: 100%; }
+
+  /* ---------- Global page padding / typography ---------- */
+  .page { padding: 18px 14px; }
+  /* 16px inputs stop iOS Safari auto-zooming when a field is focused. */
+  input[type="text"], input[type="email"], input[type="password"], input[type="number"], textarea, select {
+    font-size: 16px;
+  }
+
+  /* ---------- Play screen → single column ---------- */
+  .play-layout { flex-direction: column; }
+  .play-layout .play-page,
+  .play-layout.with-panel .play-page { max-width: 100%; }
+  .play-page .page-header h1 { font-size: 1.25rem; }
+  .panel-toggles { flex-wrap: wrap; }
+  .story { font-size: 1.06rem; }
+  /* Reserve a left gutter so the fixed World/State edge-tabs never sit on
+     top of the story text as it scrolls past them. */
+  .story, .play-page .empty { padding-left: 26px; }
+  .story .action { padding-right: 0; }
+  /* No hover on touch — keep per-action edit/delete tools visible. */
+  .story .action-tools { opacity: 1; pointer-events: auto; }
+
+  /* ---------- Left rails (World State / Script State) → edge tabs + overlay ---------- */
+  /* Closed: a compact tab pinned to the left edge instead of a full-height
+     column that steals the story's width. World State sits above Script State.
+     (World State only renders for RPG adventures, so it may be absent.) */
+  .status-drawer {
+    position: fixed;
+    left: 0;
+    z-index: 40;
+  }
+  .status-drawer:not(.open) {
+    top: 170px;
+    height: auto;
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-left: none;
+    border-radius: 0 10px 10px 0;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+  }
+  .ws-drawer:not(.open) { top: 170px; }
+  .status-drawer:not(.ws-drawer):not(.open) { top: 260px; }
+  .status-drawer:not(.open) .status-toggle { height: auto; padding: 14px 4px; }
+
+  /* Open: slide-in overlay covering most of the screen. */
+  .status-drawer.open {
+    top: 56px;
+    height: calc(100dvh - 56px);
+    width: min(88vw, 320px);
+    box-shadow: 0 0 50px rgba(0, 0, 0, 0.65);
+    border-right: 1px solid var(--border-bright);
+  }
+
+  /* ---------- Right side-panel (Plot/Memory/Scripts/Insights) → full overlay ---------- */
+  .side-panel {
+    position: fixed;
+    inset: 56px 0 0 0;
+    width: auto;
+    height: auto;
+    z-index: 45;
+    border-left: none;
+    padding: 16px;
+  }
+
+  /* ---------- Home / library surfaces ---------- */
+
+  /* Both grids go single-column: the wide variant's 320px minimum would
+     otherwise overflow a 360px phone once card padding is counted. */
+  .card-grid, .card-grid.wide { grid-template-columns: 1fr; }
+
+  .hall { padding: 2px 0 20px; }
+  .hall-sub { font-size: 0.95rem; }
+  .home-section { margin-top: 26px; }
+
+  /* The label eats most of a narrow line, so drop the short leading rule and
+     let the trailing one take whatever space is left. */
+  .rule { letter-spacing: 0.16em; font-size: 0.76rem; gap: 10px; }
+  .rule::before { display: none; }
+  .rule-head { gap: 10px; }
+
+  /* Ornament scales down rather than crowding the corners on a small card. */
+  .card.tome { padding: 14px 15px 12px; }
+  .card.tome::before, .card.tome::after { width: 9px; height: 9px; }
+  /* Always-on filigree: there's no hover on touch. */
+  .card.tome::before, .card.tome::after { opacity: 0.8; }
+  .seal { width: 21px; height: 21px; top: 10px; right: 10px; font-size: 0.54rem; }
+  .card.tome:has(> .seal) .card-head { padding-right: 22px; }
+  .snippet { font-size: 0.94rem; -webkit-line-clamp: 4; }
+  .snippet.dropcap::first-letter { font-size: 2rem; padding-right: 6px; }
+
+  /* Motes are pure decoration — thin them out where the GPU is weakest and
+     the effect is least visible. (Embers.jsx already scales count to the
+     viewport; this drops the opacity too.) */
+  .embers { opacity: 0.55; }
+
+  /* Full-width toasts, clear of the sticky play controls. */
+  .toast-host {
+    left: 12px;
+    right: 12px;
+    bottom: 14px;
+    transform: none;
+    width: auto;
+    max-width: none;
+    align-items: stretch;
+  }
+  .toast { font-size: 0.82rem; }
+
+  /* Art picker stacks; the emoji grid stays tappable at 34px minimum. */
+  .art-picker { gap: 12px; }
+  .art-preview { width: 64px; height: 64px; }
+  .art-controls { min-width: 0; }
+
+  /* The drop cap on the opening beat competes with the edge tabs at this
+     width, so shrink it and keep it inside the 26px story inset. */
+  .story .action.opening::first-letter {
+    font-size: 2.5rem;
+    padding: 4px 8px 0 0;
+  }
+
+  /* ---------- Composers: give the typing area the full width ----------
+     Both composers are one flex row on desktop, which on a phone left the
+     textarea with a sliver: the Play bar spends ~180px on Do/Say/Story plus
+     ~75px on Send, and the chat bar ~90px on Send. Letting the row wrap and
+     moving the buttons onto their own line hands that width back to the
+     textarea, which is the part you actually type into.
+
+     Play: Do/Say/Story and Send share the top row (Send pushed to the right
+     edge), and `order` drops the textarea onto its own full-width row beneath
+     them. Two rows, and the typing area goes from ~138px to the full width —
+     measured at a 390px composer. */
+  .input-bar { flex-wrap: wrap; }
+  .mode-select button { flex: 1; padding: 7px 10px; }
+  .input-bar > button { margin-left: auto; }
+  /* min-width:0 lets a flex item shrink below its content width. */
+  .input-bar textarea { order: 1; flex: 1 0 100%; margin-top: 8px; min-width: 0; }
+
+  /* ---------- AI Chat ---------- */
+  /* No hover on touch, so the per-message copy/delete links stay visible. */
+  .chat-msg-actions { opacity: 1; }
+  .chat-msg { padding: 9px 11px 11px; }
+  .chat-composer { padding: 10px 0 14px; flex-wrap: wrap; }
+  /* Full-width textarea; Send wraps beneath it and sits at the right edge. */
+  .chat-composer textarea { flex: 1 1 100%; max-height: 140px; }
+  .chat-composer button { margin-left: auto; }
+
+  /* ---------- The branch map ---------- */
+  /* A phone has no room for a dialog inset from the edges, and the tree is the
+     one thing on this screen that wants every pixel across. */
+  .branch-map {
+    width: 100vw;
+    max-width: none;
+    max-height: 100dvh;
+    height: 100dvh;
+    border: none;
+    border-radius: 0;
+  }
+  .branch-map-header { padding: 14px 16px 10px; flex-wrap: wrap; }
+  .branch-map-canvas { padding: 4px 6px 8px; }
+  .branch-map-detail { padding: 12px 16px 16px; }
+  .branch-map-hint { padding: 0 16px 10px; }
+
+  /* ---------- Analytics dashboard ---------- */
+  .an-page .page-header { flex-direction: column; align-items: flex-start; gap: 10px; }
+  .an-tiles { gap: 8px; }
+  .an-tile { padding: 10px 12px; }
+  .an-tile-value { font-size: 1.35rem; }
+  .an-grid { grid-template-columns: 1fr; }
+  .an-plot { height: 140px; }
+  .an-tabs button { padding: 8px 10px; font-size: 0.78rem; }
+  .an-log-search { max-width: none; width: 100%; }
+  /* Three columns don't fit; the label goes above its own bar instead. */
+  .an-funnel-row { grid-template-columns: 1fr auto; gap: 4px 10px; }
+  .an-funnel-track { grid-column: 1; }
+  .an-funnel-label { grid-column: 1 / -1; }
+  .an-funnel-value { grid-column: 2; }
+}

@@ -16,15 +16,6 @@ Two things must hold, and both are easy to break by accident:
 
     python -m pytest tests/test_history_window.py -v
 """
-import os
-import tempfile
-
-_tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-_tmp.close()
-os.environ["AIDND_DB_PATH"] = _tmp.name
-os.environ.pop("AIDND_DATABASE_URL", None)
-os.environ.pop("DATABASE_URL", None)
-
 import pytest
 from sqlalchemy import event
 
@@ -75,7 +66,7 @@ def story():
                             entry="A scout with sharp eyes.", type="lore"))
     for i in range(ACTION_COUNT):
         db.add(models.Action(
-            adventure_id=adventure.id, index=i,
+            adventure_id=adventure.id,
             type="ai" if i % 2 else "do",
             text=f"[{i}] {NARRATION}",
             world_delta={"delta": {"player.hp": -1},
@@ -140,7 +131,7 @@ def test_window_matches_on_the_retry_shape(story, monkeypatch):
     last = history.tail(adventure, 1)[0]
 
     windowed = builder.build_context(adventure, settings, exclude_action_id=last.id)
-    assert f"[{last.index}]" not in windowed[1]
+    assert f"[{last.depth}]" not in windowed[1]
 
     monkeypatch.setattr(builder.history, "window_covering", full_window)
     db.expire(adventure)
@@ -201,7 +192,6 @@ def test_helpers_agree_with_the_full_list(story):
     assert len(actions) == ACTION_COUNT
 
     assert history.count(adventure) == len(actions)
-    assert history.max_action_index(adventure) == max(a.index for a in actions)
     assert [a.id for a in history.tail(adventure, 4)] == [a.id for a in actions[-4:]]
     assert [a.id for a in history.slice_(adventure, 10, 6)] == [a.id for a in actions[10:16]]
     assert [a.id for a in history.tail_range(adventure, 5, 3)] == \
@@ -254,7 +244,6 @@ def test_blank_actions_are_excluded_the_same_way_in_sql_and_python(story):
     db, adventure, settings = story
     for blank in ("", "   ", "\n", "\t\n "):
         db.add(models.Action(adventure_id=adventure.id,
-                             index=history.max_action_index(adventure) + 1,
                              type="story", text=blank))
     db.commit()
     db.expire(adventure)

@@ -19,15 +19,6 @@ exactly as `test_branch_clause.py` builds it.
 
     python -m pytest tests/test_memory_nodes.py -v
 """
-import os
-import tempfile
-
-_tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-_tmp.close()
-os.environ["AIDND_DB_PATH"] = _tmp.name
-os.environ.pop("AIDND_DATABASE_URL", None)
-os.environ.pop("DATABASE_URL", None)
-
 import asyncio
 
 import pytest
@@ -76,7 +67,6 @@ def make_branch(db, adventure, parent=None, fork_depth=None):
 def add_node(db, adventure, branch, depth, label, index=None):
     action = models.Action(
         adventure_id=adventure.id,
-        index=depth if index is None else index,
         branch_id=branch.id,
         depth=depth,
         type="ai" if depth % 2 else "do",

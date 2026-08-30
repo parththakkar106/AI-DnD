@@ -9,14 +9,7 @@ player's last line.
     python -m pytest tests/test_scenario_art.py -v
 """
 import base64
-import os
-import tempfile
 
-_tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-_tmp.close()
-os.environ["AIDND_DB_PATH"] = _tmp.name
-os.environ.pop("AIDND_DATABASE_URL", None)
-os.environ.pop("DATABASE_URL", None)
 
 import pytest
 from fastapi import Depends
@@ -120,11 +113,11 @@ def client(monkeypatch):
     setup.flush()
     # A full turn: opening narration, the player's line, then the AI's reply.
     setup.add_all([
-        models.Action(adventure_id=adventure.id, index=0, type="ai",
+        models.Action(adventure_id=adventure.id, type="ai",
                       text="The door groans open."),
-        models.Action(adventure_id=adventure.id, index=1, type="do",
+        models.Action(adventure_id=adventure.id, type="do",
                       text="I draw my sword."),
-        models.Action(adventure_id=adventure.id, index=2, type="ai",
+        models.Action(adventure_id=adventure.id, type="ai",
                       text="Steel rings.  The\ncorridor  answers."),
     ])
     setup.commit()

@@ -186,27 +186,20 @@ class RefreshPlan(BaseModel):
 class ActionOut(ORMModel):
     id: int
     adventure_id: int
-    index: int
     type: str
     text: str
     reasoning: str | None = None
     # Phase 12: the compact RPG state changes for this turn, read from the
     # model property.
     world_changes: list[dict] = []
-    # Retry history: how many attempts exist for this turn, where 0 means the
-    # turn was never retried, and which attempt is live. The attempts themselves
-    # come from `GET /actions/{id}/variants`, so this payload stays small.
-    variant_count: int = 0
-    variant_index: int = 0
     # SP9: the pager, such as `2/4`. It reports how many attempts this turn has
     # and which one is on screen. It is keyed on the parent, so it counts the
     # attempts of this turn rather than every node that shares a depth, and it
     # keeps counting them after one has been forked onto its own branch.
     #
     # A turn nobody has retaken reads 1/1, which is most turns, and the client
-    # draws no pager for a count of one. `variant_count` uses a different
-    # convention and reports 0 for the same case. Those two fields are the
-    # pre-SP9 pair, and SP8 drops them.
+    # draws no pager for a count of one. The attempts themselves come from
+    # `GET /actions/{id}/variants`, so this payload stays small.
     take_count: int = 1
     take_index: int = 0
     # Which line this node is on, so the pager can distinguish the two kinds of
@@ -449,7 +442,6 @@ class SettingsOut(ORMModel):
     reasoning_max_tokens: int
     context_token_budget: int
     narrator_prompt: str
-    stream: bool
     summary_model: str
     embedding_model: str
     memory_bank_capacity: int
@@ -496,7 +488,6 @@ class SettingsUpdate(BaseModel):
     reasoning_max_tokens: Annotated[int, Field(ge=-1, le=100_000)] | None = None
     context_token_budget: Annotated[int, Field(ge=256, le=200_000)] | None = None
     narrator_prompt: Prose | None = None
-    stream: bool | None = None
     summary_model: Name | None = None
     embedding_model: Name | None = None
     memory_bank_capacity: Annotated[int, Field(ge=1, le=1000)] | None = None

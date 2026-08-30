@@ -1,0 +1,50 @@
+:root {
+  --bg: #0a0a0f;
+  --bg-panel: #131320;
+  --bg-panel-glass: rgba(19, 19, 32, 0.82);
+  --bg-input: #1a1a2a;
+  --border: #2b2b3d;
+  --border-bright: #3d3d55;
+  --text: #e2ddd0;
+  --text-dim: #918c7d;
+  --accent: #d4a94e;
+  --accent-bright: #e8c476;
+  --accent-dim: #96773a;
+  --accent-glow: rgba(212, 169, 78, 0.25);
+  --danger: #d06565;
+  --player: #9fc7d1;
+  /* Chart hues (analytics dashboard). Deeper and more saturated than --accent
+     and --player, which are tuned for text and borders and turn muddy once
+     they are a 10px bar: these are checked against --bg-panel for lightness,
+     chroma, contrast and colour-blind separation as a set. */
+  --chart-1: #b58a30;
+  --chart-2: #3d8ac4;
+  --chart-3: #a8608f;
+  --font-display: 'Cinzel', Georgia, serif;
+  --font-story: 'Crimson Pro', Georgia, 'Times New Roman', serif;
+  --font-ui: 'Inter', 'Segoe UI', system-ui, sans-serif;
+  font-family: var(--font-ui);
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background:
+    radial-gradient(1200px 700px at 15% -10%, rgba(212, 169, 78, 0.06), transparent 60%),
+    radial-gradient(1000px 600px at 90% 110%, rgba(88, 76, 140, 0.08), transparent 55%),
+    var(--bg);
+  background-attachment: fixed;
+  color: var(--text);
+  min-height: 100vh;
+}
+
+#root { min-height: 100vh; display: flex; flex-direction: column; }
+
+h1, h2, h3 { font-weight: 600; letter-spacing: 0.03em; }
+a { color: var(--accent); text-decoration: none; transition: color 0.15s; }
+a:hover { color: var(--accent-bright); }
+
+::selection { background: var(--accent-dim); color: #0f0d08; }
+

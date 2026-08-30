@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { api } from '../api'
 import { Field, StoryCardRow, downloadJSON, pickJSONFile, useToast } from '../components'
+import { useDebouncedSave } from '../hooks/useDebouncedSave'
 import ArtPicker from '../ArtPicker'
 import SchemaEditor, { NpcEditor, addNpc } from '../SchemaEditor'
 
@@ -18,13 +19,7 @@ export default function ScenarioEditor() {
   const [parsedSchema, setParsedSchema] = useState(null)
   const [schemaView, setSchemaView] = useState('form') // 'form' | 'json'
   const toast = useToast()
-  // One timer per field/card: a single shared timer would cancel the pending
-  // save of whatever was edited previously within the debounce window.
-  const saveTimers = useRef(new Map())
-  const debounceSave = (key, fn) => {
-    clearTimeout(saveTimers.current.get(key))
-    saveTimers.current.set(key, setTimeout(fn, 600))
-  }
+  const debounceSave = useDebouncedSave()
 
   useEffect(() => {
     api.getScenario(id).then((s) => {
