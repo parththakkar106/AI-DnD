@@ -33,8 +33,9 @@ EMIT_RULE = (
     "while a large change — or reaching a stat's minimum or maximum — is reserved for a "
     "genuinely pivotal, defining moment (a passing remark shifts a relationship a little; a "
     "lasting act of loyalty or betrayal shifts it a lot). Do not move a value across most of "
-    'its range in a single ordinary turn. Use the paths exactly as shown in the world state: '
-    '"player.<stat>", '
+    'its range in a single ordinary turn. Every stat is listed by its exact path in the '
+    'stat guide and again beside its live value — copy a path from there rather than '
+    'building one out of a name. The shapes are "player.<stat>", '
     '"world.<stat>", "npc.<id>.<stat>" (use the id in parentheses, e.g. npc.gwen.trust, '
     'not the display name); "flags.<name>": true or false to toggle an on/off state; and '
     '"milestones.<id>": true when an objective is completed. Some stats marked (free text) in '
@@ -854,20 +855,31 @@ def render_state_section(world_state: dict, stat_schema: dict,
 
 
 def _describe_stat(name: str, d: dict) -> str | None:
-    """Returns one reference line for a stat.
+    """Returns one reference line for a stat, named by the path the AI writes.
+
+    `name` is that path. The guide is the model's only complete list of what
+    exists, so a stat named any other way leaves it to work the path out from
+    the live values, and those cover only what is on screen this turn.
 
     The description and the band ladder are independent, and each is included
     only when present, so a stat may have either, both, or neither.
     """
+    is_text = d.get("type") == "text"
+    # `EMIT_RULE` sends the model here to find out which stats take a whole
+    # value instead of a change, and it names this marker, so the two have to
+    # be written the same way.
+    label = f"{name} (free text)" if is_text else name
     bits: list[str] = []
     desc = d.get("desc")
     if isinstance(desc, str) and desc.strip():
         # Fragments are joined with "; " and end with a single ".", so remove
         # any trailing period the author put on the description.
         bits.append(desc.strip().rstrip("."))
-    if d.get("type") == "text":
-        bits.append("free text")
-        return f"{name} — {'; '.join(bits)}." if bits else None
+    if is_text:
+        # Free text has no range and no bands, so the marker is the whole
+        # entry. It still earns a line without a description, because the
+        # marker is what stops the model sending a delta.
+        return f"{label} — {'; '.join(bits)}." if bits else f"{label}."
     lo, hi = d.get("min"), d.get("max")
     if isinstance(lo, (int, float)) and isinstance(hi, (int, float)):
         bits.append(f"range {lo}–{hi}")
@@ -879,7 +891,7 @@ def _describe_stat(name: str, d: dict) -> str | None:
         )
         if ladder:
             bits.append(f"bands: {ladder}")
-    return f"{name} — {'; '.join(bits)}." if bits else None
+    return f"{label} — {'; '.join(bits)}." if bits else None
 
 
 def render_reference(stat_schema: dict) -> str:
@@ -893,7 +905,7 @@ def render_reference(stat_schema: dict) -> str:
     for section in STAT_SECTIONS:
         for name, d in (stat_schema.get(section) or {}).items():
             if isinstance(d, dict):
-                row = _describe_stat(name, d)
+                row = _describe_stat(f"{section}.{name}", d)
                 if row:
                     lines.append(row)
     for npc_key, ndef in (stat_schema.get("npcs") or {}).items():
@@ -901,18 +913,27 @@ def render_reference(stat_schema: dict) -> str:
             continue
         name = npc_name(ndef, npc_key)
         desc = ndef.get("desc")
-        if isinstance(desc, str) and desc.strip():
-            lines.append(f"NPC {name} ({npc_key}) — {desc.strip().rstrip('.')}.")
+        # The header is written even for an NPC with no description, because it
+        # is the only line that ties a display name to the id the AI has to
+        # address. The live values state it too, but only for the NPCs a scene
+        # has mentioned, so without this an NPC off screen can only be guessed
+        # at — and a guess is refused as a character or a stat that does not
+        # exist.
+        head = f"NPC {name} (npc.{npc_key})"
+        lines.append(
+            f"{head} — {desc.strip().rstrip('.')}."
+            if isinstance(desc, str) and desc.strip() else f"{head}."
+        )
         for sname, sdef in (ndef.get("stats") or {}).items():
             if isinstance(sdef, dict):
-                row = _describe_stat(f"{name} {sname}", sdef)
+                row = _describe_stat(f"npc.{npc_key}.{sname}", sdef)
                 if row:
                     lines.append(row)
     for name, d in (stat_schema.get("flags") or {}).items():
         if isinstance(d, dict):
             desc = d.get("desc")
             if isinstance(desc, str) and desc.strip():
-                lines.append(f"{name} (flag) — {desc.strip().rstrip('.')}.")
+                lines.append(f"flags.{name} — {desc.strip().rstrip('.')}.")
     if not lines:
         return ""
     return "Stat guide (fixed reference):\n" + "\n".join(f"- {ln}" for ln in lines)
