@@ -190,17 +190,14 @@ def delete_branch(
             stored_branch, _ = cursor.stored(adventure)
             if stored_branch in doomed:
                 cursor.clear(adventure)
+        # The deleted branch's memories are deleted with it, and their cached
+        # vectors drop out of the catalogue on the next read, so no
+        # invalidation call is needed. See the note on the `memorybank` cache.
         db.delete(branch)
         adventure.updated_at = models.utcnow()
         db.commit()
     finally:
         turns._active_turns.discard(adventure_id)
-
-
-    # The deleted branch's memories are deleted with it, and their cached
-    # vectors drop out of the catalogue on the next read, so no invalidation
-    # call is needed. See the note on the `memorybank` cache.
-
 
 def _branch_subtree(
     db: Session, adventure: models.Adventure, root: models.Branch

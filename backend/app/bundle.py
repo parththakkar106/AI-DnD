@@ -587,31 +587,22 @@ def _write_anchors(
         cursor.anchor(adventure, ids[branch] if branch is not None else None, depth)
 
 
-def settle(db: Session, adventure: models.Adventure, story: dict) -> None:
-    """Aligns the two coordinate systems, once the nodes exist.
+def settle(adventure: models.Adventure, story: dict) -> None:
+    """Resolves a version 1 bundle's counts into anchors, once the nodes exist.
 
-    The anchors and the legacy counts describe the same boundary in different
-    terms, and each version of the bundle carries one of them. A version 1 file
-    carries the count, so the anchor is found by counting that far along the
-    story. A version 2 file carries the anchor, so the count is read back from
-    it. The legacy columns are written either way, because a rolled-back build
-    reads them.
+    A version 1 file records how far the memories and the summary have read as
+    a count, so the anchor is found by counting that far along the story. A
+    version 2 file carries the anchor itself, which `_write_anchors` has
+    already stored, so there is nothing left to do.
 
-    The caller runs this after the flush, because both directions need the
-    actions to be queryable.
+    The caller runs this after the flush, because counting needs the actions to
+    be queryable.
     """
     positions = story["positions"]
+    if positions is None:
+        return
     for cursor in cursors.ALL:
-        if positions is not None:
-            setattr(adventure, f"{cursor.name}_cursor", positions[cursor.name])
-            cursors.anchor_at_position(adventure, cursor, positions[cursor.name])
-        else:
-            setattr(
-                adventure, f"{cursor.name}_cursor",
-                cursors.position_of(adventure, cursor.depth(db, adventure)),
-            )
-
-
+        cursors.anchor_at_position(adventure, cursor, positions[cursor.name])
 
 
 def materialize(
@@ -673,7 +664,7 @@ def materialize(
     write(db, adventure, story)
     db.flush()
     db.expire(adventure, ["actions"])
-    settle(db, adventure, story)
+    settle(adventure, story)
     return adventure
 
 # ------------------------------------------------------------------ reading
