@@ -1252,9 +1252,10 @@ function StateChangeChips({ changes }) {
         // neither an update nor a refusal, and "+0" read as the former.
         const blocked = c.clamped && d === 0
         const dir = blocked ? 'refused' : typeof d === 'number' ? (d > 0 ? 'up' : d < 0 ? 'down' : 'flat') : 'flat'
+        const signed = !blocked && typeof d === 'number'
         const txt = blocked
           ? 'no change — at its limit'
-          : typeof d === 'number' ? (d > 0 ? `+${d}` : `${d}`) : `→ ${c.value}`
+          : signed ? (d > 0 ? `+${d}` : `${d}`) : `→ ${c.value}`
         const title = blocked
           ? c.fix || 'The story asked to change this and it is already at the limit the scenario allows.'
           : c.clamped
@@ -1262,7 +1263,7 @@ function StateChangeChips({ changes }) {
             : undefined
         return (
           <span key={i} className={`chg chg-stat chg-${dir}`} title={title}>
-            {nice(c.label)} <span className="chg-val">{txt}</span>
+            {nice(c.label)} <span className={signed ? 'chg-val chg-num' : 'chg-val'}>{txt}</span>
             {c.clamped && !blocked ? <span className="chg-limited"> (limited)</span> : null}
           </span>
         )
