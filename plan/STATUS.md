@@ -3,7 +3,7 @@
 Read this first when picking the project back up. Updated at the end of a working
 session; the per-phase plan files hold the detail, this holds the thread.
 
-**Last updated: 2026-08-28.**
+**Last updated: 2026-08-30.**
 
 ---
 
@@ -76,19 +76,36 @@ needed; nothing requires reading a row of anyone's story.
 
 ---
 
+## Shipped and live, 2026-08-30 — Phase 17 and SP8
+
+PR #16 is merged and deployed: 116 files, the four largest split up, and the eight
+legacy columns dropped. Production answers `/api/health` and an existing adventure,
+a retry, and a fork were all exercised against the running service. Migrations 65 to
+73 ran, which the service booting at all proves, because `bootstrap()` executes at
+import.
+
+**Two checks were not run against production: bundle import and export, and a
+summarizing adventure.** Both are covered by the suite (`test_bundle_v2.py` reaches
+`settle` through `materialize`, and `test_memory_settling.py` covers the cursors), so
+what is unverified is real rows rather than the logic. Worth doing when convenient.
+
+**`VACUUM FULL actions;` is owed.** Dropping those columns rewrote the toasted values,
+so the space is not returned until the vacuum runs. Use the direct, non-`-pooler`
+endpoint.
+
+**The Neon branch taken before the merge is the rollback, and it decays.** A revert of
+the code alone does not work: `main` before this PR maps the eight dropped columns, so
+the old code queries columns that no longer exist and every adventure read fails. A
+rollback is a database restore first, then the revert. Every turn played since the
+merge is data that only exists after the migration, so restoring costs more the longer
+the branch is kept.
+
+---
+
 ## Pick up here
 
-**`plan/17-refactor.md` is the active phase.** It carries its own progress table, which
-is the first thing to read when you pick the work back up. It runs in six stages, and
-SP8 below is stage 3 of it. Nothing in it changes what the app does.
-
-**`plan/14-phase-story-tree.md`, SP8 — drop the legacy columns.** SP8 was gated on the
-tree being proven live, and it now is: SP9 merged, and production answers `/api/health`
-with the tree schema in place. SP8 drops `index`, `variants`, `variant_index`,
-`variant_count`, the two legacy cursors and the two `*_before` snapshots. Check that
-nothing still reads `variant_count`/`variant_index` before dropping them, and note this
-is the migration shape that rewrites toasted values, so it owes one `VACUUM FULL actions;`
-on the direct (non-`-pooler`) endpoint afterwards.
+**`plan/17-refactor.md` is closed.** All six stages shipped in PR #16. Nothing in it
+changed what the app does.
 
 Ahead of that, `plan/16-world-state-refusals.md` is closed. Its fixes were driven in a
 browser on 2026-08-28, first on the demo model and then on Claude Sonnet through the
@@ -165,15 +182,12 @@ the space comes back only at the next `VACUUM FULL`.
 Growth since the previous vacuum (65.0 MB / 52.1 MB) is real: migrations 61–62 and a day
 of play, not bloat.
 
-**SP8 is gated on the tree being proven live, and it is not.** It drops `index`,
-`variants`, `variant_index`, `variant_count`, the two legacy cursors and the two
-`*_before` snapshots. `variant_count` / `variant_index` are the ones to watch: SP7's
-attempt chips still read both, so SP8 has to move the chips onto the sibling group before
-it drops them. Everything else has been unread since SP3/SP4.
-
-**Deploy before SP8, not after.** SP7 is a natural release: the phase is usable from the
-screen for the first time, and dropping columns is the one step that cannot be rolled
-back by redeploying the previous build.
+**SP8 shipped in PR #16 on 2026-08-30, and the paragraphs above still describe its
+shape.** It dropped `index`, `variants`, `variant_index`, `variant_count`, the two
+legacy cursors and the two `*_before` snapshots, as migrations 66 to 73. The attempt
+chips moved onto the sibling group first, which is what `variant_count` and
+`variant_index` were gating. So the vacuum this section argues for is now owed: see the
+2026-08-30 section at the top.
 
 **The schema is live in code but not on production.** When this ships, the deploy needs
 one `VACUUM FULL actions;` on the direct (non-`-pooler`) endpoint afterwards — SP1's
