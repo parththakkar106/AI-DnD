@@ -23,8 +23,9 @@ EMIT_RULE = (
     "while a large change — or reaching a stat's minimum or maximum — is reserved for a "
     "genuinely pivotal, defining moment (a passing remark shifts a relationship a little; a "
     "lasting act of loyalty or betrayal shifts it a lot). Do not move a value across most of "
-    'its range in a single ordinary turn. Use the paths exactly as shown in the world state: '
-    '"player.<stat>", '
+    'its range in a single ordinary turn. Every stat is listed by its exact path in the '
+    'stat guide and again beside its live value — copy a path from there rather than '
+    'building one out of a name. The shapes are "player.<stat>", '
     '"world.<stat>", "npc.<id>.<stat>" (use the id in parentheses, e.g. npc.gwen.trust, '
     'not the display name); "flags.<name>": true or false to toggle an on/off state; and '
     '"milestones.<id>": true when an objective is completed. Some stats marked (free text) in '

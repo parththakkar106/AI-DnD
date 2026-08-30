@@ -209,10 +209,48 @@ def test_reference_includes_desc_and_bands_independently():
     assert "very weak" in guide and "range 0–100" in guide
     # A counter like day has no desc or bands, so it contributes nothing
     # here. Flags do show their desc.
-    assert "has_key (flag) — Holds the key." in guide
+    assert "flags.has_key — Holds the key." in guide
     # NPCs contribute their own description and per-NPC stat lines.
-    assert "NPC Gwen (gwen) — A loyal ranger." in guide
-    assert "Gwen trust" in guide and "The Drake ferocity" in guide
+    assert "NPC Gwen (npc.gwen) — A loyal ranger." in guide
+    assert "npc.gwen.trust" in guide and "npc.drake.ferocity" in guide
+
+
+def test_reference_names_every_stat_by_its_path():
+    """The guide is the model's only complete list of what exists, so it has
+    to name each stat the way a state block must name it. Naming a stat after
+    its owner's display name ("Trainer Milo active_status") left the model to
+    build the path itself, and the paths it built were refused as stats and
+    characters that do not exist."""
+    guide = w.render_reference(SCHEMA)
+    assert "player.hp" in guide
+    assert "player.outfit" in guide
+    # The old wording, which read as prose rather than as an address.
+    assert "Gwen trust" not in guide
+    assert "The Drake ferocity" not in guide
+
+
+def test_reference_names_an_npc_that_has_no_description():
+    """The live values name an NPC only while a scene mentions them, so the
+    guide is the only place an off-screen NPC's id is stated. The Drake has no
+    `desc`, and used to reach the model as "The Drake ferocity" alone."""
+    guide = w.render_reference(SCHEMA)
+    assert "NPC The Drake (npc.drake)." in guide
+
+
+def test_reference_marks_free_text_stats_the_way_the_emit_rule_names_them():
+    """`EMIT_RULE` tells the model that a stat "marked (free text) in the stat
+    guide" takes a whole value rather than a delta, so the guide has to carry
+    that marker literally."""
+    assert "(free text)" in w.EMIT_RULE
+    guide = w.render_reference(SCHEMA)
+    assert "player.outfit (free text) — What the player is wearing." in guide
+
+
+def test_reference_lists_a_free_text_stat_with_no_description():
+    """The marker alone is the entry. Dropping the line would leave the model
+    sending a number for a stat that holds a string."""
+    schema = {"player": {"holding": {"type": "text", "initial": ""}}}
+    assert "player.holding (free text)." in w.render_reference(schema)
 
 
 def test_unknown_paths_rejected_not_fatal():

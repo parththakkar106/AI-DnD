@@ -208,13 +208,19 @@
   font-variant-numeric: tabular-nums;
   /* A chip must never be wider than the column it sits in: an NPC stat like
      "bandit leader aggression +10" overruns a phone, and the chip row is
-     inside the story text, which has nothing to scroll. The label may break
-     mid-word as a last resort; the value is glued to it by its own nowrap so
-     the sign and number never end up on separate lines. */
+     inside the story text, which has nothing to scroll. Text may break
+     mid-word as a last resort, which is what keeps a chip's minimum width
+     small enough for the flex row to shrink it. */
   max-width: 100%;
   overflow-wrap: anywhere;
 }
-.chg-val { white-space: nowrap; }
+.chg-val { overflow-wrap: anywhere; }
+/* Only a signed number is held on one line, so the sign never ends up on a
+   line of its own. The other values a chip can carry are phrases — a refusal
+   reason, "no change — at its limit", or the whole new value of a free-text
+   stat — and holding those together set the chip's minimum width to the width
+   of the phrase, which is what pushed a chip out of the message on a phone. */
+.chg-num { white-space: nowrap; }
 .chg-up { color: var(--player, #4caf82); border-color: color-mix(in srgb, var(--player, #4caf82) 40%, var(--border)); }
 .chg-down { color: var(--danger, #e5484d); border-color: color-mix(in srgb, var(--danger, #e5484d) 40%, var(--border)); }
 .chg-flag { color: var(--accent-bright); }

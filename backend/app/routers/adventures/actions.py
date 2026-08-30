@@ -8,11 +8,12 @@ coordinate through `nodes.delete_turn`.
 from fastapi import Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from ... import models, schemas, tree
+from ... import attempts, models, schemas, tree
 from ...database import get_db
 
+from . import turns
 from .deps import CurrentUser, current_adventure, router
-from .nodes import delete_turn
+from .nodes import db_tip, delete_turn
 from .paging import ACTION_PAGE, action_window, annotate_takes
 
 
@@ -72,15 +73,33 @@ def delete_action(
     action = db.get(models.Action, action_id)
     if action is None or action.adventure_id != adventure_id:
         raise HTTPException(404, "Action not found")
-    # This works like undo. The turn is deleted with all of its attempts, and
-    # whatever it produced is withdrawn. Nothing else is needed, because the
-    # marks are depths, and a depth does not move when an action before it is
-    # deleted.
-    delete_turn(db, adventure, action)
-    db.flush()
-    db.expire(adventure, ["actions"])
-    # Deleting the newest action moves the tip. Deleting an action in the
-    # middle leaves a gap in the depths, which is intended. See
-    # `_backfill_tree`.
-    tree.refresh_head(db, adventure)
-    db.commit()
+    # The lock is held for the same reason undo holds it: this endpoint puts
+    # the shared state back, and a turn that is still generating is about to
+    # write it.
+    turns.acquire_turn_lock(adventure_id)
+    try:
+        # This works like undo. The turn is deleted with all of its attempts,
+        # and whatever it produced is withdrawn. The marks are depths, and a
+        # depth does not move when an action before it is deleted.
+        delete_turn(db, adventure, action)
+        db.flush()
+        db.expire(adventure, ["actions"])
+        # Deleting the newest action moves the tip. Deleting an action in the
+        # middle leaves a gap in the depths, which is intended. See
+        # `_backfill_tree`.
+        tree.refresh_head(db, adventure)
+        # The script state and the world state belong to the adventure, not to
+        # the node, so deleting the node does not take back what it did to
+        # them. Put them back to what the story now ends with, which is the
+        # same restore a branch switch does.
+        #
+        # The world state carries the cooldown clock in `_meta.last_changed`,
+        # and that clock is a depth. Leaving it set marked the deleted turn's
+        # changes as having happened at the depth the next turn is played at,
+        # so the referee refused them as changed too recently — on a turn the
+        # story no longer contains. Deleting a middle action restores the tip's
+        # own outcome, which is the state the adventure is already in.
+        attempts.restore_state(adventure, db_tip(db, adventure))
+        db.commit()
+    finally:
+        turns._active_turns.discard(adventure_id)
