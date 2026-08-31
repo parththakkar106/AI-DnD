@@ -63,6 +63,14 @@ MAX_CAST_MEMBERS = 8
 CAST_ENTRY_CHARS = 240
 SETTING_TOKENS = 300  # of `adventure.memory`, the plot essentials
 
+# A ceiling on one memory, in words. Measured, not guessed: with only
+# "1-2 plain sentences" to go on, a real model wrote 34 words for one block and
+# 105 for the next, and a 105-word memory is a paragraph. Five of those are
+# injected per turn at the default `memory_top_k`, so the bank's cost is set
+# here. A stated number also holds the length steady between memories, which is
+# the same consistency the framing rule buys for the wording.
+MEMORY_MAX_WORDS = 50
+
 # The framing rule is the larger half of this prompt, and it is worth the
 # tokens. Without it the model chooses a person per call, so one bank ends up
 # holding "You entered the crypt", "The player entered the crypt" and "He
@@ -77,7 +85,9 @@ SETTING_TOKENS = 300  # of `adventure.memory`, the plot essentials
 MEMORY_SYSTEM_PROMPT = (
     "You compress interactive-fiction story excerpts into memories. Respond with "
     "1-2 plain sentences in past tense stating the concrete facts and events "
-    "(names, places, items, promises, injuries).\n\n"
+    f"(names, places, items, promises, injuries), in at most {MEMORY_MAX_WORDS} "
+    "words. Keep the details a later scene could turn on — a name, a promise, an "
+    "injury, where something is — and drop the ones it could not.\n\n"
     "Write in the third person. The excerpt is written in the second person: "
     '"you" is the protagonist, who is named in the Cast. Refer to the '
     'protagonist by that name, never as "you". If the Cast gives no name for '
