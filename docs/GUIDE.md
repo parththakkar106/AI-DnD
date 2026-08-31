@@ -154,6 +154,7 @@ Fixed (always included, whatever they cost):
 | `world_state` | Current values of every stat, plus NPCs in scene. |
 | `world_state_rule` | How to report changes. |
 | `ai_instructions` | Per-adventure steering. |
+| `persona` | Who the player is playing as: name, pronouns, description. Only the player edits it, so it never moves. |
 | `plot_essentials` | AI Dungeon's "Memory": the premise. |
 | `story_summary` | The auto-maintained running summary. |
 | `used_memories` | Top-K retrievals from the memory bank. |

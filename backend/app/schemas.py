@@ -24,6 +24,8 @@ MEMORY_TEXT_MAX = 5_000
 IMAGE_MAX = 400_000
 ICON_MAX = 16           # One emoji or glyph. VARCHAR(16).
 BRANCH_NAME_MAX = 80    # What a player called one line of the story. VARCHAR(80).
+PERSONA_NAME_MAX = 80   # The protagonist's name. VARCHAR(80).
+PERSONA_PRONOUNS_MAX = 40   # "they/them" and the like. VARCHAR(40).
 
 Name = Annotated[str, Field(max_length=NAME_MAX)]
 Tags = Annotated[str, Field(max_length=TAGS_MAX)]
@@ -33,6 +35,8 @@ ScriptSource = Annotated[str, Field(max_length=SCRIPT_MAX)]
 ActionText = Annotated[str, Field(max_length=ACTION_MAX)]
 Image = Annotated[str, Field(max_length=IMAGE_MAX)]
 Icon = Annotated[str, Field(max_length=ICON_MAX)]
+PersonaName = Annotated[str, Field(max_length=PERSONA_NAME_MAX)]
+PersonaPronouns = Annotated[str, Field(max_length=PERSONA_PRONOUNS_MAX)]
 
 
 class ORMModel(BaseModel):
@@ -141,6 +145,12 @@ class AdventureCreate(BaseModel):
     # The `${Placeholder}` values collected from the player at the start, which
     # is the AI Dungeon behavior.
     placeholders: dict[str, str] = {}
+    # Phase 18: who the player is playing as, collected by the same modal. These
+    # are independent of `placeholders`: a scenario that asks for `${Name}` is
+    # asking its own question, and nothing here fills it in.
+    persona_name: PersonaName = ""
+    persona_pronouns: PersonaPronouns = ""
+    persona_desc: Prose = ""
 
 
 class AdventureUpdate(BaseModel):
@@ -151,6 +161,9 @@ class AdventureUpdate(BaseModel):
     story_summary: Prose | None = None
     auto_summarize: bool | None = None
     memory_bank_enabled: bool | None = None
+    persona_name: PersonaName | None = None
+    persona_pronouns: PersonaPronouns | None = None
+    persona_desc: Prose | None = None
 
 
 class AdventureRefresh(BaseModel):
@@ -297,6 +310,9 @@ class AdventureOut(ORMModel):
     story_summary: str
     auto_summarize: bool
     memory_bank_enabled: bool
+    persona_name: str
+    persona_pronouns: str
+    persona_desc: str
     created_at: datetime
     updated_at: datetime
     story_cards: list[StoryCardOut] = []

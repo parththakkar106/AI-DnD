@@ -139,7 +139,7 @@ function sliceDraft(draft, prefix) {
 // the adventure's scenario defines a stat_schema. An edit mode lets the
 // player/author directly override the live values (a manual correction, not
 // a turn) — it never adds new stats, only edits ones the schema already defines.
-function WorldStateDrawer({ advId, refreshKey }) {
+function WorldStateDrawer({ advId, refreshKey, personaName }) {
   const [open, setOpen] = useState(false)
   const [data, setData] = useState(null) // { state, schema }
   const [failed, setFailed] = useState(false)
@@ -209,7 +209,10 @@ function WorldStateDrawer({ advId, refreshKey }) {
               <StatGroup title={null} defs={schema.world} values={state.world}
                 editing={editing} draft={sliceDraft(draft, 'world')}
                 onEdit={(name, v) => setPath(`world.${name}`, v)} />
-              <StatGroup title="You" defs={schema.player} values={state.player}
+              {/* Named after the persona when there is one, matching the label
+                  the prompt uses. Read-only here — the name is edited in the
+                  Plot panel, so there is one place to change it. */}
+              <StatGroup title={personaName || 'You'} defs={schema.player} values={state.player}
                 editing={editing} draft={sliceDraft(draft, 'player')}
                 onEdit={(name, v) => setPath(`player.${name}`, v)} />
               {npcs.length > 0 && (

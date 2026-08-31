@@ -130,6 +130,12 @@ def story():
         ai_instructions="Write in second person.",
         story_summary="The hero left the village.",
         world_state=worldstate.instantiate(SCHEMA),
+        # Phase 18. Set here so that every test in this file runs with a
+        # persona present: it is user-only, so it belongs in the static block,
+        # and this is the file that guards what may live there.
+        persona_name="Kaelen",
+        persona_pronouns="he/him",
+        persona_desc="A half-elf ranger.",
     )
     db.add(adventure)
     db.flush()
@@ -164,7 +170,8 @@ def test_changing_a_stat_leaves_the_static_block_untouched(story):
 def test_the_static_block_holds_the_things_that_do_not_move(story):
     db, adventure, settings = story
     system_text, story_text, _ = builder.build_context(adventure, settings)
-    for fixed in ("Write in second person.", "The hero hunts bandits."):
+    for fixed in ("Write in second person.", "The hero hunts bandits.",
+                  "You are Kaelen (he/him).", "A half-elf ranger."):
         assert fixed in system_text
     # The stat guide is derived from the schema, so it is fixed. The live
     # values it describes are not fixed, and belong to the story text.

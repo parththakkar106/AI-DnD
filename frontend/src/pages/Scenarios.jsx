@@ -5,7 +5,7 @@ import {
   CardSkeleton,
   extractPlaceholders,
   pickJSONFile,
-  PlaceholderModal,
+  BeginAdventureModal,
   ScenarioArt,
   useToast,
 } from '../components'
@@ -49,8 +49,17 @@ export default function Scenarios() {
     navigate(`/scenarios/${scenario.id}`)
   }
 
-  const begin = async (scenarioId, placeholders = {}) => {
-    const adv = await api.createAdventure({ scenario_id: scenarioId, placeholders })
+  const begin = async (scenarioId, { persona = {}, placeholders = {} } = {}) => {
+    const adv = await api.createAdventure({
+      scenario_id: scenarioId,
+      // A blank adventure has no scenario to take a title from, so name it here
+      // exactly as the button that starts it did before the modal existed.
+      title: scenarioId ? null : 'Blank Adventure',
+      placeholders,
+      persona_name: persona.name || '',
+      persona_pronouns: persona.pronouns || '',
+      persona_desc: persona.desc || '',
+    })
     navigate(`/play/${adv.id}`)
   }
 
@@ -62,14 +71,15 @@ export default function Scenarios() {
       // Cards can carry ${placeholders} in trigger keys too, not just entries.
       ...scenario.story_cards.flatMap((c) => [c.keys, c.entry]),
     )
-    if (names.length === 0) return begin(scenarioId)
+    // Always open the modal, even with no placeholders: it is where the
+    // player names their character.
     setPending({ scenario, names })
   }
 
-  const startBlank = async () => {
-    const adv = await api.createAdventure({ title: 'Blank Adventure' })
-    navigate(`/play/${adv.id}`)
-  }
+  // A blank adventure has no scenario, so there are no placeholders to collect,
+  // but the player still names their character. `pending.scenario` is null for
+  // this path, and `begin` is called with no scenario id.
+  const startBlank = () => setPending({ scenario: null, names: [] })
 
   return (
     <div className="page">
@@ -157,11 +167,14 @@ export default function Scenarios() {
       )}
 
       {pending && (
-        <PlaceholderModal
-          title={pending.scenario.title}
+        <BeginAdventureModal
+          title={pending.scenario ? pending.scenario.title : 'Blank Adventure'}
           names={pending.names}
           onCancel={() => setPending(null)}
-          onSubmit={(values) => { setPending(null); begin(pending.scenario.id, values) }}
+          onSubmit={(answers) => {
+            setPending(null)
+            begin(pending.scenario ? pending.scenario.id : null, answers)
+          }}
         />
       )}
     </div>

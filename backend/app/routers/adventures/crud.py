@@ -178,6 +178,12 @@ def create_adventure(
         # Stored so that a later "Update from scenario" fills the copied text
         # with the same answers instead of inserting literal `${...}` tokens.
         placeholders=dict(values),
+        # Phase 18: the persona the player named before starting. It belongs to
+        # the adventure rather than the scenario, so nothing is copied here and
+        # "Update from scenario" never touches it.
+        persona_name=payload.persona_name.strip(),
+        persona_pronouns=payload.persona_pronouns.strip(),
+        persona_desc=payload.persona_desc.strip(),
     )
     db.add(adventure)
     db.flush()

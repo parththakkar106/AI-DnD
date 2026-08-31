@@ -25,11 +25,16 @@ def _stat_line(defs: dict, values: dict) -> str:
 
 
 def render_state_section(world_state: dict, stat_schema: dict,
-                         visible_npcs: dict[str, str]) -> str:
+                         visible_npcs: dict[str, str],
+                         player_name: str = "") -> str:
     """Returns the compact context block that every turn includes.
 
     `visible_npcs` maps a card id to a display name, for the NPCs currently in
     the scene.
+
+    `player_name` is the persona's name (Phase 18), used to label the player's
+    stat block. It is empty for an adventure with no persona, and the block then
+    reads `You:` as it did before personas existed.
     """
     ws = world_state if isinstance(world_state, dict) else {}
     lines: list[str] = []
@@ -42,7 +47,12 @@ def render_state_section(world_state: dict, stat_schema: dict,
     player_defs = stat_schema.get("player") or {}
     player_line = _stat_line(player_defs, ws.get("player") or {})
     if player_line:
-        lines.append(f"You: {player_line}.")
+        # Name the block after the persona, and show the path beside it exactly
+        # as the NPC lines below do. The model reads the name in the narration,
+        # so without the path in view it writes `kaelen.hp` and the delta is
+        # refused as an unknown path.
+        label = f"{player_name} (player)" if player_name else "You"
+        lines.append(f"{label}: {player_line}.")
 
     npcs = stat_schema.get("npcs") or {}
     npc_state = ws.get("npc") or {}
@@ -122,14 +132,24 @@ def _describe_stat(name: str, d: dict) -> str | None:
     return f"{label} — {'; '.join(bits)}." if bits else None
 
 
-def render_reference(stat_schema: dict) -> str:
+def render_reference(stat_schema: dict, player_name: str = "") -> str:
     """Returns a fixed, per-scenario legend for the stats.
 
     Each line gives what a stat means, from its `desc`, and its band ladder. The
     legend does not change from turn to turn, and it is separate from the live
     values.
+
+    `player_name` names the persona, so that the guide ties the name the model
+    reads in the story to the `player.` paths it has to write. The persona's
+    description is deliberately not repeated here: it has its own section, and
+    this guide is about paths.
     """
     lines: list[str] = []
+    if player_name:
+        lines.append(
+            f"Protagonist {player_name} — the player character; their stats are "
+            f"addressed as player.<stat>."
+        )
     for section in STAT_SECTIONS:
         for name, d in (stat_schema.get(section) or {}).items():
             if isinstance(d, dict):
