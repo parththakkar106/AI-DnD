@@ -460,12 +460,23 @@ is the first thing to try.
 
 ## Run with a real model, and what it changed
 
-Run end to end against a real model, using the `claude` CLI as the provider: one
-story generated through the app's own `build_context` a turn at a time, then
-**both** memory prompts run over the **same** blocks, so the story is held
-constant and the prompt is the only variable. Every call is a fresh process, so
-no arm can see the other's output and the model is never told what is being
-tested. The control is the exact prompt from commit `9cdcb55`, not a paraphrase.
+Run end to end against a real model. One story generated through the app's own
+`build_context` a turn at a time, then **both** memory prompts run over the
+**same** blocks, so the story is held constant and the prompt is the only
+variable. Neither arm sees the other's output, and the model is never told what
+is being measured. The control is `MEMORY_SYSTEM_PROMPT` as of commit `9cdcb55`,
+read out of git rather than pasted, so it cannot drift from what shipped.
+
+The harness is `backend/tools/memory_ab.py`, and it goes through
+`OpenAICompatibleProvider` rather than calling a model directly, so the run
+exercises the provider, the streaming path and `complete()`. Pointed at
+`tools/claude_shim.py` it spends a Claude subscription instead of API credit:
+
+    python tools/claude_shim.py --port 8787 &
+    python tools/memory_ab.py --out ab.md
+
+**The full transcript, with every memory, both summaries and the story they were
+written from, is in `plan/18-appendix-memory-ab-run.md`.**
 
 ### The reported fault reproduced, and the fix held
 
