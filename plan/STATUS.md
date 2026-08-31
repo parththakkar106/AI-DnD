@@ -145,9 +145,13 @@ people's stories and each adventure is summarized with its owner's key, so `--em
 a shell on Render — the image copies `backend/app` alone, so `tools/` is not on the box:
 
 ```
-AIDND_DATABASE_URL=<Neon URL, direct endpoint> AIDND_SECRET_KEY=<the web service's value> \
-    python -m tools.rewrite_memories --email you@example.com
+$env:AIDND_DATABASE_URL = Read-Host 'Neon URL'      # direct endpoint, not -pooler
+$env:AIDND_SECRET_KEY = Read-Host 'Secret key'      # the web service's value
+.venv/Scripts/python.exe -m tools.rewrite_memories --email you@example.com
 ```
+
+`Read-Host` keeps both out of the PowerShell history file. Use the venv's Python: the
+system one on this machine is 3.10 and has none of the dependencies.
 
 `AIDND_SECRET_KEY` is not optional there: stored API keys are encrypted with it, and
 with the wrong one `decrypt_secret` returns "" and every adventure is reported as having

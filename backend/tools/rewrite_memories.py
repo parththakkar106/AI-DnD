@@ -68,10 +68,18 @@ ask to have rewritten. `--email` restricts the run to the accounts you name and
 `--adventure` to single adventures; a dry run costs nothing and lists both, with
 the owner of each. Guests have no email and can only be reached by id.
 
-Two environment variables reach that database from a checkout:
+Two environment variables reach that database from a checkout. In PowerShell,
+which is where this project is developed, they are set first and then persist
+for the rest of the session:
 
-    AIDND_DATABASE_URL=<the Neon URL from the Render dashboard> \
-    AIDND_SECRET_KEY=<the same value the web service has> \
+    $env:AIDND_DATABASE_URL = Read-Host 'Neon URL'
+    $env:AIDND_SECRET_KEY = Read-Host 'Secret key'
+    .venv\Scripts\python.exe -m tools.rewrite_memories --email you@example.com
+
+`Read-Host` keeps both values out of the PowerShell history file. On a POSIX
+shell the same thing is one line:
+
+    AIDND_DATABASE_URL=... AIDND_SECRET_KEY=... \
         python -m tools.rewrite_memories --email you@example.com
 
 `AIDND_SECRET_KEY` is not optional there. Stored API keys are encrypted with it,
@@ -307,6 +315,13 @@ if __name__ == "__main__":
     parser.add_argument("--model", help="override the owner's summary model.")
     parser.add_argument("--api-key", help="override the owner's API key.")
     args = parser.parse_args()
+
+    # A Windows console defaults to cp1252, which cannot encode the arrow this
+    # prints, let alone whatever is in a story's prose. Ask for UTF-8 and
+    # replace what the terminal still cannot render, so a run never dies
+    # halfway through on an encoding error.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     raise SystemExit(asyncio.run(main(args)))
