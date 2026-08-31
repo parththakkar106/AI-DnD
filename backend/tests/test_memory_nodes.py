@@ -334,6 +334,10 @@ def test_a_block_is_summarized_from_the_path_and_hung_off_its_last_node(
     db, adventure, settings, ids = forked
     monkeypatch.setattr(memorybank, "MEMORY_START", 0)
     monkeypatch.setattr(memorybank, "MEMORY_INTERVAL", 4)
+    # This test is about which actions a block is read from, not about when a
+    # block forms, so switch the settling slack off and let the path end on a
+    # block boundary. `test_memory_settling` owns the timing rule.
+    monkeypatch.setattr(memorybank, "SETTLE_SLACK", 0)
 
     class Stub:
         def __init__(self):
@@ -347,8 +351,7 @@ def test_a_block_is_summarized_from_the_path_and_hung_off_its_last_node(
     monkeypatch.setattr(memorybank, "summary_provider", lambda s: stub)
     asyncio.run(memorybank._create_due_memories(adventure, settings, db))
 
-    # Two blocks of four from a path of eight, and since SP4 nothing is held
-    # back, so both form in one pass.
+    # Two blocks of four from a path of eight, both formed in one pass.
     first, second = stub.excerpts
     assert "A5" not in first + second, "a sibling's narration reached the summarizer"
     assert ["A0", "A1", "A2", "A3"] == [line for line in first.split() if line[0] in "ABC"]

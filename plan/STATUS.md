@@ -76,6 +76,44 @@ needed; nothing requires reading a row of anyone's story.
 
 ---
 
+## What happened on 2026-08-31, part two — one action of settling slack
+
+**A block is no longer summarized while it ends on the newest action.**
+`memorybank.SETTLE_SLACK` (1) asks for one action past a block before the block is
+written. The block is still `MEMORY_INTERVAL` actions; only the moment moves.
+
+**This is not the SP4 holdback coming back, and the reasoning is worth keeping
+straight.** The holdback existed because a retry rewrote `Action.text` in place, so a
+memory could describe narration that no longer existed and nothing reported it. Sibling
+attempts plus `forget_node` settled that, and SP4 deleted the holdback on the grounds
+that "nothing is left to hold back". True — about staleness. Nobody priced the other
+half. Withdrawing a memory and writing it again is correct and it is also two calls for
+one block.
+
+**Retry and take-switching both refuse anything but the newest action**
+(`takes.retry_action`, `takes.switch_take`), so the exposure was exactly one memory: the
+one whose block ends on the tip. A block closes every 6 actions and a normal turn writes
+2, so that was one turn in three, and each further retry of that turn paid again. The
+summary pass was never the expensive half — `rewind_all` takes the mark to the same
+depth however many times a player retries.
+
+**The slack buys nothing back, which is why it is worth having.** The block that just
+closed is still inside the 16384-token history window in full, so a memory of it tells
+the model what it can already read. Memories earn their place once the raw text has
+scrolled out, and that is never the turn the block closed.
+
+**`forget_node` stays, and its path is still reachable.** Undo and delete reach any node,
+and either can carry a summarized node back to the tip, where a retry of it lands on the
+withdrawal again. Rare now instead of routine.
+
+632 tests green. Three test files moved with it: `test_memory_settling.py` asserts the
+new rule (and a retry at the tip finding nothing to withdraw), `test_memory_rewrite.py`
+builds 13 actions instead of 12 so both of its blocks settle, and the one path test in
+`test_memory_nodes.py` sets the slack to 0, because it is about which actions a block is
+read from rather than about when a block forms.
+
+---
+
 ## What happened on 2026-08-31 — the persona, and what the summarizer is told
 
 **`plan/18-persona-and-memory-quality.md` is the writeup. Both changes are on `main`**

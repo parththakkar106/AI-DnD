@@ -69,8 +69,13 @@ def db():
         Base.metadata.drop_all(bind=engine)
 
 
-def make_adventure(db, *, actions=12, key="sk-test-key", email="rewrite@example.com"):
-    """An adventure whose bank was written by the old prompt."""
+def make_adventure(db, *, actions=13, key="sk-test-key", email="rewrite@example.com"):
+    """An adventure whose bank was written by the old prompt.
+
+    Thirteen actions, not twelve: two blocks of six, plus the one action that
+    settles the second of them. A block is not summarized while it ends on the
+    newest action. See `memorybank.SETTLE_SLACK`.
+    """
     user = models.User(is_guest=False, email=email)
     db.add(user)
     db.flush()

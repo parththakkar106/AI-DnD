@@ -8,7 +8,8 @@ database session. It does three things:
 
 - Every `MEMORY_INTERVAL` actions, starting once the adventure reaches
   `MEMORY_START` actions, it summarizes each uncovered block of actions into a
-  short memory.
+  short memory. A block waits until `SETTLE_SLACK` actions sit past it, so a
+  memory never ends on the action a retry could replace.
 - Every `SUMMARY_INTERVAL` actions, it rewrites the story summary to include the
   new memories. The rewrite always starts from the text the user edited and
   never discards it.
@@ -54,6 +55,32 @@ RETRIEVAL_WINDOW_TOKENS = 600  # recent story text used as the similarity query
 RETRIEVAL_WINDOW_ACTIONS = 4  # ...taken from this many of the newest actions
 SUMMARY_MAX_WORDS = 250
 MEMORY_EXCERPT_TOKENS = 2000  # of the block, when a block is longer than this
+
+# How much story has to sit past a block before that block is summarized.
+#
+# This is not the pre-SP4 holdback returning. That rule made the newest action
+# invisible to the summarizer everywhere, and it existed because a retry
+# rewrote an action's text in place, so a memory covering the tip could end up
+# describing narration the player had already replaced. Sibling attempts and
+# `forget_node` settled that, and correctness does not rest on the number
+# below: a delete or an undo anywhere in the story is still repaired by
+# withdrawing what the coordinate produced.
+#
+# This is a cost rule, and it is only about the tip. Retry and take-switching
+# both refuse anything but the newest action (`takes.retry_action`,
+# `takes.switch_take`), and both withdraw the derived work at the coordinate
+# they change. So a memory whose block ends on the tip is the one memory a
+# player can still throw away, and every retry of that turn pays for it twice:
+# once to write it, once to write it again. A block closes every
+# MEMORY_INTERVAL actions and a normal turn writes two of them, so that is one
+# turn in three.
+#
+# One action of slack moves the block end out of reach of both endpoints, and
+# it buys nothing back in context quality: the block that just closed is still
+# in the history window in full, so a memory of it tells the model what it can
+# already read. Memories earn their place once the raw text has scrolled out,
+# which is never the turn the block closed.
+SETTLE_SLACK = 1
 
 # ---- The cast brief (Phase 18b) ----
 # How many characters the brief names, and how much of each description it
@@ -613,8 +640,10 @@ async def _create_due_memories(
         # the story, but this loop is the only code that moves the anchor, so
         # both numbers must be current.
         anchor = cursors.MEMORY.depth(db, adventure)
-        if history.count_after(adventure, anchor) < MEMORY_INTERVAL:
-            return  # No full block of story sits past the mark.
+        if history.count_after(adventure, anchor) < MEMORY_INTERVAL + SETTLE_SLACK:
+            return  # No settled block of story sits past the mark. The block
+                    # itself is still MEMORY_INTERVAL actions; the slack asks
+                    # for story past its end. See `SETTLE_SLACK`.
         if history.count(adventure) < MEMORY_START:
             return  # The adventure is too short to have started summarizing.
         # The order of those two checks is deliberate. The usual answer is that

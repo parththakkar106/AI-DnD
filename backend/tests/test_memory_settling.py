@@ -6,10 +6,15 @@ short of the newest, because only the last action was retryable, and a
 retry rewrote `Action.text` under a mark that had already moved past it.
 SP4 ended that: a retry writes a sibling node, and the coordinate's derived
 work is withdrawn as it happens, using the same repair that undo and delete
-already made. The holdback is gone, so the first half of this file now
-asserts the property that replaced it. A block forms as soon as there is a
-block, and changing what a coordinate says takes back what was derived from
-it.
+already made. Correctness has rested on that withdrawal ever since, and the
+second half of this file is where it is asserted.
+
+The first half is about what the withdrawal costs. Redoing a block is
+correct and it is also paid for twice, so `memorybank.SETTLE_SLACK` keeps a
+block from ending on the newest action, which is the only action retry and
+take-switching can reach. A block forms as soon as one action has settled
+past it, and changing what a coordinate says still takes back what was
+derived from it.
 
 Phase 14 SP3 changed what the mark is. It used to be a count of covered
 story actions, and the second half of this file is the cost of that.
@@ -99,17 +104,17 @@ def run_memories(db, adventure, stub, monkeypatch):
     asyncio.run(memorybank._create_due_memories(adventure, settings, db))
 
 
-# --------------------------------------------------- no holdback, since SP4
+# ------------------------------------------- when a block forms (SETTLE_SLACK)
 
-def test_a_block_forms_as_soon_as_the_story_holds_one(db, monkeypatch):
-    """Covered to action 5 with 12 actions: block 6-11 ends on the newest
-    action, and is summarized now rather than a turn later.
+def test_a_block_that_ends_on_the_newest_action_waits(db, monkeypatch):
+    """Covered to action 5 with 12 actions: block 6-11 is full, but it ends on
+    the newest action, so it is not written yet.
 
-    This is exactly the case the holdback existed to refuse. What makes it
-    safe is no longer that the block stops short. It is that a retry of
-    node 11 would withdraw this memory on its way past (see
-    `test_deleting_a_summarized_node_withdraws_its_memory`, the same
-    repair).
+    Writing it would be correct. A retry of node 11 withdraws it on its way
+    past, which is the same repair as
+    `test_deleting_a_summarized_node_withdraws_its_memory`. It would also mean
+    the block was summarized once, thrown away, and summarized again, for a
+    memory that says nothing the history window does not still carry.
     """
     adventure = make_adventure(db, 12)
     cover(db, adventure, 6)
@@ -117,14 +122,45 @@ def test_a_block_forms_as_soon_as_the_story_holds_one(db, monkeypatch):
     stub = StubSummarizer()
     run_memories(db, adventure, stub, monkeypatch)
 
+    assert stub.excerpts == []
+    assert covered_depth(db, adventure) == 5  # the mark stays where it was
+
+    # One more action settles the block. It is written from the same six: the
+    # slack asks for story past the block, it does not grow the block.
+    db.add(models.Action(adventure_id=adventure.id, type="ai", text="Action 12."))
+    db.commit()
+    db.refresh(adventure)
+    run_memories(db, adventure, stub, monkeypatch)
+
     assert len(stub.excerpts) == 1
     assert "Action 11." in stub.excerpts[0]
+    assert "Action 12." not in stub.excerpts[0]
     memory = db.query(models.Memory).one()
     assert (memory.source_start, memory.source_end) == (6, 11)
     # The mark and the memory name the same node. That is what keeps them
     # from drifting apart, however gappy the underlying depths are.
     assert (memory.branch_id, memory.depth) == cursors.MEMORY.stored(adventure)
     assert covered_depth(db, adventure) == 11
+
+
+def test_a_retry_at_the_tip_has_no_memory_to_withdraw(db, monkeypatch):
+    """The slack, stated as the case it removes.
+
+    Retry and take-switching both refuse anything but the newest action
+    (`takes.retry_action`, `takes.switch_take`), so holding the block end one
+    action back puts every memory out of their reach. Nothing here is a claim
+    about the withdrawal path, which undo and delete still reach at any node.
+    """
+    adventure = make_adventure(db, 13)
+    run_memories(db, adventure, StubSummarizer(), monkeypatch)
+
+    assert db.query(models.Memory).count() == 2  # blocks 0-5 and 6-11
+    assert covered_depth(db, adventure) == 11
+
+    tip = history.newest(adventure)
+    assert tip.depth == 12  # the deepest memory is a node behind it
+    assert memorybank.forget_node(db, adventure, tip) == 0
+    assert covered_depth(db, adventure) == 11  # so a retry rewinds nothing
 
 
 def test_the_first_memory_lands_at_memory_start(db, monkeypatch):
@@ -140,8 +176,19 @@ def test_the_first_memory_lands_at_memory_start(db, monkeypatch):
     db.commit()
     db.refresh(adventure)
     run_memories(db, adventure, stub, monkeypatch)
-    # MEMORY_START is 12 actions = two full blocks, caught up in one run
-    # (MAX_MEMORIES_PER_RUN allows 5), and the newest is in the second of them.
+    # MEMORY_START is 12 actions = two full blocks. The first is settled,
+    # because the second sits past it. The second ends on the newest action
+    # and waits.
+    assert len(stub.excerpts) == 1
+    assert "Later." not in stub.excerpts[-1]
+    assert covered_depth(db, adventure) == memorybank.MEMORY_INTERVAL - 1
+
+    # One action past the second block settles it too, and both are caught up
+    # in one run (MAX_MEMORIES_PER_RUN allows 5).
+    db.add(models.Action(adventure_id=adventure.id, type="ai", text="Even later."))
+    db.commit()
+    db.refresh(adventure)
+    run_memories(db, adventure, stub, monkeypatch)
     assert len(stub.excerpts) == 2
     assert "Later." in stub.excerpts[-1]
     assert covered_depth(db, adventure) == memorybank.MEMORY_START - 1

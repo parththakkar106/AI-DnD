@@ -290,7 +290,10 @@ async def _generate_turn(
         # longer describes the story. Withdraw the memory attached to the node
         # and return that stretch to both passes. Before SP4 this code was
         # unreachable, because the summarizer held the newest action back until
-        # a turn landed on top of it. See `memorybank`.
+        # a turn landed on top of it. `memorybank.SETTLE_SLACK` keeps a memory
+        # off the tip again, for cost rather than for correctness, so this is
+        # now the rare case: undo or delete can carry a summarized node back to
+        # the tip, and then a retry of it lands here. See `memorybank`.
         memorybank.forget_node(db, adventure, retry_of)
         cursors.rewind_all(adventure, retry_of.branch_id, ai_depth - 1)
         # Flush so the new attempt has an id. The session does not autoflush,
