@@ -4,7 +4,7 @@ Two changes, in order. Phase 1 gives the adventure a persona. Phase 2 uses it,
 along with the cast, to fix the memories. Phase 1 is worth shipping on its own;
 Phase 2 depends on it and is much smaller once it lands.
 
-**Both phases are built and green (627 backend tests). Phase 1 was driven in a
+**Both phases are built and green (629 backend tests). Phase 1 was driven in a
 browser (21/21 checks). Phase 2 was run end to end against a real model, as a
 controlled A/B on one story — see "Run with a real model". A bank written under
 the old prompt can be rewritten in place — see the last section.**
@@ -614,6 +614,39 @@ by memory id and expects to be the only writer (`memorybank._vector_cache`), so
 a vector written from outside it can sit behind a stale cached copy until it
 restarts. Clearing alone is safe at any time: an unembedded memory leaves the
 catalogue, which is what the cache invalidates on.
+
+## Running it against the hosted deploy
+
+Two things make production different from a local database, and both are easy
+to get wrong quietly.
+
+**It holds other people's stories, and each adventure is summarized with its
+owner's key.** An unfiltered `--write` would spend other people's money on
+memories they did not ask to have rewritten. `--email` restricts a run to named
+accounts and `--adventure` to single adventures; the dry run costs nothing and
+prints the owner of each. Guests have no email and are reachable only by id,
+which is the right amount of friction for rewriting a stranger's bank.
+
+**The stored API keys are encrypted with `AIDND_SECRET_KEY`.** Render generates
+that value and holds it for the web service, so a run from a checkout has to
+carry the same one. With a different secret, `decrypt_secret` returns "" rather
+than failing, and every adventure is reported as having no key — a run that
+looks like it worked and did nothing.
+
+```
+AIDND_DATABASE_URL=<the Neon URL from the Render dashboard> \
+AIDND_SECRET_KEY=<the value the web service has> \
+    python -m tools.rewrite_memories --email you@example.com
+```
+
+Run it from a checkout rather than from a shell on Render. The image copies
+`backend/app` alone, so `tools/` is not on the box, and the free plan has no
+shell anyway. The database is the same one either way.
+
+Two smaller notes for that environment. The Neon URL to use is the direct
+endpoint, not `-pooler`, for the same reason the sizing queries in STATUS use
+it. And an adventure owned by a visitor playing on the shared demo key is
+skipped, because summarization has never spent that key.
 
 **The story summary is not rewritten.** It is one text per adventure rather than
 a bank, and `_update_story_summary` hands the model the whole of it and asks for

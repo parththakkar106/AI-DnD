@@ -60,13 +60,32 @@ Without `--write` it makes no model calls, spends nothing, and only reports the
 scope. Every run reads the database the app reads: `AIDND_DB_PATH`, or
 `DATABASE_URL` for a hosted Postgres. Take a copy of it first — the old text is
 overwritten and is not kept anywhere.
+
+**On the hosted deploy, name whose adventures you mean.** That database holds
+other people's stories, and each adventure is summarized with *its owner's* key,
+so an unfiltered `--write` spends other people's money on memories they did not
+ask to have rewritten. `--email` restricts the run to the accounts you name and
+`--adventure` to single adventures; a dry run costs nothing and lists both, with
+the owner of each. Guests have no email and can only be reached by id.
+
+Two environment variables reach that database from a checkout:
+
+    AIDND_DATABASE_URL=<the Neon URL from the Render dashboard> \
+    AIDND_SECRET_KEY=<the same value the web service has> \
+        python -m tools.rewrite_memories --email you@example.com
+
+`AIDND_SECRET_KEY` is not optional there. Stored API keys are encrypted with it,
+and with the wrong one `decrypt_secret` returns "" and every adventure is skipped
+as having no key (see `security.py`). The deployed image does not carry this
+directory — the Dockerfile copies `backend/app` alone — so run it from a
+checkout against the hosted database rather than from a shell on the box.
 """
 import argparse
 import asyncio
 import sys
 from pathlib import Path
 
-from sqlalchemy import inspect as sa_inspect
+from sqlalchemy import func, inspect as sa_inspect, select
 
 
 def words(text: str) -> int:
@@ -95,6 +114,20 @@ async def main(args) -> int:
     adventures = db.query(models.Adventure).order_by(models.Adventure.id)
     if args.adventure:
         adventures = adventures.filter(models.Adventure.id.in_(args.adventure))
+    if args.email:
+        # Compared case-insensitively: an address is typed on the command line
+        # here and was typed into a registration form there.
+        wanted = [e.strip().lower() for e in args.email]
+        owners = db.execute(
+            select(models.User.id, func.lower(models.User.email))
+            .where(func.lower(models.User.email).in_(wanted))
+        ).all()
+        unknown = sorted(set(wanted) - {email for _, email in owners})
+        if unknown:
+            print(f"no account with that email: {', '.join(unknown)}")
+            return 2
+        adventures = adventures.filter(
+            models.Adventure.user_id.in_([user_id for user_id, _ in owners]))
     adventures = adventures.all()
     if args.adventure and len(adventures) != len(set(args.adventure)):
         found = {a.id for a in adventures}
@@ -150,7 +183,10 @@ async def main(args) -> int:
         usable = settings is not None and bool(
             args.api_key or args.endpoint or settings.api_key_plain
         )
-        print(f"\nadventure {adventure.id}: {adventure.title!r} "
+        owner = db.get(models.User, adventure.user_id)
+        who = (owner.email if owner and owner.email
+               else f"guest #{adventure.user_id}")
+        print(f"\nadventure {adventure.id}: {adventure.title!r} ({who}) "
               f"— {len(memories)} memories"
               + ("" if usable else "  [owner has no API key in Settings]"))
 
@@ -258,6 +294,9 @@ if __name__ == "__main__":
                         help="rewrite. Without it, only report what would change.")
     parser.add_argument("--adventure", type=int, action="append",
                         help="restrict to this adventure id; repeatable.")
+    parser.add_argument("--email", action="append",
+                        help="restrict to this account's adventures; repeatable. "
+                             "Use it on a shared database.")
     parser.add_argument("--limit", type=int,
                         help="stop after rewriting this many memories.")
     parser.add_argument("--include-forgotten", action="store_true",

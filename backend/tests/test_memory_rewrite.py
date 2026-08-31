@@ -121,8 +121,9 @@ def fill_bank(db, adventure, *, count=2):
 
 
 def options(**overrides):
-    args = dict(write=False, adventure=None, limit=None, include_forgotten=False,
-                embed=False, endpoint=None, model=None, api_key=None)
+    args = dict(write=False, adventure=None, email=None, limit=None,
+                include_forgotten=False, embed=False, endpoint=None,
+                model=None, api_key=None)
     args.update(overrides)
     return argparse.Namespace(**args)
 
@@ -356,6 +357,25 @@ def test_only_the_named_adventure_is_touched(db, monkeypatch):
     db.expire_all()
     assert kept.text == "You entered the crypt 1."
     assert changed.text == "Kaelen entered the crypt 1."
+
+
+def test_only_the_named_account_is_touched(db, monkeypatch):
+    """The hosted database holds other people's stories, and each adventure is
+    summarized with its owner's key."""
+    mine = make_adventure(db, email="mine@example.com")
+    theirs = make_adventure(db, email="theirs@example.com")
+    kept, _ = fill_bank(db, theirs)
+    changed, _ = fill_bank(db, mine)
+    monkeypatch.setattr(memorybank, "summary_provider", lambda s: StubSummarizer())
+    assert run_tool(options(write=True, email=["MINE@example.com"])) == 0
+    db.expire_all()
+    assert kept.text == "You entered the crypt 1."
+    assert changed.text == "Kaelen entered the crypt 1."
+
+
+def test_an_unknown_email_is_an_error(db):
+    make_adventure(db)
+    assert run_tool(options(email=["nobody@example.com"])) == 2
 
 
 def test_an_unknown_adventure_id_is_an_error(db):

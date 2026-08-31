@@ -81,7 +81,7 @@ needed; nothing requires reading a row of anyone's story.
 **`plan/18-persona-and-memory-quality.md` is the writeup. Both changes are on `main`**
 — the note here that said they were sitting unmerged on
 `claude/ai-dnd-memories-summarization-3muo98` is out of date; `main` is at `71b24b6`,
-the tip of that work. Both green at 627 tests, plus the backfill below.
+the tip of that work. Both green at 629 tests, plus the backfill below.
 
 **The protagonist now has a name.** An adventure carries `persona_name`,
 `persona_pronouns` and `persona_desc` (migrations 74-76), and the player's stat block
@@ -137,7 +137,21 @@ python -m tools.rewrite_memories --write --embed     # the whole backfill
 It reads whichever database the app reads (`AIDND_DB_PATH`, or `DATABASE_URL` on the
 hosted deploy), so **take a copy first** — the old text is overwritten and kept nowhere.
 `--endpoint`/`--model`/`--api-key` point the summarizer somewhere else, `claude_shim.py`
-included. Hand-written memories, and memories whose actions have been deleted, are left
+included.
+
+**Against production, name whose adventures you mean.** That database holds other
+people's stories and each adventure is summarized with its owner's key, so `--email`
+(or `--adventure`) is what keeps a run to your own. Reach it from a checkout, not from
+a shell on Render — the image copies `backend/app` alone, so `tools/` is not on the box:
+
+```
+AIDND_DATABASE_URL=<Neon URL, direct endpoint> AIDND_SECRET_KEY=<the web service's value> \
+    python -m tools.rewrite_memories --email you@example.com
+```
+
+`AIDND_SECRET_KEY` is not optional there: stored API keys are encrypted with it, and
+with the wrong one `decrypt_secret` returns "" and every adventure is reported as having
+no key — a run that looks fine and does nothing. Hand-written memories, and memories whose actions have been deleted, are left
 alone; so is an adventure whose owner has no API key, because summarization spends the
 user's own key and never the demo key.
 
