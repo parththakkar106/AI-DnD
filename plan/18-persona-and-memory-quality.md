@@ -4,9 +4,8 @@ Two changes, in order. Phase 1 gives the adventure a persona. Phase 2 uses it,
 along with the cast, to fix the memories. Phase 1 is worth shipping on its own;
 Phase 2 depends on it and is much smaller once it lands.
 
-**Phase 1 is built and green (593 backend tests, frontend builds). Phase 2 is
-not started.** Phase 1 has NOT been driven in a browser yet — see "Still to
-check by hand" at the end.
+**Phase 1 is built, green (593 backend tests), and driven in a browser
+(21/21 checks). Phase 2 is not started.**
 
 **Last updated: 2026-08-31.**
 
@@ -347,19 +346,34 @@ file that guards the static block runs with one present.
   `test_bundle_v2.py`.
 - `npm run build` is clean.
 
-## Still to check by hand
+## Driven in a browser
 
-None of this was driven in a browser. Worth ten minutes before trusting it:
+Chromium via Playwright, against a fresh database with the demo scenarios
+seeded. No API key needed: Insights assembles the prompt without calling a
+model, so every check below runs on the real assembled context rather than on
+a unit-test stub. 21/21 checks passed.
 
-1. Start an adventure from a scenario. The modal should open even though no
-   scenario in the repo uses `${...}` placeholders.
-2. Play one turn on the RPG scenario (seed 04) and open Insights. The `persona`
-   section should be in the system block, and the world-state line should read
-   `<name> (player): hp 100/100`.
-3. Rename the character in the Plot panel. The world-state drawer heading
-   should follow it.
-4. Leave every persona field blank and confirm the prompt is byte-identical to
-   what it was before this change.
+What was confirmed on screen and in the live `/context` payload:
+
+| | |
+|---|---|
+| The modal opens for a scenario with **no** `${...}` placeholders | it is now the only way to name a character, so it can no longer be conditional |
+| The section order is real | `narrator, world_state_guide, world_state_rule, ai_instructions, **persona**, plot_essentials, …` |
+| The persona is in the system half | `You are Kaelen (he/him). A half-elf ranger…` present in `prompt.system`, absent from `prompt.story` |
+| The live stat line carries the name and the path | `Kaelen (player): hp 100/100 (full health), mana 30/50 (brimming)…` |
+| The stat guide ties the name to the path | `Protagonist Kaelen … player.<stat>` |
+| The drawer heading follows the name | rail read `KAELEN`, not `You` |
+| A rename propagates | renamed to Aria in the Plot panel → drawer read `ARIA` after a reload, and the prompt read `You are Aria (he/him).` / `Aria (player):` |
+| Clearing every field restores the old behavior exactly | no `persona` section, stat line back to `You:`, no `Protagonist` line in the guide |
+| The blank-adventure button collects a persona and keeps its title | `title='Blank Adventure' persona='Wren'` |
+| **A persona works with no RPG layer at all** | a blank adventure's sections were `['narrator', 'persona', 'length_hint']` — the case this feature was added for |
+
+Two request failures in the run were the sandbox rather than the app: Google
+Fonts is blocked by the egress policy, and the analytics beacon is aborted when
+the page unloads. Neither appears with normal network access.
+
+The driver script is not in the repo. There is no frontend test runner yet
+(plan/17 stage 5), and one Playwright script is not the place to start one.
 
 ## A note for whoever runs the tests
 
