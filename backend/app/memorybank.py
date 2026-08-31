@@ -33,7 +33,14 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, object_session
 
 from . import models, tree, vectors
-from .context import cursors, history, lineage, story_actions, truncate_to_last_tokens
+from .context import (
+    cursors,
+    history,
+    lineage,
+    match_cards,
+    story_actions,
+    truncate_to_last_tokens,
+)
 from .database import SessionLocal
 from .providers import OpenAICompatibleProvider, ProviderError
 from .vectors import cosine  # re-exported: the ranking lives here, the maths there
@@ -47,16 +54,46 @@ RETRIEVAL_WINDOW_TOKENS = 600  # recent story text used as the similarity query
 RETRIEVAL_WINDOW_ACTIONS = 4  # ...taken from this many of the newest actions
 SUMMARY_MAX_WORDS = 250
 
+# ---- The cast brief (Phase 18b) ----
+# How many characters the brief names, and how much of each description it
+# carries. The cast is authored content rather than generated, so it is small in
+# practice; these are ceilings against a scenario with a very large cast, not a
+# budget anyone is expected to reach.
+MAX_CAST_MEMBERS = 8
+CAST_ENTRY_CHARS = 240
+SETTING_TOKENS = 300  # of `adventure.memory`, the plot essentials
+
+# The framing rule is the larger half of this prompt, and it is worth the
+# tokens. Without it the model chooses a person per call, so one bank ends up
+# holding "You entered the crypt", "The player entered the crypt" and "He
+# entered the crypt" for the same kind of event.
+#
+# The reason is stated, not just the rule. A memory is retrieved in isolation
+# months of story later, and a model told why bare pronouns fail complies far
+# more consistently than one handed a bare instruction.
+#
+# The protagonist's name lives in the user message, in the Cast, rather than
+# here. That keeps this prompt constant across every adventure and every call.
 MEMORY_SYSTEM_PROMPT = (
     "You compress interactive-fiction story excerpts into memories. Respond with "
     "1-2 plain sentences in past tense stating the concrete facts and events "
-    "(names, places, items, promises, injuries). No preamble, no commentary."
+    "(names, places, items, promises, injuries).\n\n"
+    "Write in the third person. The excerpt is written in the second person: "
+    '"you" is the protagonist, who is named in the Cast. Refer to the '
+    'protagonist by that name, never as "you". If the Cast gives no name for '
+    'them, call them "the player". Name the other characters too rather than '
+    'writing "he", "she" or "they" on their own — this memory will be read on '
+    "its own, much later, with nothing around it to say who a pronoun meant.\n\n"
+    "No preamble, no commentary."
 )
 SUMMARY_SYSTEM_PROMPT = (
     "You maintain the running summary of an interactive-fiction story. Respond "
     "with only the updated summary: a single plain-prose overview of the plot "
     f"so far, at most {SUMMARY_MAX_WORDS} words. Preserve important established "
-    "facts; compress older events harder than recent ones."
+    "facts; compress older events harder than recent ones.\n\n"
+    "Write in the third person, and name the characters. Refer to the "
+    'protagonist by the name given in the Cast, or as "the player" if the Cast '
+    'gives no name. Never address them as "you".'
 )
 
 # Adventures with a post-turn task currently running (single-process app).
@@ -222,6 +259,97 @@ def forget_node(db: Session, adventure: models.Adventure, action: models.Action)
     if starts:
         cursors.rewind_all(adventure, action.branch_id, min(starts) - 1)
     return len(doomed)
+
+
+# ---------- The cast brief ----------
+
+def _cast_line(name: str, entry: str, *, protagonist: bool = False) -> str:
+    """One roster line: who they are, and nothing about where they stand now."""
+    who = f"{name} — the protagonist" if protagonist else f"{name} —"
+    entry = " ".join(entry.split())  # collapse newlines: this is a one-line roster
+    if len(entry) > CAST_ENTRY_CHARS:
+        entry = entry[:CAST_ENTRY_CHARS].rsplit(" ", 1)[0] + "…"
+    if protagonist:
+        return f"- {who}." if not entry else f"- {who}. {entry}"
+    return f"- {name} — {entry}" if entry else f"- {name}"
+
+
+def cast_brief(adventure: models.Adventure, text: str) -> str:
+    """Returns who appears in `text`, and what the story is about.
+
+    This is the context the summarizer never had. It was handed six actions of
+    second-person prose and nothing else, so the only honest memory it could
+    write for `You push the door open. She grabs your arm.` was "You entered a
+    room and she stopped you." — which, retrieved forty turns later, names
+    nobody.
+
+    Three rules hold this together.
+
+    **Fixed descriptions only, never live values.** It is tempting to add
+    `Gwen: trust 40 (wary)`. That would make the same event summarized at two
+    different times come out framed differently, which is the fault this whole
+    change exists to remove.
+
+    **The cast comes from the story cards, not from `stat_schema`.** Every NPC a
+    scenario defines is already turned into a story card at adventure creation
+    (`scenario_text.scenario_card_specs`), deduplicated against the hand-written
+    ones by name. Reading the cards therefore covers the schema NPCs, the
+    author's own cards, and an adventure with no RPG layer at all, through one
+    path instead of three.
+
+    **Keyword matching alone is not enough here, which is why the roster is
+    topped up.** The turn prompt includes a card only when its trigger words
+    appear, and that is right for lore: a card nobody mentioned is not relevant
+    to the next sentence. It is wrong for this brief. The block that most needs
+    a cast is exactly the one written in bare pronouns — "she grabs your arm"
+    matches no keyword, and the summarizer is then left guessing at precisely
+    the moment it was given this brief to stop guessing. So matched cards come
+    first, and any remaining slots are filled with the other **character**
+    cards. Places and items are not topped up: an unmentioned tavern is not
+    who "she" was.
+
+    Walking `adventure.story_cards` is a relationship load, which this module
+    otherwise avoids. It is affordable here for two reasons the memory bank's
+    own reads were not: a card is five short text columns with no vector, and
+    this runs once per `MEMORY_INTERVAL` actions in the background task rather
+    than on every turn. `build_context` already walks the same collection.
+    """
+    lines: list[str] = []
+    name = adventure.persona_name.strip()
+    pronouns = adventure.persona_pronouns.strip()
+    if name or adventure.persona_desc.strip():
+        who = f"{name} ({pronouns})" if name and pronouns else (name or "The player")
+        lines.append(_cast_line(who, adventure.persona_desc.strip(), protagonist=True))
+
+    seen = {name.lower()} if name else set()
+
+    def add(card_name: str, entry: str) -> bool:
+        """Adds one roster line. Returns False once the roster is full."""
+        card_name = (card_name or "").strip()
+        if card_name and card_name.lower() not in seen:
+            seen.add(card_name.lower())
+            lines.append(_cast_line(card_name, (entry or "").strip()))
+        return len(lines) < MAX_CAST_MEMBERS
+
+    room = True
+    for card in match_cards(adventure.story_cards, text):
+        room = add(card["name"], card["entry"])
+        if not room:
+            break
+    if room:
+        for card in adventure.story_cards:
+            if (card.type or "").strip().lower() != "character":
+                continue
+            if not add(card.name, card.entry):
+                break
+
+    parts = []
+    if lines:
+        parts.append("Cast:\n" + "\n".join(lines))
+    setting = adventure.memory.strip()
+    if setting:
+        parts.append("Setting:\n" + truncate_to_last_tokens(setting, SETTING_TOKENS))
+    return "\n\n".join(parts)
 
 
 # ---------- Retrieval (runs inside the turn, before build_context) ----------
@@ -411,9 +539,14 @@ async def _create_due_memories(
         if len(block) < MEMORY_INTERVAL:
             return
         excerpt = truncate_to_last_tokens("\n\n".join(a.text for a in block), 2000)
+        # Match the cast against the untruncated block. The excerpt is what the
+        # model reads, but a character named in the part that was trimmed is
+        # still one the memory may have to name.
+        brief = cast_brief(adventure, "\n\n".join(a.text for a in block))
+        prompt = f"Story excerpt:\n\n{excerpt}\n\nMemory:"
         try:
             text = await provider.complete(
-                MEMORY_SYSTEM_PROMPT, f"Story excerpt:\n\n{excerpt}\n\nMemory:"
+                MEMORY_SYSTEM_PROMPT, f"{brief}\n\n{prompt}" if brief else prompt
             )
         except ProviderError:
             return  # Logged on the debug page. The cursor is unchanged, so the
@@ -473,11 +606,18 @@ async def _update_story_summary(
         events_text = truncate_to_last_tokens("\n\n".join(a.text for a in block), 2000)
 
     current = adventure.story_summary.strip()
+    # The summary is built from the memories, so it inherits their framing for
+    # free once they are named and third-person. It still gets the brief of its
+    # own, because the fallback above hands it raw second-person story text
+    # whenever memory creation has fallen behind.
+    brief = cast_brief(adventure, f"{current}\n\n{events_text}")
     user_prompt = (
         f"Current story summary:\n{current or '(none yet)'}\n\n"
         f"New events since the last update:\n{events_text}\n\n"
         "Updated summary:"
     )
+    if brief:
+        user_prompt = f"{brief}\n\n{user_prompt}"
     try:
         text = await summary_provider(settings).complete(
             SUMMARY_SYSTEM_PROMPT, user_prompt, max_tokens=600
