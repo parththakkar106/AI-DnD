@@ -209,11 +209,15 @@ def _visible_npcs(actions: list[models.Action], stat_schema: dict) -> dict[str, 
     return visible
 
 
-def _match_cards(cards: list[models.StoryCard], window_text: str) -> list[dict]:
+def match_cards(cards: list[models.StoryCard], window_text: str) -> list[dict]:
     """Returns one record per matched story card, naming the keyword that matched.
 
     Matching follows AI Dungeon's rules. It ignores case, respects spaces, and
     matches partial words, so "boat" matches "boats".
+
+    Public since Phase 18b: `memorybank.cast_brief` runs the same rule over the
+    block it is about to summarize, so that the summarizer is told who the
+    characters in that stretch of story are. One rule, one implementation.
     """
     haystack = window_text.lower()
     matched = []
@@ -352,7 +356,7 @@ def build_context(
 
     # ----- Story cards: triggered by recent story text (the window history could fill) -----
     trigger_window = truncate_to_last_tokens(SEPARATOR.join(a.text for a in actions), available)
-    triggered = _match_cards(adventure.story_cards, trigger_window)
+    triggered = match_cards(adventure.story_cards, trigger_window)
 
     card_budget = int(available * CARD_BUDGET_SHARE)
     card_records = []
