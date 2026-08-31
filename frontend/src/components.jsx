@@ -199,30 +199,83 @@ export function extractPlaceholders(...texts) {
   return names
 }
 
-export function PlaceholderModal({ title, names, onSubmit, onCancel }) {
+// The modal shown before an adventure begins. It always asks who the player is
+// playing as, and it also collects any `${Placeholder}` answers the scenario's
+// text asks for.
+//
+// The two sets of fields are independent on purpose. A scenario that writes
+// `${Name}` is asking its own question, and the persona does not answer it. No
+// scenario in the repo uses placeholders at all, so the overlap is hypothetical;
+// pre-filling one from the other is a small change here if it ever bites.
+//
+// `onSubmit` receives `{ persona, placeholders }`. Every persona field is
+// optional — submitting them all blank gives an adventure with no persona,
+// which behaves exactly as adventures did before personas existed.
+export function BeginAdventureModal({ title, names = [], onSubmit, onCancel }) {
+  const [persona, setPersona] = useState({ name: '', pronouns: '', desc: '' })
   const [values, setValues] = useState(Object.fromEntries(names.map((n) => [n, ''])))
+
+  const setField = (field, value) => setPersona((p) => ({ ...p, [field]: value }))
 
   const submit = (e) => {
     e.preventDefault()
-    onSubmit(values)
+    onSubmit({ persona, placeholders: values })
   }
 
   return (
     <div className="modal-overlay" onClick={onCancel}>
       <form className="modal" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
         <h2>{title}</h2>
-        <p className="modal-hint">This scenario asks a few questions before you begin.</p>
-        {names.map((name, i) => (
-          <label key={name} className="field">
-            <span className="label">{name}</span>
+        <p className="modal-hint">
+          Who are you playing as? Leave these blank to play as an unnamed character.
+        </p>
+        <div className="modal-row">
+          <label className="field">
+            <span className="label">Name</span>
             <input
               type="text"
-              autoFocus={i === 0}
-              value={values[name]}
-              onChange={(e) => setValues({ ...values, [name]: e.target.value })}
+              autoFocus
+              maxLength={80}
+              placeholder="Kaelen"
+              value={persona.name}
+              onChange={(e) => setField('name', e.target.value)}
             />
           </label>
-        ))}
+          <label className="field field-narrow">
+            <span className="label">Pronouns</span>
+            <input
+              type="text"
+              maxLength={40}
+              placeholder="they/them"
+              value={persona.pronouns}
+              onChange={(e) => setField('pronouns', e.target.value)}
+            />
+          </label>
+        </div>
+        <label className="field">
+          <span className="label">Description</span>
+          <textarea
+            rows={3}
+            placeholder="A half-elf ranger, exiled from the northern holds. Wary of nobles, soft on strays."
+            value={persona.desc}
+            onChange={(e) => setField('desc', e.target.value)}
+          />
+        </label>
+        {names.length > 0 && (
+          <>
+            <p className="modal-hint">This scenario asks a few questions before you begin.</p>
+            {names.map((name) => (
+              <label key={name} className="field">
+                <span className="label">{name}</span>
+                <input
+                  type="text"
+                  value={values[name]}
+                  onChange={(e) => setValues({ ...values, [name]: e.target.value })}
+                />
+              </label>
+            ))}
+          </>
+        )}
         <div className="modal-buttons">
           <button type="button" onClick={onCancel}>Cancel</button>
           <button type="submit" className="primary">Begin Adventure</button>
@@ -354,14 +407,19 @@ export function AutoTextarea({ value, ...props }) {
   return <textarea ref={ref} value={value} {...props} />
 }
 
-export function Field({ label, value, onChange, textarea, rows, placeholder }) {
+// `maxLength` mirrors the column width the server enforces. Without it an
+// over-long value is only rejected at save time, as a 422 the player sees as a
+// toast after the text is already typed.
+export function Field({ label, value, onChange, textarea, rows, placeholder, maxLength }) {
   return (
     <label className="field">
       <span className="label">{label}</span>
       {textarea ? (
-        <textarea rows={rows || 3} value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} />
+        <textarea rows={rows || 3} value={value} placeholder={placeholder} maxLength={maxLength}
+          onChange={(e) => onChange(e.target.value)} />
       ) : (
-        <input type="text" value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} />
+        <input type="text" value={value} placeholder={placeholder} maxLength={maxLength}
+          onChange={(e) => onChange(e.target.value)} />
       )}
     </label>
   )

@@ -63,3 +63,15 @@
   white-space: pre;
 }
 
+
+/* Phase 18: the persona block at the top of the Plot panel. The rule under it
+   separates who the player is from what the world is, which are the two halves
+   of that panel. */
+.persona-block { margin-bottom: 18px; padding-bottom: 4px; border-bottom: 1px solid var(--border); }
+.persona-block .persona-row { display: flex; gap: 10px; }
+.persona-block .persona-row > .field { flex: 1 1 auto; min-width: 0; }
+.persona-block .persona-row > .field:last-child { flex: 0 1 9rem; }
+@media (max-width: 480px) {
+  .persona-block .persona-row { display: block; }
+  .persona-block .persona-row > .field:last-child { flex: none; }
+}

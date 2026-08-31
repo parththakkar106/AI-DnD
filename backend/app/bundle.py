@@ -101,6 +101,14 @@ def export(db: Session, adventure: models.Adventure) -> dict:
         "authorsNote": adventure.authors_note,
         "aiInstructions": adventure.ai_instructions,
         "storySummary": adventure.story_summary,
+        # Phase 18. A bundle written before personas existed has no key here,
+        # and the import below reads it with `.get`, so it lands with an empty
+        # persona — which is the same as having none. No FORMAT bump needed.
+        "persona": {
+            "name": adventure.persona_name,
+            "pronouns": adventure.persona_pronouns,
+            "desc": adventure.persona_desc,
+        },
         "scriptState": adventure.script_state,
         "worldState": adventure.world_state,
         "autoSummarize": adventure.auto_summarize,
@@ -191,6 +199,24 @@ def _exported_memory(memory: models.Memory, local: dict[int, int]) -> dict:
         # here.
         "branch": _local(memory.branch_id, local),
         "depth": memory.depth,
+    }
+
+
+def _imported_persona(persona) -> dict:
+    """Reads a bundle's `persona` block into `Adventure` keyword arguments.
+
+    A raw-dict import bypasses the schemas, so the strings are truncated to the
+    widths the columns declare, in the same way the rest of `_import` does. A
+    bundle written before Phase 18 has no block at all, and an empty persona is
+    the same as having none.
+    """
+    if not isinstance(persona, dict):
+        return {}
+    return {
+        "persona_name": str(persona.get("name") or "")[:schemas.PERSONA_NAME_MAX],
+        "persona_pronouns":
+            str(persona.get("pronouns") or "")[:schemas.PERSONA_PRONOUNS_MAX],
+        "persona_desc": str(persona.get("desc") or ""),
     }
 
 
@@ -632,6 +658,7 @@ def materialize(
         world_state=payload.get("worldState") or {},
         auto_summarize=bool(payload.get("autoSummarize", False)),
         memory_bank_enabled=bool(payload.get("memoryBankEnabled", False)),
+        **_imported_persona(payload.get("persona")),
     )
     db.add(adventure)
     db.flush()

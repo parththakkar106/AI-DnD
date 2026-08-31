@@ -107,6 +107,20 @@ class Adventure(Base):
     authors_note: Mapped[str] = mapped_column(Text, default="")
     ai_instructions: Mapped[str] = mapped_column(Text, default="")
     story_summary: Mapped[str] = mapped_column(Text, default="")
+    # Phase 18: who the player is playing as. The AI never writes these — they
+    # are user-only, which is what lets them sit in the cached system block
+    # rather than below the history with the values that change. An empty
+    # `persona_name` means the adventure has no persona, and every read below
+    # falls back to the wording used before this existed.
+    #
+    # These are adventure columns rather than part of the scenario's
+    # `stat_schema`, for two reasons. An adventure with no RPG layer still has a
+    # protagonist, and `worldstate.schema._initials` treats every dict inside a
+    # stat section as a stat definition, so a persona placed there would be
+    # instantiated, rendered and given an `initial` value as though it were one.
+    persona_name: Mapped[str] = mapped_column(String(80), default="")
+    persona_pronouns: Mapped[str] = mapped_column(String(40), default="")
+    persona_desc: Mapped[str] = mapped_column(Text, default="")
     script_state: Mapped[dict] = mapped_column(JSON, default=dict)
     # Phase 12: live RPG world state (world/player/npc stats + milestones),
     # instantiated from the scenario's stat_schema. Empty when there's no RPG layer.

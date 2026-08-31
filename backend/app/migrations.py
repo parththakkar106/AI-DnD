@@ -332,6 +332,12 @@ MIGRATIONS: list[tuple[int, str | dict[str, str]]] = [
     (71, 'ALTER TABLE actions DROP COLUMN "index"'),
     (72, "ALTER TABLE adventures DROP COLUMN memory_cursor"),
     (73, "ALTER TABLE adventures DROP COLUMN summary_cursor"),
+    # Phase 18: the persona. Defaulting to '' rather than NULL means every read
+    # is a plain string test, and an adventure that predates the feature is
+    # indistinguishable from one whose player left the fields blank.
+    (74, "ALTER TABLE adventures ADD COLUMN persona_name VARCHAR(80) NOT NULL DEFAULT ''"),
+    (75, "ALTER TABLE adventures ADD COLUMN persona_pronouns VARCHAR(40) NOT NULL DEFAULT ''"),
+    (76, "ALTER TABLE adventures ADD COLUMN persona_desc TEXT NOT NULL DEFAULT ''"),
 ]
 
 LATEST_VERSION = max((v for v, _ in MIGRATIONS), default=1)

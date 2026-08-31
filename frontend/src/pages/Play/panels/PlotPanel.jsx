@@ -102,6 +102,25 @@ function PlotPanel({ adventure, setAdventure, onWorldStateChanged }) {
         <RefreshModal plan={plan} onConfirm={applyRefresh} onCancel={() => setPlan(null)} />
       )}
 
+      {/* Phase 18. The persona sits above the plot text because it is the one
+          section that describes the player rather than the world, and because
+          it is the first thing a reader looks for when they want to rename
+          their character. It is edited only here: the world-state drawer shows
+          the name as a heading but does not offer a second way to change it. */}
+      <div className="persona-block">
+        <div className="persona-row">
+          <Field label="Character Name" value={adventure.persona_name}
+            onChange={(v) => setField('persona_name', v)}
+            maxLength={80} placeholder="Kaelen" />
+          <Field label="Pronouns" value={adventure.persona_pronouns}
+            onChange={(v) => setField('persona_pronouns', v)}
+            maxLength={40} placeholder="they/them" />
+        </div>
+        <Field label="Character Description" value={adventure.persona_desc}
+          onChange={(v) => setField('persona_desc', v)} textarea rows={3}
+          placeholder="Who you are playing as. The AI never rewrites this — only you can." />
+      </div>
+
       <Field label="Plot Essentials (Memory)" value={adventure.memory}
         onChange={(v) => setField('memory', v)} textarea
         placeholder="Key facts the AI should always remember." />

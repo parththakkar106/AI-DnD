@@ -2,6 +2,7 @@
 (help.aidungeon.com/faq/the-memory-system):
 
     [AI Instructions]        always included
+    [Player Character]       always included when the adventure has a persona
     [Plot Essentials]        always included (classic "Memory")
     [Story Summary]          always included (manual in Phase 3, auto in Phase 6)
     [Used Memories]          top-K memory-bank retrievals (Phase 6, when enabled)
@@ -130,6 +131,30 @@ def length_hint(max_output_tokens: int, *, has_ws: bool) -> str:
     )
 
 
+def render_persona(adventure: models.Adventure) -> str:
+    """Returns the Player Character section, or "" when there is no persona.
+
+    The three fields are independent. A name alone is enough, a description
+    alone is enough, and the wording holds together for either. Pronouns are
+    stated because the summarizer in `memorybank` writes about the protagonist
+    in the third person, and a model that has to infer a pronoun from a name
+    will sometimes infer wrongly and then repeat that error in every memory it
+    writes.
+    """
+    name = adventure.persona_name.strip()
+    pronouns = adventure.persona_pronouns.strip()
+    desc = adventure.persona_desc.strip()
+    if not (name or desc):
+        return ""
+    head = f"You are {name}" if name else ""
+    if head and pronouns:
+        head += f" ({pronouns})"
+    # Joined with a space, not `SEPARATOR`: this is one short paragraph about
+    # one character, and a blank line inside it reads as two unrelated notes.
+    body = " ".join(part for part in (f"{head}." if head else "", desc) if part)
+    return f"Player character:\n{body}"
+
+
 def _script_memory(adventure: models.Adventure) -> dict:
     """Script-provided memory overrides (populated by Phase 4 scripting)."""
     state = adventure.script_state if isinstance(adventure.script_state, dict) else {}
@@ -228,8 +253,9 @@ def build_context(
     # schema and the emit rule do not change while the scenario is unchanged.
     stat_schema = adventure.scenario.stat_schema if adventure.scenario else None
     has_ws = worldstate.has_schema(stat_schema)
+    persona_name = adventure.persona_name.strip()
     if has_ws:
-        guide = worldstate.render_reference(stat_schema)
+        guide = worldstate.render_reference(stat_schema, persona_name)
         if guide:
             system_sections.append(Section("world_state_guide", guide))
         system_sections.append(Section("world_state_rule", worldstate.EMIT_RULE))
@@ -238,6 +264,14 @@ def build_context(
         system_sections.append(Section("script_context", script_mem["context"].strip()))
     if adventure.ai_instructions.strip():
         system_sections.append(Section("ai_instructions", adventure.ai_instructions.strip()))
+    # Phase 18. This sits in the static block because only the user can edit it,
+    # so it never changes mid-story and stays inside the cached prefix. It is
+    # emitted whether or not the adventure has an RPG layer: an adventure with
+    # no stats still has a protagonist, and that is the case the persona was
+    # added for.
+    persona_text = render_persona(adventure)
+    if persona_text:
+        system_sections.append(Section("persona", persona_text))
     if adventure.memory.strip():
         system_sections.append(
             Section("plot_essentials", f"Plot essentials:\n{adventure.memory.strip()}")
@@ -267,6 +301,7 @@ def build_context(
         recent = history.tail(adventure, NPC_WINDOW, exclude_action_id)
         block = worldstate.render_state_section(
             adventure.world_state, stat_schema, _visible_npcs(recent, stat_schema),
+            persona_name,
         )
         if block:
             world_state_section = Section("world_state", block)

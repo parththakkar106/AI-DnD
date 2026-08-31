@@ -514,7 +514,8 @@ export default function Play() {
           so neither can key on the story's length alone: switching between two
           branches whose windows are both full changes every number in here
           without changing `actions.length` by one. */}
-      <WorldStateDrawer advId={id} refreshKey={`${actions.length}:${stateKey}`} />
+      <WorldStateDrawer advId={id} refreshKey={`${actions.length}:${stateKey}`}
+        personaName={adventure?.persona_name} />
       <StatusDrawer advId={id} refreshKey={`${actions.length}:${stateKey}`} />
       <div className="page play-page">
         <div className="page-header">

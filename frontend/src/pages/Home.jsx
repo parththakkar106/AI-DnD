@@ -4,7 +4,7 @@ import { api } from '../api'
 import {
   CardSkeleton,
   extractPlaceholders,
-  PlaceholderModal,
+  BeginAdventureModal,
   ScenarioArt,
   useToast,
 } from '../components'
@@ -61,9 +61,15 @@ export default function Home() {
   const ongoing = useMemo(() => (adventures || []).slice(0, CONTINUE_LIMIT), [adventures])
   const featured = useMemo(() => (scenarios || []).slice(0, SCENARIO_LIMIT), [scenarios])
 
-  const begin = async (scenarioId, placeholders = {}) => {
+  const begin = async (scenarioId, { persona = {}, placeholders = {} } = {}) => {
     try {
-      const adv = await api.createAdventure({ scenario_id: scenarioId, placeholders })
+      const adv = await api.createAdventure({
+        scenario_id: scenarioId,
+        placeholders,
+        persona_name: persona.name || '',
+        persona_pronouns: persona.pronouns || '',
+        persona_desc: persona.desc || '',
+      })
       navigate(`/play/${adv.id}`)
     } catch (err) {
       toast(err.message, 'error')
@@ -78,7 +84,8 @@ export default function Home() {
         scenario.prompt, scenario.memory, scenario.authors_note, scenario.ai_instructions,
         ...scenario.story_cards.flatMap((c) => [c.keys, c.entry]),
       )
-      if (names.length === 0) return begin(scenarioId)
+      // Always open the modal, even with no placeholders: it is where the
+      // player names their character.
       setPending({ scenario, names })
     } catch (err) {
       toast(err.message, 'error')
@@ -218,11 +225,11 @@ export default function Home() {
       </section>
 
       {pending && (
-        <PlaceholderModal
+        <BeginAdventureModal
           title={pending.scenario.title}
           names={pending.names}
           onCancel={() => setPending(null)}
-          onSubmit={(values) => { setPending(null); begin(pending.scenario.id, values) }}
+          onSubmit={(answers) => { setPending(null); begin(pending.scenario.id, answers) }}
         />
       )}
     </div>

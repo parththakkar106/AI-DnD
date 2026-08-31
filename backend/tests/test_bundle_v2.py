@@ -586,3 +586,50 @@ def test_an_unknown_format_is_refused(client):
     r = _import(client, {"format": "ai-dnd-adventure-v3", "title": "From the future"})
     assert r.status_code == 400, r.text
     assert bundle.FORMAT in r.json()["detail"]
+
+
+# ------------------------------------------------------- the persona (Phase 18)
+
+def test_the_persona_survives_the_round_trip(client):
+    adv_id = client.adv_id
+    assert client.patch(f"/api/adventures/{adv_id}", json={
+        "persona_name": "Kaelen",
+        "persona_pronouns": "he/him",
+        "persona_desc": "A half-elf ranger, exiled from the northern holds.",
+    }).status_code == 200
+
+    payload = _export(client, adv_id)
+    assert payload["persona"] == {
+        "name": "Kaelen",
+        "pronouns": "he/him",
+        "desc": "A half-elf ranger, exiled from the northern holds.",
+    }
+
+    copy_id = _imported(client, payload)
+    r = client.get(f"/api/adventures/{copy_id}")
+    assert r.status_code == 200, r.text
+    copy = r.json()
+    assert copy["persona_name"] == "Kaelen"
+    assert copy["persona_pronouns"] == "he/him"
+    assert copy["persona_desc"].startswith("A half-elf ranger")
+
+
+def test_a_bundle_written_before_personas_still_imports(client):
+    """The key is read with `.get`, so a v2 file from before Phase 18 lands
+    with an empty persona rather than failing. No FORMAT bump was needed."""
+    payload = _export(client, client.adv_id)
+    del payload["persona"]
+    copy = client.get(f"/api/adventures/{_imported(client, payload)}").json()
+    assert copy["persona_name"] == ""
+    assert copy["persona_pronouns"] == ""
+    assert copy["persona_desc"] == ""
+
+
+def test_an_over_long_persona_in_a_raw_bundle_is_truncated(client):
+    """A raw-dict import bypasses the schemas, so the widths the columns
+    declare are enforced here instead. Postgres would reject the INSERT."""
+    payload = _export(client, client.adv_id)
+    payload["persona"] = {"name": "K" * 500, "pronouns": "p" * 500, "desc": "d"}
+    copy = client.get(f"/api/adventures/{_imported(client, payload)}").json()
+    assert len(copy["persona_name"]) == 80
+    assert len(copy["persona_pronouns"]) == 40

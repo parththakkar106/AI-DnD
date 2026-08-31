@@ -54,4 +54,16 @@
 }
 .modal .modal-hint { margin: 0 0 18px; color: var(--text-dim); font-size: 0.88rem; }
 .modal .modal-buttons { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+/* The begin-adventure modal puts name and pronouns on one line. Pronouns need
+   only a few characters, so the name takes the slack. Both stack on a narrow
+   screen rather than shrinking the name field to nothing. */
+.modal .modal-row { display: flex; gap: 10px; }
+.modal .modal-row > .field { flex: 1 1 auto; min-width: 0; }
+.modal .modal-row > .field-narrow { flex: 0 1 9rem; }
+@media (max-width: 480px) {
+  .modal .modal-row { display: block; }
+  .modal .modal-row > .field-narrow { flex: none; }
+}
+/* A second hint, introducing the scenario's own questions below the persona. */
+.modal .modal-hint + .field, .modal .field + .modal-hint { margin-top: 4px; }
 
