@@ -491,6 +491,16 @@ Two consecutive memories in one bank, written from the same story minutes apart,
 in two different persons. That is the complaint, reproduced under controlled
 conditions rather than argued from the prompt text.
 
+**A second run, on a freshly generated story, qualifies that.** Its two control
+memories were both "the player", consistently — the second-to-third person drift
+did not recur. So the drift is a real thing a model does, seen once, not
+something it does every time. Read the person-drift row as one observation.
+
+What holds across both runs is the thing the change is actually for: **four
+control memories, and not one names the protagonist. Four treatment memories,
+and all four do.** The control has never been told a name. See
+`plan/18-appendix-memory-ab-run-2.md`.
+
 The control also got a fact wrong that the treatment did not. The player's move
 was `grab her wrist and pull her down behind the woodpile`; the before-memory
 recorded "The player asked Gwen to grab her wrist and pull her down behind the
@@ -507,14 +517,18 @@ set by a number nobody had ever stated.
 
 `MEMORY_MAX_WORDS = 50` now states it, and the prompt says which details to keep
 when trimming: the ones a later scene could turn on. Re-run over the identical
-story, the same two blocks came back at **32 and 58 words** (mean 45, down from
-70), still naming Kaelen, still third person, and still carrying every
-load-bearing fact — the camp map, the strongbox behind the second tent, the
-strap frayed near through. Overshooting 50 slightly is expected: models exceed
-word budgets, which is why `builder.length_hint` carries a `LENGTH_BUFFER` for
-the same reason.
+story, the same two blocks came back at **32 and 58 words**, still naming
+Kaelen, still third person, and still carrying every load-bearing fact — the
+camp map, the strongbox behind the second tent, the strap frayed near through.
+The second run, on different prose, came back at **54 and 55** against controls
+of 89 and 107. Overshooting 50 slightly is expected: models exceed word budgets,
+which is why `builder.length_hint` carries a `LENGTH_BUFFER` for the same reason.
 
-The variance is the real gain. Before: 34 to 105. After: 32 to 58.
+Across both runs the control ran 34, 89, 105 and 107 words — a four-fold spread
+with no budget stated anywhere. That is the number this found.
+
+The variance is the real gain. Before, across both runs: 34 to 107. After: 32
+to 58.
 
 ### What this does not show
 
