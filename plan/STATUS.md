@@ -3,7 +3,7 @@
 Read this first when picking the project back up. Updated at the end of a working
 session; the per-phase plan files hold the detail, this holds the thread.
 
-**Last updated: 2026-08-28.**
+**Last updated: 2026-08-31.**
 
 ---
 
@@ -73,6 +73,45 @@ endpoint, not `-pooler`: through transaction pooling it is unreliable.
 **Aggregates only, and ask first.** Real users are on this database. Counts,
 `octet_length` sums and catalog sizes answer every sizing question this project has
 needed; nothing requires reading a row of anyone's story.
+
+---
+
+## What happened on 2026-08-31 — the persona, and what the summarizer is told
+
+**`plan/18-persona-and-memory-quality.md` is the writeup; it is on
+`claude/ai-dnd-memories-summarization-3muo98`, not yet merged.** Two changes, both green
+at 610 tests.
+
+**The protagonist now has a name.** An adventure carries `persona_name`,
+`persona_pronouns` and `persona_desc` (migrations 74-76), and the player's stat block
+renders as `Kaelen (player): hp 100/100` instead of `You: hp 100/100`. The paths do not
+change — a path carrying the persona's name would break the moment a player renamed
+their character, because `_history_text` replays stored deltas holding literal
+`player.hp` strings. Empty name means the app behaves exactly as before, so no backfill.
+Driven in a browser, 21/21 checks.
+
+**The summarizer used to be told nothing.** It got six actions of second-person prose
+and no cast, no setting, and no instruction about what person to write in. It now gets a
+cast brief built from the story cards — which already cover the schema NPCs, because
+`scenario_card_specs` turns every one of them into a card at adventure creation.
+
+**Keyword matching alone was not enough, and only running it showed that.** Built to the
+plan first, the brief for "She grabs your arm" listed the protagonist and nobody else:
+the block that most needs a cast is exactly the one written in bare pronouns. Matched
+cards now come first and the rest of the roster is filled with the other `character`
+cards.
+
+**Running it against a real model found a second fault.** "1-2 plain sentences" is not a
+length — the same model wrote 34 words for one block and 105 for the next, and
+`memory_top_k` injects five every turn. `MEMORY_MAX_WORDS = 50` states it; the same
+blocks then came back at 32 and 58. The A/B harness is `backend/tools/memory_ab.py`,
+it drives the real provider through `tools/claude_shim.py`, and the full transcript is
+in `plan/18-appendix-memory-ab-run.md`.
+
+**Still unmeasured: whether a weaker model complies.** The run used a Claude model
+through the shim. The app talks to an OpenAI-compatible endpoint, and
+`worldstate/parse.py` tolerates trailing commas because free models emit them. Point
+`memory_ab.py --endpoint` at the real provider to find out.
 
 ---
 
