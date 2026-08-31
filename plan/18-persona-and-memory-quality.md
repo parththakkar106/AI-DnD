@@ -4,9 +4,10 @@ Two changes, in order. Phase 1 gives the adventure a persona. Phase 2 uses it,
 along with the cast, to fix the memories. Phase 1 is worth shipping on its own;
 Phase 2 depends on it and is much smaller once it lands.
 
-**Both phases are built and green (610 backend tests). Phase 1 was driven in a
+**Both phases are built and green (627 backend tests). Phase 1 was driven in a
 browser (21/21 checks). Phase 2 was run end to end against a real model, as a
-controlled A/B on one story — see "Run with a real model".**
+controlled A/B on one story — see "Run with a real model". A bank written under
+the old prompt can be rewritten in place — see the last section.**
 
 **Last updated: 2026-08-31.**
 
@@ -446,11 +447,12 @@ lines. A test holds that.
 
 ## Decided, from the sketch's open questions
 
-**Existing memories: left alone.** A bank written under the old prompt will mix
-"you" and named framing for a while. Re-summarizing costs one call per 6 actions
-and duplicates whatever is still in the bank, because nothing deletes the old
-rows. Eviction ages them out at `memory_bank_capacity` (80). Revisit only if the
-mixture visibly hurts.
+**Existing memories: left alone at first, and now rewritable on demand.** The
+original answer was to let eviction age them out at `memory_bank_capacity` (80),
+on the grounds that re-summarizing would duplicate whatever was still in the
+bank, because nothing deletes the old rows. That reasoning was wrong about the
+only option: a memory can be rewritten in place rather than written again.
+See "Rewriting a bank written under the old prompt", at the end of this file.
 
 **Retrieval framing mismatch: watched, not fixed.** `retrieve_memories` still
 embeds the last 4 actions raw, in second person, while new memories are third
@@ -545,3 +547,76 @@ correctly: the model sent `{"milestones.strongbox_found": false}`, `apply_delta`
 refused it ("a milestone is sticky, so only true is accepted"), the refusal
 reached the model through `render_refusals`, and the next turn sent `true`. The
 Phase 1 persona also held across all six generated turns.
+
+---
+
+# Rewriting a bank written under the old prompt
+
+An adventure played before this change keeps a bank of unnamed, second-person
+memories, and those are exactly the rows `memory_top_k` injects into every turn
+from now on. Ageing them out only works for an adventure that is still being
+played, and only after another 80 memories have been written. So there is a
+backfill: `backend/tools/rewrite_memories.py`.
+
+```
+cd backend
+python -m tools.rewrite_memories                     # what would change
+python -m tools.rewrite_memories --write --limit 3   # try three of them
+python -m tools.rewrite_memories --write --embed     # the whole backfill
+```
+
+Without `--write` it makes no model calls and spends nothing. It reads whichever
+database the app reads — `AIDND_DB_PATH`, or `DATABASE_URL` on a hosted deploy.
+
+**In place, not delete-and-regenerate.** The obvious alternative is to drop the
+bank and rewind `cursors.MEMORY`, letting the post-turn pass write it again.
+That loses everything the row carries besides its text: whether it is pinned,
+how often it has been retrieved, and the node it hangs off, which is what makes
+a fork inherit the right memories and no others. It would also trickle the bank
+back at `MAX_MEMORIES_PER_RUN` per turn, so an adventure nobody is playing would
+never recover. Rewriting `text` keeps the row and costs one call per memory.
+
+**One prompt assembly, not two.** `memorybank.summarize_block` is now the single
+place a memory prompt is built, and both the post-turn pass and the tool call
+it. A backfill that assembled its own prompt would be writing memories with a
+prompt that never shipped, and nothing would report the difference.
+
+**Reading the block back is the one genuinely new part.** A memory records
+`source_start`, `source_end` and `branch_id`, and `memorybank.source_block`
+turns those back into actions. The subtlety is the branch: the read has to use
+the lineage of *the branch the memory was written on*, not the branch the
+adventure is playing now. After a fork, the same depths hold different actions
+on each side, so a read through the adventure's current path would summarize the
+wrong story and say nothing about it. `test_memory_rewrite.py` builds that fork
+and holds the rule.
+
+**What it will not touch:**
+
+- A memory with no source range — hand-written, or migrated by 62 from before
+  memories had coordinates. There is no block to rewrite it from, and the player
+  may have typed it.
+- A memory whose actions have since been deleted.
+- An adventure whose owner has no API key in Settings, because summarization
+  spends the user's own key by construction and never the shared demo key.
+  `--api-key`, `--model` and `--endpoint` override that — the last of these
+  points a run at `tools/claude_shim.py`, so a backfill can spend a Claude
+  subscription instead of API credit.
+
+**The vector is cleared for every memory it rewrites**, because the stored one
+describes wording that no longer exists. That takes the memory out of the ranked
+bank until something embeds the new text: the app's own post-turn pass does it
+`MAX_EMBED_BATCH` at a time, or `--embed` does it in the run. Re-embedding always
+uses the owner's own embedding model and endpoint, never `--endpoint`, because a
+vector is only meaningful against the vectors it is ranked beside.
+
+**Stop the app before running with `--embed`.** A running process caches vectors
+by memory id and expects to be the only writer (`memorybank._vector_cache`), so
+a vector written from outside it can sit behind a stale cached copy until it
+restarts. Clearing alone is safe at any time: an unembedded memory leaves the
+catalogue, which is what the cache invalidates on.
+
+**The story summary is not rewritten.** It is one text per adventure rather than
+a bank, and `_update_story_summary` hands the model the whole of it and asks for
+an updated version under the new framing rule, so the next scheduled update
+should carry it over to third person by itself. If it does not, that is a
+separate and much smaller fix than this one.

@@ -80,7 +80,7 @@ needed; nothing requires reading a row of anyone's story.
 
 **`plan/18-persona-and-memory-quality.md` is the writeup; it is on
 `claude/ai-dnd-memories-summarization-3muo98`, not yet merged.** Two changes, both green
-at 610 tests.
+at 627 tests, plus the backfill below.
 
 **The protagonist now has a name.** An adventure carries `persona_name`,
 `persona_pronouns` and `persona_desc` (migrations 74-76), and the player's stat block
@@ -119,6 +119,37 @@ four treatment memories do.
 through the shim. The app talks to an OpenAI-compatible endpoint, and
 `worldstate/parse.py` tolerates trailing commas because free models emit them. Point
 `memory_ab.py --endpoint` at the real provider to find out.
+
+**A bank written under the old prompt can now be rewritten.** The earlier answer was to
+let eviction age those memories out, on the grounds that re-summarizing would duplicate
+rows. It does not have to: `backend/tools/rewrite_memories.py` rewrites a memory's text
+in place from the same actions it was written from, keeping the pin, the use counts and
+the node it hangs off. Run it from `backend/`; without `--write` it makes no model calls
+and only reports what would change.
+
+```
+python -m tools.rewrite_memories                     # what would change
+python -m tools.rewrite_memories --write --limit 3   # try three of them
+python -m tools.rewrite_memories --write --embed     # the whole backfill
+```
+
+It reads whichever database the app reads (`AIDND_DB_PATH`, or `DATABASE_URL` on the
+hosted deploy), so **take a copy first** — the old text is overwritten and kept nowhere.
+`--endpoint`/`--model`/`--api-key` point the summarizer somewhere else, `claude_shim.py`
+included. Hand-written memories, and memories whose actions have been deleted, are left
+alone; so is an adventure whose owner has no API key, because summarization spends the
+user's own key and never the demo key.
+
+**Two things it made necessary in the app.** `memorybank.summarize_block` is now the one
+place a memory prompt is assembled, so a backfilled memory cannot be written by a prompt
+that never shipped. And `memorybank.source_block` reads a memory's block back out of the
+story — on the lineage of the branch the memory was written on, not the branch being
+played, because after a fork the same depths hold different actions on each side.
+
+**The vector is cleared for every memory it rewrites**, since the stored one describes
+the old wording; the app's post-turn pass re-embeds them `MAX_EMBED_BATCH` per turn, or
+`--embed` does it in the run. Stop the app before using `--embed`: a running process
+caches vectors by memory id and expects to be the only writer.
 
 ---
 

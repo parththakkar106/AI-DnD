@@ -30,7 +30,7 @@ from array import array
 from collections import OrderedDict
 
 from sqlalchemy import func, select, update
-from sqlalchemy.orm import Session, object_session
+from sqlalchemy.orm import Session, defer, object_session
 
 from . import models, tree, vectors
 from .context import (
@@ -53,6 +53,7 @@ MAX_EMBED_BATCH = 32
 RETRIEVAL_WINDOW_TOKENS = 600  # recent story text used as the similarity query
 RETRIEVAL_WINDOW_ACTIONS = 4  # ...taken from this many of the newest actions
 SUMMARY_MAX_WORDS = 250
+MEMORY_EXCERPT_TOKENS = 2000  # of the block, when a block is longer than this
 
 # ---- The cast brief (Phase 18b) ----
 # How many characters the brief names, and how much of each description it
@@ -269,6 +270,51 @@ def forget_node(db: Session, adventure: models.Adventure, action: models.Action)
     if starts:
         cursors.rewind_all(adventure, action.branch_id, min(starts) - 1)
     return len(doomed)
+
+
+def source_block(db: Session, memory: models.Memory) -> list[models.Action]:
+    """The actions a memory was written from, oldest first.
+
+    The inverse of what `_create_due_memories` recorded. `source_start` and
+    `source_end` are depths, and `branch_id` says which path they are depths
+    on — that branch's own lineage, not the adventure's current path. A memory
+    written before a fork must still read back from the branch it was written
+    on, whichever branch the adventure has since moved to.
+
+    Returns `[]` for a memory that describes no stretch of story. Those are
+    hand-written, or migrated from before memories had coordinates (see
+    `lineage.ROOT_DEPTH`), and there is no block to read.
+
+    The range may come back shorter than `MEMORY_INTERVAL`. An action inside it
+    can have been deleted since, and a memory whose block is now partial still
+    describes the actions that remain.
+    """
+    if memory.source_start is None or memory.source_end is None:
+        return []
+    if memory.branch_id is None:
+        return []  # A pre-tree row: no path contains it.
+    branch = db.get(models.Branch, memory.branch_id)
+    if branch is None:
+        return []
+    path = lineage.Path(lineage.entries_of(branch))
+    rows = (
+        db.query(models.Action)
+        .filter(
+            models.Action.adventure_id == memory.adventure_id,
+            # This clause excludes the sibling attempts at a retried turn, so
+            # the block holds the one text the story used.
+            path.clause(models.Action),
+            models.Action.depth >= memory.source_start,
+            models.Action.depth <= memory.source_end,
+        )
+        # `id` breaks a tie on `depth`, as everywhere else that orders actions.
+        .order_by(models.Action.depth, models.Action.id)
+        # Reasoning traces are never part of an excerpt and can outweigh the
+        # narration on a reasoning model.
+        .options(defer(models.Action.reasoning))
+        .all()
+    )
+    return [a for a in rows if history.is_story_text(a.text)]
 
 
 # ---------- The cast brief ----------
@@ -529,6 +575,35 @@ async def run_post_turn(adventure_id: int) -> None:
         _running.discard(adventure_id)
 
 
+async def summarize_block(
+    adventure: models.Adventure,
+    provider: OpenAICompatibleProvider,
+    block: list[models.Action],
+) -> str:
+    """Writes one memory from one block of story.
+
+    Both callers come through here, which is the point of the function. The
+    pass below writes a memory as the story reaches it; `tools/rewrite_memories`
+    rewrites one an older prompt produced. Assembling the prompt in two places
+    would mean a rewritten memory was written by a prompt that never shipped,
+    and nothing would report the difference.
+
+    Raises `ProviderError`, which each caller handles its own way: the pass
+    below leaves the cursor alone and retries next turn, and the tool leaves the
+    old text in place and moves on.
+    """
+    raw = "\n\n".join(a.text for a in block)
+    excerpt = truncate_to_last_tokens(raw, MEMORY_EXCERPT_TOKENS)
+    # Match the cast against the untruncated block. The excerpt is what the
+    # model reads, but a character named in the part that was trimmed is still
+    # one the memory may have to name.
+    brief = cast_brief(adventure, raw)
+    prompt = f"Story excerpt:\n\n{excerpt}\n\nMemory:"
+    return await provider.complete(
+        MEMORY_SYSTEM_PROMPT, f"{brief}\n\n{prompt}" if brief else prompt
+    )
+
+
 async def _create_due_memories(
     adventure: models.Adventure, settings: models.Settings, db: Session
 ) -> None:
@@ -548,16 +623,8 @@ async def _create_due_memories(
         block = history.after(adventure, anchor, MEMORY_INTERVAL)
         if len(block) < MEMORY_INTERVAL:
             return
-        excerpt = truncate_to_last_tokens("\n\n".join(a.text for a in block), 2000)
-        # Match the cast against the untruncated block. The excerpt is what the
-        # model reads, but a character named in the part that was trimmed is
-        # still one the memory may have to name.
-        brief = cast_brief(adventure, "\n\n".join(a.text for a in block))
-        prompt = f"Story excerpt:\n\n{excerpt}\n\nMemory:"
         try:
-            text = await provider.complete(
-                MEMORY_SYSTEM_PROMPT, f"{brief}\n\n{prompt}" if brief else prompt
-            )
+            text = await summarize_block(adventure, provider, block)
         except ProviderError:
             return  # Logged on the debug page. The cursor is unchanged, so the
                     # next turn retries this block.
