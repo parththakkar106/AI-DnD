@@ -78,9 +78,10 @@ needed; nothing requires reading a row of anyone's story.
 
 ## What happened on 2026-08-31 — the persona, and what the summarizer is told
 
-**`plan/18-persona-and-memory-quality.md` is the writeup; it is on
-`claude/ai-dnd-memories-summarization-3muo98`, not yet merged.** Two changes, both green
-at 627 tests, plus the backfill below.
+**`plan/18-persona-and-memory-quality.md` is the writeup. Both changes are on `main`**
+— the note here that said they were sitting unmerged on
+`claude/ai-dnd-memories-summarization-3muo98` is out of date; `main` is at `71b24b6`,
+the tip of that work. Both green at 627 tests, plus the backfill below.
 
 **The protagonist now has a name.** An adventure carries `persona_name`,
 `persona_pronouns` and `persona_desc` (migrations 74-76), and the player's stat block
