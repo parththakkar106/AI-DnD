@@ -392,7 +392,7 @@ raw turns   →  memories        →  story summary
 
 | Layer | Cadence | Purpose |
 |---|---|---|
-| **Memory** | Every 6 actions, starting at 12 | One or two past-tense sentences of concrete fact. |
+| **Memory** | Every 6 actions, starting at 12, once one action sits past the block | One or two past-tense sentences of concrete fact. |
 | **Story summary** | Every 15 actions | A single ≤250-word overview of the whole plot, rewritten by folding in the new memories. |
 | **Retrieval** | Every turn | Embed the last 4 actions (≤600 tokens), cosine-rank the bank, inject the top K (default 5). |
 
@@ -413,8 +413,18 @@ This is also how repair works. When a turn's text is replaced or removed (a retr
 a deleted action), `forget_node` withdraws the memory attached to that coordinate and
 rewinds both marks to just before the stretch it covered, so the ground is summarized again
 from what the story now says. An earlier version instead held the newest action back a turn
-so it could never be summarized before it stopped being retryable. That is no longer
-needed, because the repair exists whether or not the invalidation happens at the tip.
+so it could never be summarized before it stopped being retryable. Correctness no longer
+rests on that, because the repair exists whether or not the invalidation happens at the tip.
+
+**A block still waits for one action to settle past it** (`SETTLE_SLACK`), and that is a
+cost rule rather than a correctness one. Retry and take-switching both refuse anything but
+the newest action, so a memory whose block ends on the tip is the one memory a player can
+still throw away: every retry of that turn writes it, withdraws it, and writes it again. A
+block closes every 6 actions and a normal turn writes 2, so without the slack that is one
+turn in three. The slack costs nothing in return, because the block that just closed is
+still in the history window in full — a memory of it says what the model can already read.
+Memories earn their place once the raw text has scrolled out, which is never the turn the
+block closed.
 
 **Cursors only advance on success.** Every AI call in this module is best-effort. If
 summarization fails, the function returns and the cursor is unchanged, so the same block is
@@ -724,7 +734,9 @@ is ambiguous once two branches both have a node 41.
 
 `position_of_index`, `note_action_removed`, `settled_story_actions` and the cursor-rewind
 machinery were **deleted**, not left unused. So was the one-turn memory holdback that
-existed because a retry could rewrite an action the mark had already passed.
+existed because a retry could rewrite an action the mark had already passed. (`SETTLE_SLACK`
+later put one action of slack back, for what redoing a block costs rather than for what it
+could get wrong. See "The memory system".)
 
 ### Derived work attaches to the node that produced it
 

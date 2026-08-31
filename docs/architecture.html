@@ -988,7 +988,7 @@ ORDER BY depth DESC LIMIT 32          -- → A0 A1 A2 A3 B4 B5 C6 C7</code></pre
   <h4>Cursors become anchors</h4>
   <p>The two marks, how far the memory bank has got and how far the summary has got, used to be counts. A count is a position in a list. Every rule about sliding, rewinding, and translating between positions and <code>Action.index</code> existed to patch up the fact that the list moves.</p>
   <p>A cursor is now an <strong>anchor</strong>: <code>(branch_id, depth)</code>, the node up to and including which the work is done. Deleting an action does not move it. &ldquo;What is not covered yet?&rdquo; becomes a question about the story instead of a list index, and it answers correctly no matter what has been deleted in front of it. The branch half is what makes it survive forking. A depth alone is ambiguous once two branches both have a node 41.</p>
-  <p><code>position_of_index</code>, <code>note_action_removed</code>, <code>settled_story_actions</code>, and the cursor-rewind machinery were <strong>deleted</strong>, not left unused. So was the one-turn memory holdback that existed because a retry could rewrite an action the mark had already passed.</p>
+  <p><code>position_of_index</code>, <code>note_action_removed</code>, <code>settled_story_actions</code>, and the cursor-rewind machinery were <strong>deleted</strong>, not left unused. So was the one-turn memory holdback that existed because a retry could rewrite an action the mark had already passed. (<code>SETTLE_SLACK</code> later put one action of slack back, for what redoing a block costs rather than for what it could get wrong.)</p>
 
   <div class="trap">
     <span class="lab">Three findings only hand-driving produced</span>

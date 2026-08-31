@@ -733,7 +733,7 @@ into the inn, it should come back.</p>
 <table>
   <thead><tr><th>Layer</th><th>Cadence</th><th>Purpose</th></tr></thead>
   <tbody>
-    <tr><td><strong>Memory</strong></td><td>every 6 actions, from 12</td><td>One or two past-tense sentences of concrete fact.</td></tr>
+    <tr><td><strong>Memory</strong></td><td>every 6 actions, from 12, once one action sits past the block</td><td>One or two past-tense sentences of concrete fact.</td></tr>
     <tr><td><strong>Story summary</strong></td><td>every 15 actions</td><td>A single ≤250-word overview, rewritten by folding in the new memories.</td></tr>
     <tr><td><strong>Retrieval</strong></td><td>every turn</td><td>Embed the last 4 actions (≤600 tokens), cosine-rank the bank, inject the top 5.</td></tr>
   </tbody>
@@ -755,8 +755,18 @@ across a fork: the ones above the fork point already sit on ancestors both lines
 action — <code>forget_node</code> withdraws the memory hanging off that coordinate <em>and</em>
 rewinds both marks to just before the stretch it covered, so that ground is summarized again from
 what the story now says. An earlier version instead held the newest action back a turn so it could
-never be summarized before it stopped being retryable; that is no longer needed, because the repair
-exists whether or not the invalidation happens at the tip.</p>
+never be summarized before it stopped being retryable; correctness no longer rests on that, because
+the repair exists whether or not the invalidation happens at the tip.</p>
+
+<p><strong>A block still waits for one action to settle past it</strong>
+(<code>SETTLE_SLACK</code>), and that is a cost rule rather than a correctness one. Retry and
+take-switching both refuse anything but the newest action, so a memory whose block ends on the tip
+is the one memory a player can still throw away: every retry of that turn writes it, withdraws it,
+and writes it again. A block closes every 6 actions and a normal turn writes 2, so without the
+slack that is one turn in three. The slack costs nothing in return, because the block that just
+closed is still in the history window in full — a memory of it says what the model can already
+read. Memories earn their place once the raw text has scrolled out, which is never the turn the
+block closed.</p>
 
 <p><strong>Cursors only advance on success.</strong> Every AI call here is best-effort. If
 summarization fails, the function returns and the cursor is unchanged, so the same block is
