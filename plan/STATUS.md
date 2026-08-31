@@ -104,9 +104,16 @@ cards.
 **Running it against a real model found a second fault.** "1-2 plain sentences" is not a
 length — the same model wrote 34 words for one block and 105 for the next, and
 `memory_top_k` injects five every turn. `MEMORY_MAX_WORDS = 50` states it; the same
-blocks then came back at 32 and 58. The A/B harness is `backend/tools/memory_ab.py`,
-it drives the real provider through `tools/claude_shim.py`, and the full transcript is
-in `plan/18-appendix-memory-ab-run.md`.
+blocks then came back at 32 and 58, and a second run on a fresh story came back at 54
+and 55 against controls of 89 and 107. The A/B harness is `backend/tools/memory_ab.py`,
+it drives the real provider through `tools/claude_shim.py`, and both transcripts are in
+`plan/18-appendix-memory-ab-run.md` and `-run-2.md`.
+
+**Read one of those findings narrowly.** Run 1 produced two control memories in two
+different persons, which is the reported complaint exactly; run 2's controls were both
+"the player", so that drift is something a model sometimes does, not always. What holds
+across both runs is that none of the four control memories names the protagonist and all
+four treatment memories do.
 
 **Still unmeasured: whether a weaker model complies.** The run used a Claude model
 through the shim. The app talks to an OpenAI-compatible endpoint, and
