@@ -243,6 +243,23 @@ def test_the_rewrite_prompt_is_the_one_the_app_sends(db):
 
 # --------------------------------------------------------------------- the tool
 
+def test_the_database_line_carries_no_password():
+    """The report names the database it is about to rewrite. That line ends up
+    in a console, a screenshot or a pasted bug report."""
+    shown = rewrite_memories.safe_dsn(
+        "postgresql://parth:hunter2@ep-cool-frost.us-east-1.aws.neon.tech/aidnd"
+        "?sslmode=require")
+    assert "hunter2" not in shown
+    assert "sslmode" not in shown  # a password can be passed there too
+    assert shown == ("postgresql://parth@ep-cool-frost.us-east-1.aws.neon.tech"
+                     "/aidnd")
+
+
+def test_an_unparseable_database_url_shows_nothing_at_all():
+    assert rewrite_memories.safe_dsn("not-a-url") == "(configured)"
+
+
+
 def test_without_write_nothing_changes(db, monkeypatch):
     adventure = make_adventure(db)
     first, _ = fill_bank(db, adventure)

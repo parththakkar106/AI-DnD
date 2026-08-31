@@ -93,7 +93,27 @@ import asyncio
 import sys
 from pathlib import Path
 
+from urllib.parse import urlsplit
+
 from sqlalchemy import func, inspect as sa_inspect, select
+
+
+def safe_dsn(url: str) -> str:
+    """A connection string with the credentials taken out.
+
+    The report says which database it is about to rewrite, which is worth
+    printing. The password in a Neon URL is not: this output goes to a console,
+    a screenshot, or a pasted bug report, and the operator has no way to know
+    the line carried a credential until it is somewhere else.
+    """
+    parsed = urlsplit(url)
+    if not parsed.hostname:
+        return "(configured)"
+    who = f"{parsed.username}@" if parsed.username else ""
+    port = f":{parsed.port}" if parsed.port else ""
+    # The query string is dropped whole. `sslmode` is the only part anyone
+    # wants to see, and some drivers accept a password there too.
+    return f"{parsed.scheme}://{who}{parsed.hostname}{port}{parsed.path}"
 
 
 def words(text: str) -> int:
@@ -111,7 +131,7 @@ async def main(args) -> int:
     from app.providers import OpenAICompatibleProvider, ProviderError
 
     db = SessionLocal()
-    print(f"database: {DATABASE_URL or DB_PATH}")
+    print(f"database: {safe_dsn(DATABASE_URL) if DATABASE_URL else DB_PATH}")
     if not sa_inspect(db.get_bind()).has_table(models.Adventure.__tablename__):
         # A mistyped path creates an empty SQLite file rather than failing, so
         # say what is wrong instead of raising "no such table: adventures".

@@ -4,7 +4,7 @@ Two changes, in order. Phase 1 gives the adventure a persona. Phase 2 uses it,
 along with the cast, to fix the memories. Phase 1 is worth shipping on its own;
 Phase 2 depends on it and is much smaller once it lands.
 
-**Both phases are built and green (629 backend tests). Phase 1 was driven in a
+**Both phases are built and green (631 backend tests). Phase 1 was driven in a
 browser (21/21 checks). Phase 2 was run end to end against a real model, as a
 controlled A/B on one story — see "Run with a real model". A bank written under
 the old prompt can be rewritten in place — see the last section.**
