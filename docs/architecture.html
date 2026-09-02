@@ -416,6 +416,8 @@ figcaption {
 .b-fixed { background: var(--brass-soft); color: var(--brass); flex: 0 0 42%; }
 .b-cards { background: var(--teal-soft); color: var(--teal); flex: 0 0 23%; }
 .b-hist  { background: var(--surface-2); color: var(--muted); flex: 1; }
+.b-live  { background: var(--teal-soft); color: var(--teal); flex: 0 0 16%; }
+.b-tail  { background: var(--brass-soft); color: var(--brass); flex: 0 0 11%; }
 .budget-key { display: flex; flex-wrap: wrap; gap: 10px 26px; margin-top: 10px; color: var(--muted); }
 
 /* ---------- limits ---------- */
@@ -477,14 +479,15 @@ footer {
     <div class="rail-head">Low level</div>
     <a href="#budget"><span class="n">2.1</span> Context budget</a>
     <a href="#window"><span class="n">2.2</span> Windowed history</a>
-    <a href="#worldstate"><span class="n">2.3</span> World state</a>
-    <a href="#length"><span class="n">2.4</span> Length, measured</a>
-    <a href="#memory"><span class="n">2.5</span> Memory bank</a>
-    <a href="#tree"><span class="n">2.6</span> The story tree</a>
-    <a href="#undo"><span class="n">2.7</span> Undo &amp; retry</a>
-    <a href="#lock"><span class="n">2.8</span> Turn lock</a>
-    <a href="#stream"><span class="n">2.9</span> Streaming</a>
-    <a href="#sandbox"><span class="n">2.10</span> QuickJS sandbox</a>
+    <a href="#caching"><span class="n">2.3</span> Prompt caching</a>
+    <a href="#worldstate"><span class="n">2.4</span> World state</a>
+    <a href="#length"><span class="n">2.5</span> Length, measured</a>
+    <a href="#memory"><span class="n">2.6</span> Memory bank</a>
+    <a href="#tree"><span class="n">2.7</span> The story tree</a>
+    <a href="#undo"><span class="n">2.8</span> Undo &amp; retry</a>
+    <a href="#lock"><span class="n">2.9</span> Turn lock</a>
+    <a href="#stream"><span class="n">2.10</span> Streaming</a>
+    <a href="#sandbox"><span class="n">2.11</span> QuickJS sandbox</a>
   </div>
   <div class="rail-group">
     <div class="rail-head">Operations</div>
@@ -492,6 +495,7 @@ footer {
     <a href="#migrations"><span class="n">3.2</span> Migrations</a>
     <a href="#security"><span class="n">3.3</span> Spend &amp; security</a>
     <a href="#analytics"><span class="n">3.4</span> Counting visits</a>
+    <a href="#compression"><span class="n">3.5</span> Compressing prompts</a>
   </div>
   <div class="rail-group">
     <div class="rail-head">Scoreboard</div>
@@ -507,8 +511,8 @@ footer {
   <h1>The Engine Room</h1>
   <p class="standfirst">An AI Dungeon clone is a chat wrapper until four things are true. The prompt is <strong>budgeted</strong>. The numbers are <strong>refereed</strong>. The story is a <strong>tree</strong>. Someone else&rsquo;s JavaScript runs in a <strong>sandbox</strong>. This page shows how each one is built, and what it cost to learn.</p>
   <div class="facts">
-    <div class="fact"><span class="v">440</span><span class="k">backend tests</span></div>
-    <div class="fact"><span class="v">64</span><span class="k">schema versions</span></div>
+    <div class="fact"><span class="v">632</span><span class="k">backend tests</span></div>
+    <div class="fact"><span class="v">76</span><span class="k">schema versions</span></div>
     <div class="fact"><span class="v">189&times;</span><span class="k">egress cut</span></div>
     <div class="fact"><span class="v">103&nbsp;B</span><span class="k">cost of a branch</span></div>
     <div class="fact"><span class="v">1</span><span class="k">model call per turn</span></div>
@@ -651,7 +655,8 @@ footer {
  ├─ Scenario   (the template)     ── stat_schema, prompt, memory, author's note
  │    └─ StoryCard, Script
  └─ Adventure  (the playthrough)  ── world_state, script_state,
-      │                              head_branch_id, head_depth
+      │                              head_branch_id, head_depth,
+      │                              persona_name, persona_pronouns, persona_desc
       ├─ Branch  (one line of it) ── parent_branch_id, fork_depth, lineage, name
       ├─ Action  (one node)       ── branch_id, depth, parent_id, live,
       │                              text, context_snapshot, state_after
@@ -676,7 +681,7 @@ footer {
     <li><div><span class="what">retrieve memories</span><span class="why">Embed the last 4 actions, cosine-rank the bank, take the top K.</span></div></li>
     <li><div><span class="what">build_context()</span><span class="why">The budget allocator. Fixed sections first, elastic ones into what is left.</span></div></li>
     <li class="hook"><div><span class="what">onModelContext hook</span><span class="why">User JS may rewrite the entire assembled prompt.</span></div></li>
-    <li><div><span class="what">snapshot the exact prompt</span><span class="why">Stored on the action. Powers Insights; costs ~74 KB a turn, which becomes §3.1.</span></div></li>
+    <li><div><span class="what">snapshot the exact prompt</span><span class="why">Stored on the action. Powers Insights; costs ~74 KB a turn, which becomes §3.1 to read and §3.5 to store.</span></div></li>
     <li><div><span class="what">provider.generate()</span><span class="why">One streamed call. Tokens forwarded to the browser as they arrive.</span></div></li>
     <li class="hook"><div><span class="what">onOutput hook</span><span class="why">Last chance for user JS to touch the text.</span></div></li>
     <li><div><span class="what">extract + referee the state block</span><span class="why">Parse the fenced JSON delta, clamp it, strip it from the prose.</span></div></li>
@@ -731,6 +736,7 @@ footer {
   <h3>2.1 &ensp;Context assembly is a budget problem</h3>
   <p>Say the budget is 8,000 tokens. A 200-turn adventure has far more story than that. The naive fix is to send the last N turns, but that breaks in both directions. N short exchanges waste the window. N long ones overflow it. Either way, it throws away the premise and the promise you made to the innkeeper.</p>
   <p>So the prompt is split into two kinds of sections. <strong>Fixed</strong> sections are included whatever they cost. <strong>Elastic</strong> ones fit into what is left.</p>
+  <p>Fixed describes the budget, not the position. A fixed section is always included, but where it sits in the prompt is a separate decision, and §2.3 makes it. Several of the sections listed as fixed below are placed <em>after</em> the history for caching reasons.</p>
 
   <div class="budget">
     <div class="budget-bar">
@@ -739,12 +745,13 @@ footer {
       <span class="b-hist">history, newest first</span>
     </div>
     <div class="budget-key">
-      <span>fixed &rarr; narrator &middot; stat guide &middot; live state &middot; emit rule &middot; ai_instructions &middot; plot &middot; summary &middot; memories</span>
+      <span>fixed &rarr; narrator &middot; stat guide &middot; emit rule &middot; ai_instructions &middot; persona &middot; plot &middot; summary &middot; memories &middot; live state</span>
       <span>elastic &rarr; story cards, then story turns</span>
     </div>
   </div>
 
-  <pre><code>reserved  = every fixed section + author's note + length hint + emit reminder
+  <pre><code>reserved  = every fixed section + author's note + front memory
+          + length hint + refusal note + emit reminder
 available = max(256, context_token_budget - reserved)
 cards      spend up to available * 0.4
 history    spends available - cards_used, filling backwards from newest</code></pre>
@@ -752,7 +759,7 @@ history    spends available - cards_used, filling backwards from newest</code></
   <h4>The details that are decisions</h4>
   <ul>
     <li><strong>Cards are capped at 40% of the elastic budget.</strong> Story cards trigger on keyword match. A scene naming six things could pull six lore entries and leave no room for the story. The cap turns that failure into &ldquo;some lore is missing&rdquo; instead of &ldquo;the model has no idea what just happened&rdquo;. Cards that do not fit are still reported to Insights with <code>included: false</code>.</li>
-    <li><strong>History fills newest-first and stops.</strong> Old material is not lost. It has already been summarized into memories and the running summary, both of which sit in the fixed block.</li>
+    <li><strong>History fills newest-first and stops.</strong> Old material is not lost. It has already been summarized into memories and the running summary, both of which are fixed sections and are included whatever they cost.</li>
     <li><strong>If even the newest turn is over budget, it is hard-truncated, not dropped.</strong> A prompt with no story produces nonsense. A prompt with the tail of the last turn produces something.</li>
     <li><strong>The author&rsquo;s note is injected 3 actions from the end</strong> (<code>AUTHORS_NOTE_DEPTH = 3</code>), not at the top. It is a steering control, so it goes where steering works best: recency.</li>
     <li><strong>The world-state reminder takes the very last slot.</strong> The full emit rule lives hundreds of tokens up in the system block. A one-line reminder occupies the position closest to where the model starts writing.</li>
@@ -776,9 +783,47 @@ projected = int(budget / average * 1.15) + 8</code></pre>
   <div class="rule-note"><strong>Second rule in that module:</strong> if the actions are already loaded, slice them instead of querying. The scripting pipeline hands the whole history to user scripts because AI Dungeon&rsquo;s API requires it. On a scripted adventure the rows are already in memory, so a query beside them would mean paying twice.</div>
 </section>
 
+<section id="caching">
+  <div class="tags"><span class="tag lld">LLD</span><span class="tag src">backend/app/context/builder.py &middot; providers/openai_compatible.py</span></div>
+  <h3>2.3 &ensp;Prompt caching is a layout problem</h3>
+  <p>Every endpoint that caches prompts caches a <em>prefix</em>. It reuses the request up to the first byte that differs from last time, and no further. The price of a turn is therefore set by layout rather than by size. A section that changes every turn, placed near the top, re-prices everything underneath it, and underneath it is the story history, which is most of the prompt.</p>
+  <p>So §2.1 decides what goes in, and this section decides what order it goes in. Sections are ordered by how often they change.</p>
+
+  <div class="budget">
+    <div class="budget-bar">
+      <span class="b-fixed">static block</span>
+      <span class="b-hist">history</span>
+      <span class="b-live">live</span>
+      <span class="b-tail">tail</span>
+    </div>
+    <div class="budget-key">
+      <span>static &rarr; narrator &middot; stat guide &middot; emit rule &middot; script context &middot; ai_instructions &middot; persona &middot; plot essentials</span>
+      <span>live &rarr; summary &middot; lore &middot; memories &middot; live state</span>
+      <span>tail &rarr; front memory &middot; length hint &middot; refusals &middot; emit reminder</span>
+    </div>
+  </div>
+
+  <h4>The three rules that hold it in place</h4>
+  <ul>
+    <li><strong>The static block is byte-identical across turns.</strong> It holds only the things the user edits: the narrator instructions, the guide derived from the stat schema, the emit rule, <code>ai_instructions</code>, the persona, and the plot essentials. None of them change mid-story. Adding a section that moves &mdash; live stats, retrieved memories, a rewritten summary &mdash; to <code>system_sections</code> is the regression this design exists to prevent, and it shows up as a bill rather than as a broken page.</li>
+    <li><strong>The live sections sit below the history, ordered least to most volatile.</strong> The summary is rewritten every 15 actions. Lore changes with the scene. Retrieved memories change on most turns. Stat values change on nearly every turn. In that order, a turn that changes only the stats still leaves the other three inside the cached prefix.</li>
+    <li><strong>The tail stays the tail.</strong> Front memory, the length hint, the refusal note, and <code>EMIT_REMINDER</code> keep the last slots for the recency reasons in §2.1. Those sections are short, and for them position beats caching.</li>
+  </ul>
+
+  <div class="rule-note"><strong>Moving a section out of the static block does not remove it from the budget.</strong> <code>reserved</code> still counts the summary, the memories, and the live state, because they are still in the prompt. Only their position changed. <code>world_lore</code> is the one exception, because it is budgeted out of <code>available</code> alongside the cards.</div>
+
+  <div class="trap">
+    <span class="lab">Routing has to be deterministic, or none of this happens</span>
+    <p>A prompt cache lives on the machine that served the request. OpenRouter spreads requests across upstream providers, and each upstream holds its own cache, so a perfectly stable prompt routed somewhere new still starts cold.</p>
+    <p><code>_apply_provider_routing()</code> names a preferred upstream for the vendors where this matters, for example <code>provider: {"order": ["deepseek"]}</code>. It is a preference, not a restriction. Fallbacks stay on, so if the preferred upstream is down the turn still runs elsewhere and merely misses the cache. Endpoints that are not OpenRouter get no <code>provider</code> field at all.</p>
+  </div>
+
+  <p><strong>Measured, not assumed.</strong> The provider reads <code>prompt_tokens_details.cached_tokens</code> back from the endpoint's final usage chunk, which is the count of prompt tokens served from cache rather than billed in full. A later chunk that carries no usage does not erase it. <code>test_prompt_caching.py</code> pins the layout: changing a stat leaves the static block untouched, the volatile sections sit after the history, the tail is still the tail, live sections are still charged to the budget, and a new turn only appends to the cached prefix.</p>
+</section>
+
 <section id="worldstate">
   <div class="tags"><span class="tag lld">LLD</span><span class="tag src">backend/app/worldstate/engine.py</span></div>
-  <h3>2.3 &ensp;World state: the AI proposes, Python referees</h3>
+  <h3>2.4 &ensp;World state: the AI proposes, Python referees</h3>
   <p>Three options, and two of them lose.</p>
   <ul>
     <li><strong>A deterministic dice engine.</strong> What a real RPG does. It loses here because the action space is unbounded. Mapping arbitrary natural language onto a fixed rules system is harder than the problem being solved.</li>
@@ -820,7 +865,7 @@ projected = int(budget / average * 1.15) + 8</code></pre>
 
 <section id="length">
   <div class="tags"><span class="tag lld">LLD</span><span class="tag src">builder.length_hint()</span></div>
-  <h3>2.4 &ensp;Output length, decided by measurement</h3>
+  <h3>2.5 &ensp;Output length, decided by measurement</h3>
   <p>The hint&rsquo;s whole job is protecting the <code>state</code> block, which is emitted last and is therefore what truncation eats. So it must shorten output. The first version lengthened it.</p>
   <div class="tablewrap">
   <table>
@@ -848,14 +893,14 @@ MAX_LENGTH_FLOOR_WORDS = 300   # tight-cap string stays byte-identical</code></p
 </section>
 
 <section id="memory">
-  <div class="tags"><span class="tag lld">LLD</span><span class="tag src">backend/app/memorybank.py</span></div>
-  <h3>2.5 &ensp;The memory bank</h3>
+  <div class="tags"><span class="tag lld">LLD</span><span class="tag src">backend/app/memorybank.py &middot; tools/rewrite_memories.py</span></div>
+  <h3>2.6 &ensp;The memory bank</h3>
   <p>Turn 4 said you promised the innkeeper you&rsquo;d return. At turn 90, that is long gone from the prompt. But if you walk back into the inn, it should come back. Three layers make that happen:</p>
   <div class="tablewrap">
   <table>
     <thead><tr><th>Layer</th><th>Cadence</th><th>What it is</th></tr></thead>
     <tbody>
-      <tr><td><b>Memory</b></td><td>every 6 actions, from 12</td><td>One or two past-tense sentences of concrete fact.</td></tr>
+      <tr><td><b>Memory</b></td><td>every 6 actions, from 12, once 1 action sits past the block</td><td>One or two past-tense sentences of concrete fact, third person, at most 50 words.</td></tr>
       <tr><td><b>Story summary</b></td><td>every 15 actions</td><td>A single &le;250-word overview, rewritten by folding in the new memories.</td></tr>
       <tr><td><b>Retrieval</b></td><td>every turn</td><td>Embed the last 4 actions (&le;600 tokens), cosine-rank the bank, inject the top 5.</td></tr>
     </tbody>
@@ -864,12 +909,24 @@ MAX_LENGTH_FLOOR_WORDS = 300   # tight-cap string stays byte-identical</code></p
   <p>Retrieval is what answers the innkeeper problem. The promise is a memory. The memory has a vector. Walking into the inn produces a query vector near it.</p>
   <ul>
     <li><strong>A memory hangs off the node whose block it ends on.</strong> That is a <code>(branch_id, depth)</code> coordinate, not the adventure and not a position in a list. This makes &ldquo;which memories described this turn?&rdquo; an indexed lookup. It is also why memories inherit correctly across a fork: the ones above the fork point already sit on ancestors both lines read.</li>
+    <li><strong>A block waits one action past its end before it is summarized</strong> (<code>SETTLE_SLACK = 1</code>). This is a cost rule, not a correctness one. Retry and take-switching both refuse anything but the newest action, so a memory whose block ends on the tip is the one memory a player can still throw away, and every retry of that turn paid to write it twice. A block closes every 6 actions and a normal turn writes 2, so that was one turn in three. The slack costs nothing in quality, because a block that just closed is still in the history window in full.</li>
     <li><strong>Cursors only advance on success.</strong> Every AI call here is best-effort. If summarization fails, the cursor is unchanged, and the same block is retried on a later turn. There is no retry loop, no backoff, no dead-letter queue. The cadence <em>is</em> the retry mechanism.</li>
     <li><strong>Pinned memories count toward <code>top_k</code>.</strong> Otherwise, 6 pinned plus <code>top_k=5</code> injects 11 and blows the budget the whole context engine exists to respect.</li>
     <li><strong>A dimension mismatch scores 0.0, it does not crash.</strong> Change your embedding model, and old 768-dim vectors meet a 1536-dim query. <code>zip()</code> would happily truncate and score garbage silently.</li>
     <li><strong>Eviction is LRU-ish and non-destructive.</strong> Over capacity (default 200), the least-used unpinned memories are marked <code>forgotten</code> instead of deleted, so you can un-forget one.</li>
     <li><strong>Background calls never spend the shared demo key.</strong> Summarization and embedding providers are built from the user&rsquo;s own settings, never from the demo config. Unmetered background calls on a server-funded key would be a bill.</li>
   </ul>
+  <h4>What the summarizer is told</h4>
+  <p>The prompt that writes a memory used to be six actions of second-person prose and nothing else. No protagonist, no cast, no setting, and no instruction about what person to write in. Two faults follow from that, and they are not subtle. The model picks a person per call, so one bank holds &ldquo;You entered the crypt&rdquo;, &ldquo;The player entered the crypt&rdquo;, and &ldquo;He entered the crypt&rdquo; for the same kind of event. And given <code>You push the door open. She grabs your arm.</code> the only honest memory is <em>&ldquo;You entered a room and she stopped you&rdquo;</em>, which is worse than nothing when it is retrieved forty turns later into a scene with three women in it. The summary inherits both faults, because it is built from the memory bullets.</p>
+  <p>Two changes fix it. Both also apply to the summary prompt.</p>
+  <ul>
+    <li><strong>The adventure has a protagonist.</strong> A persona carries a name, pronouns, and a description. It is user-editable only, so it never changes mid-story, which is why it sits in the static block of §2.3 and costs nothing after the first turn. It is emitted whether or not the adventure has an RPG layer, because an adventure with no stats still has a protagonist.</li>
+    <li><strong>A cast brief is prepended to both prompts.</strong> It names the protagonist, then the NPCs from <code>stat_schema.npcs</code>, then, for adventures with no RPG layer, the story cards matched against the block being summarized. Ceilings are 8 members at 240 characters each, plus 300 tokens of plot essentials as the setting. Keyword matching alone was not enough, so the roster is topped up: a character central to a block can be named in it without tripping a trigger word.</li>
+  </ul>
+  <div class="rule-note"><strong>Fixed descriptions only. No live stats.</strong> Putting <code>Gwen: trust 40 (wary)</code> in the brief makes every memory prompt different, which loses the caching in §2.3, and it makes the same event summarized at two different times come out framed differently. That is the fault being fixed, so the brief must not reintroduce it.</div>
+  <p>The framing rule is the larger half of the memory prompt, and it states its reason rather than just the instruction: write in third person, name the protagonist, and name characters instead of using bare pronouns, <em>because</em> a memory is retrieved in isolation and read with no surrounding story. A memory also has a stated ceiling of 50 words. That number was measured, not guessed. Given only &ldquo;1-2 plain sentences&rdquo;, a real model wrote 34 words for one block and 105 for the next, and 5 memories are injected per turn at the default <code>memory_top_k</code>, so the bank&rsquo;s cost per turn is set here.</p>
+  <p>A bank written under the old prompt does not fix itself, because memories are written once. <code>tools/rewrite_memories.py</code> replays an existing bank through the current prompt, and <code>tools/memory_ab.py</code> is the harness that compared the two.</p>
+
   <div class="trap">
     <span class="lab">The measurement that had been running with the feature off</span>
     <p>Two full rounds of egress work ran with the memory bank effectively disabled. Retrieval needs an embedding model, and embedding providers are BYOK-only by construction. So the demo never embeds, and the stress harness had none configured. Measured later in production: <strong>134 memories, 1536 dims, ~31 KB each as JSON text</strong>. The ranking walked <code>adventure.memories</code>, so the whole bank crossed the wire every turn just to pick five. On a 100-memory adventure that was <strong>3,024 KB per turn against 129 KB for everything else, about 96% of a turn.</strong> Break-even is 4.2 memories.</p>
@@ -882,7 +939,7 @@ MAX_LENGTH_FLOOR_WORDS = 300   # tight-cap string stays byte-identical</code></p
 <div class="wrap">
 <section id="tree">
   <div class="tags"><span class="tag lld">LLD</span><span class="tag hld">HLD</span><span class="tag src">context/lineage.py &middot; tree.py &middot; attempts.py</span></div>
-  <h3>2.6 &ensp;The story is a tree</h3>
+  <h3>2.7 &ensp;The story is a tree</h3>
   <p>The largest structural change the project has had, and the one with the most reasoning behind it.</p>
   <p>The story used to be a list, and a mutable one. Retry rewrote the last entry in place. Undo and delete removed entries from the middle. Everything derived from the story was indexed by <em>position in that list</em>: memories, the running summary, the two marks saying how far each had got. A position means something different once anything in front of it is deleted. That one fact produced a family of bugs that all looked different:</p>
   <ul>
@@ -1002,7 +1059,7 @@ ORDER BY depth DESC LIMIT 32          -- → A0 A1 A2 A3 B4 B5 C6 C7</code></pre
 
 <section id="undo">
   <div class="tags"><span class="tag lld">LLD</span></div>
-  <h3>2.7 &ensp;Undo and retry that actually rewind</h3>
+  <h3>2.8 &ensp;Undo and retry that actually rewind</h3>
   <p>Most implementations of undo delete the last message. That is wrong here, because a turn mutates three things: the text, the scripting scoreboard (<code>script_state</code>), and the RPG stats (<code>world_state</code>).</p>
   <p>Every node carries <code>state_after</code> and <code>world_state_after</code>, deep copies of the adventure once that turn had played. Rewinding to before a turn is a read of the node in front of it, so <strong>undo, retry, and a branch switch are the same restore.</strong> The cooldown clock comes along free. It lives inside the world state at <code>_meta.last_changed</code>, so each line of the story carries its own without anything having to know there is one.</p>
   <p>Nothing a retry replaces is thrown away. The old attempt stays as another take, a sibling node with <code>live</code> false, and the pager steps between them. Retry is not a special case. It is the tree with the branch not yet created.</p>
@@ -1015,7 +1072,7 @@ ORDER BY depth DESC LIMIT 32          -- → A0 A1 A2 A3 B4 B5 C6 C7</code></pre
 
 <section id="lock">
   <div class="tags"><span class="tag lld">LLD</span></div>
-  <h3>2.8 &ensp;The turn lock</h3>
+  <h3>2.9 &ensp;The turn lock</h3>
   <p>One turn at a time per adventure. The subtlety is <em>where</em> the check goes. A <code>StreamingResponse</code> does not start iterating its generator until the response begins. A check inside the generator would let two rapid requests both pass before either claims the slot. And because sync FastAPI endpoints run in a threadpool, the test-and-set needs a real <code>threading.Lock</code>.</p>
   <pre><code>def acquire_turn_lock(adventure_id):          # in the REQUEST handler
     with _active_turns_guard:
@@ -1033,7 +1090,7 @@ async def with_turn_lock(adventure_id, gen):  # wraps the SSE generator
 
 <section id="stream">
   <div class="tags"><span class="tag lld">LLD</span></div>
-  <h3>2.9 &ensp;Streaming</h3>
+  <h3>2.10 &ensp;Streaming</h3>
   <p>The app uses Server-Sent Events, not WebSockets. Traffic is one-directional, and a bidirectional connection for a unidirectional problem is cost with no return. FastAPI reads the provider&rsquo;s stream and yields <code>data: {"type":"chunk","text":"…"}</code>. The frontend reads the body with a <code>ReadableStream</code> reader, buffers on <code>\n\n</code> boundaries, and dispatches each event. Event types: <code>player</code>, <code>reasoning</code> (thinking traces, into their own collapsible panel with their own budget), <code>chunk</code>, <code>stopped</code>, <code>error</code>, <code>done</code>.</p>
   <div class="trap">
     <span class="lab">Two things that only appear when hosted</span>
@@ -1045,7 +1102,7 @@ async def with_turn_lock(adventure_id, gen):  # wraps the SSE generator
 
 <section id="sandbox">
   <div class="tags"><span class="tag lld">LLD</span><span class="tag src">backend/app/scripting/</span></div>
-  <h3>2.10 &ensp;The QuickJS sandbox</h3>
+  <h3>2.11 &ensp;The QuickJS sandbox</h3>
   <p>Real AI Dungeon scripts define <code>modifier(text)</code> and call it as the last line, with globals like <code>state</code>, <code>history</code>, and <code>storyCards</code>. The same contract runs here, inside an embedded QuickJS interpreter. The safety properties are mostly <em>structural</em>. Nothing was removed, because nothing was there to begin with.</p>
   <div class="tablewrap">
   <table>
@@ -1178,6 +1235,19 @@ async def with_turn_lock(adventure_id, gen):  # wraps the SSE generator
 
 <div class="wrap">
 
+<section id="compression">
+  <div class="tags"><span class="tag lld">LLD</span><span class="tag src">backend/app/compression.py</span></div>
+  <h3>3.5 &ensp;The other half of the snapshot problem</h3>
+  <p>§3.1 stopped <code>context_snapshot</code> from being <em>read</em>. It did nothing about it being <em>stored</em>. The column is 89% of the database, which measured as <strong>150.8 MB of JSON across 944 actions</strong>, and 232 kB on one row of the longest adventure. The free tier allows 512 MB. Reads were the bug; storage is the ceiling.</p>
+  <p>Postgres already compresses the column on its own. TOAST brings 150.8 MB down to about 89 MB, a factor of 1.7. It chooses pglz for decompression speed on data a query might filter on, and no query filters on this column. A prompt is written once and read whole, rarely, by one screen. zlib at the application layer reaches three to four times on the same text, and the cost is one decompression on a request that was already going to make an LLM call. Level 6 is the knee of the curve here: level 9 spends noticeably more CPU on prompt text for about a percent more space.</p>
+  <div class="rule-note"><strong>It is a <code>TypeDecorator</code>, not a second column.</strong> Every call site still writes <code>action.context_snapshot = {...}</code> and reads a dict back, and <code>deferred=True</code>, <code>undefer()</code> and <code>load_only()</code> still name the attribute they always named. The storage format changes; nothing else does.</div>
+  <div class="trap">
+    <span class="lab">The migration makes the database bigger before it makes it smaller</span>
+    <p>It runs as three steps: add <code>context_snapshot_z</code>, backfill it, drop the old column, rename. The backfill and the drop both happen inside one transaction, so if the backfill raises, the <code>DROP</code> rolls back with it and the prompts are still there.</p>
+    <p>Postgres does not release disk on its own. <code>DROP COLUMN</code> only marks the column dropped, and the backfill leaves one dead tuple per row, so the table grows first. The peak is roughly twice the starting size while both columns exist. Autovacuum makes that space reusable but does not shrink the files, so <code>VACUUM FULL actions;</code> has to be run once after the deploy. On the 2026-08-17 figures the database is 99.6 MB, peaks near 200 MB, and settles at about 53 MB. Skipping the vacuum is safe and leaves the saving unrealized.</p>
+  </div>
+</section>
+
 <section id="results">
   <div class="tags"><span class="tag hld">HLD</span></div>
   <h3>Measured results</h3>
@@ -1189,13 +1259,14 @@ async def with_turn_lock(adventure_id, gen):  # wraps the SSE generator
       <tr><td>Turn read cost at turn 200</td><td class="num">839 KB &rarr; <b class="win">129 KB</b>, flat</td></tr>
       <tr><td>200-turn playthrough, total reads</td><td class="num">84.5 MB &rarr; <b class="win">23.0 MB</b></td></tr>
       <tr><td>Cost of a branch</td><td class="num">~103 B &middot; 20 forks load at 1.007&times;</td></tr>
-      <tr><td>Prompt snapshot size</td><td class="num">~74 KB/turn, 94% of the DB</td></tr>
+      <tr><td>Prompt snapshot storage</td><td class="num">150.8 MB &rarr; <b class="win">~53 MB</b>, 89% of the DB</td></tr>
       <tr><td>Length hint, budget vs ceiling phrasing</td><td class="num">246 vs <b class="win">170</b> words (n=5)</td></tr>
-      <tr><td>Backend tests</td><td class="num">440</td></tr>
-      <tr><td>Schema versions</td><td class="num">64</td></tr>
+      <tr><td>Backend tests</td><td class="num">632</td></tr>
+      <tr><td>Schema versions</td><td class="num">76</td></tr>
       <tr><td>Sandbox limits</td><td class="num">16 MB, 2 s, fresh context</td></tr>
       <tr><td>Context defaults</td><td class="num">note at depth 3, cards &le; 40%</td></tr>
-      <tr><td>Memory cadence</td><td class="num">memory /6, summary /15, top-5</td></tr>
+      <tr><td>Memory cadence</td><td class="num">memory /6 +1 slack, summary /15, top-5</td></tr>
+      <tr><td>Memory length ceiling</td><td class="num">50 words, measured against 34&ndash;105</td></tr>
       <tr><td>Actual hosting bill</td><td class="num">~$0.30/mo, mostly $0 collected</td></tr>
     </tbody>
   </table>
@@ -1210,19 +1281,19 @@ async def with_turn_lock(adventure_id, gen):  # wraps the SSE generator
   <ul class="limits">
     <li><b>Single process.</b> The turn lock, the rate limiter and the summarization task all assume one worker. A second would need a row-level advisory lock and Redis.</li>
     <li><b>No vector index.</b> Retrieval does cosine similarity in Python over the whole bank. Fine at the 200-memory cap; at 10,000 it wants pgvector.</li>
-    <li><b>Prompt snapshots are heavy</b> even after the egress fix. They are deferred, not smaller. Compressing or expiring them is the real fix.</li>
+    <li><b>Prompt snapshots are compressed, not expired.</b> §3.1 made them cheap to read and §3.5 made them cheap to store, but nothing deletes them. Storage still grows with every turn played, just four times more slowly.</li>
     <li><b>In-memory rate-limit windows reset on restart,</b> so a restart grants a brief extra allowance.</li>
     <li><b>Background summarization is a fire-and-forget asyncio task,</b> so it does not survive a restart. At real load it belongs in a queue.</li>
     <li><b>The two memory marks are one pair on the adventure, not one per branch.</b> Switching lines makes the mark on the line being left unreadable, so that ground is summarized again. It fails in the safe direction &mdash; redo, never skip &mdash; but switching back and forth costs AI calls.</li>
     <li><b>Story cards are adventure-wide,</b> so a card invented on one branch shows on all of them.</li>
     <li><b>Editing an already-summarized turn leaves its memory stale.</b> Replacing a turn withdraws what was derived from it; editing one in place does not.</li>
-    <li><b>The frontend has no test runner.</b> This is the standing reason the project keeps finding UI bugs by hand &mdash; every one of the tree-UI findings above was invisible to 440 green backend tests.</li>
+    <li><b>The frontend has no test runner.</b> This is the standing reason the project keeps finding UI bugs by hand &mdash; every one of the tree-UI findings above was invisible to 632 green backend tests.</li>
     <li><b>Truncation is silent.</b> Nothing reads <code>finish_reason</code> yet, which is the obvious next step for §2.4.</li>
   </ul>
 </section>
 
 <footer>
-  <p>Compiled from <code>docs/GUIDE.md</code>, <code>plan/00&ndash;14</code> and <code>plan/STATUS.md</code> in the AI-DnD repository, plus the measurements recorded alongside them. Live at <a href="https://ai-dnd-1gmp.onrender.com">ai-dnd-1gmp.onrender.com</a> &middot; source at <a href="https://github.com/parththakkar106/AI-DnD">github.com/parththakkar106/AI-DnD</a>.</p>
+  <p>Compiled from <code>docs/GUIDE.md</code>, <code>plan/00&ndash;18</code> and <code>plan/STATUS.md</code> in the AI-DnD repository, plus the measurements recorded alongside them. Live at <a href="https://ai-dnd-1gmp.onrender.com">ai-dnd-1gmp.onrender.com</a> &middot; source at <a href="https://github.com/parththakkar106/AI-DnD">github.com/parththakkar106/AI-DnD</a>.</p>
 </footer>
 
 </div>
