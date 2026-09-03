@@ -107,18 +107,48 @@ Countries list on the Overview tab. The search box goes the other way, since the
 store codes: a query that names exactly one country is sent as that country's code, and
 "Ind", which is India and Indonesia, stays a plain text search rather than a guess.
 
-**One thing the API had to give up.** `/access` rows now carry `user_id`, because the
-page cannot open a person it cannot name. `func.max` over a `DateTime` returns a datetime
-on PostgreSQL and a string on SQLite, so `accesslog._iso` accepts both.
+**"Phone" is not something you can test on.** The log stores the user-agent string, so
+it can say more than one word about a device, and what the operator wants from that
+string is which browsers to open the app in. `analytics.browser_of` and
+`analytics.platform_of` read it back as a name and a major version — Chrome 140,
+Safari 17, Samsung Internet 23, iOS 17, Android 14, Windows, macOS, ChromeOS. Order is
+the whole trick, since every Chromium browser claims to be Chrome and Safari both, and
+Edge claims all three, so the specific claim is checked before the general one. Windows
+and macOS get no version: both freeze their number (`Windows NT 10.0` covers 10 and 11
+alike), and telling them apart needs a client hint this app does not ask for. The
+parsed pair now sits under the device word in the log's Device column, with the full
+string still on the hover, and the person card lists one line per browser they have
+arrived in.
 
-Seven new tests in `test_accesslog.py`: what the card counts, that it dates the
+**And the same strings, grouped, are the list to test against.**
+`GET /api/analytics/access/devices` reads every row of the log and groups it by what
+the agent strings mean rather than by the strings, so a person who updated Chrome twice
+is one row. It reports people (each counted once) and arrivals, and it heads the Access
+log tab as "What to test on". It deliberately reads the log rather than adding a
+counter: the user-agent is already stored there, which the anonymous side neither has
+nor should have, so the list covers every visit ever recorded instead of starting empty
+on deploy. A failed sign-in counts as an arrival and as nobody, because its browser
+reached the site but answers for no account. The route is declared before
+`/access/{user_id}`, or "devices" would be handed to the person page as a user id.
+
+**Two things the API had to give up.** `/access` rows now carry `user_id`, because the
+page cannot open a person it cannot name, and the parsed browser and system, so that
+the table, the card and the summary all read the same two functions. `func.max` over a
+`DateTime` returns a datetime on PostgreSQL and a string on SQLite, so
+`accesslog._iso` accepts both.
+
+Eleven new tests in `test_accesslog.py` — what the card counts, that it dates the
 registration from the log, that it names shared scenarios and not their own, that it
-lists the addresses, that it outlives the account, that a failed attempt has no card,
-and that a member gets a 404 from it. The five files around this work — access log,
-analytics, rate limits, guest cleanup, egress — are 96 green. The rest of the suite was not run here: this session's sandbox blocks the
-download `tiktoken` does on import, which fails every test that builds a prompt, and
-that is the environment rather than the code. Run `python -m pytest` on a machine with
-network before this is called green.
+lists the addresses and the browsers, that it outlives the account, that a failed
+attempt has no card, that a member gets a 404 from either route, and how the device
+list groups and counts — plus a parsed-agent table of eleven cases in
+`test_analytics.py`. The five files around this work (access log, analytics, rate
+limits, guest cleanup, egress) are 111 green.
+
+The rest of the suite was not run here: this session's sandbox blocks the download
+`tiktoken` does on import, which fails every test that builds a prompt, and that is the
+environment rather than the code. Run `python -m pytest` on a machine with network
+before this is called green.
 
 ---
 

@@ -359,3 +359,9 @@
 /* A scenario title is the one value here that can be any length. */
 .an-person-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .an-person-note { margin: 8px 0 0; font-size: 0.72rem; color: var(--text-dim); line-height: 1.5; }
+
+/* The browser and system under the device word, and the tighter table the
+   "what to test on" summary uses: it is a list of short values, not a log. */
+.an-cell-sub { font-size: 0.72rem; color: var(--text-dim); opacity: 0.8; margin-top: 2px; }
+.an-table-tight { min-width: 520px; }
+.an-table-tight td { padding: 6px 10px; }

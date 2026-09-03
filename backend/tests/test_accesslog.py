@@ -15,12 +15,15 @@ import pytest
 from fastapi import Depends
 from fastapi.testclient import TestClient
 
-from app import accesslog, auth, limits, models, security
+from app import accesslog, analytics, auth, limits, models, security
 from app.database import Base, SessionLocal, engine, get_db
 from app.main import app
 
 EDGE = "198.51.100.77"      # what the trusted proxy appended
 SPOOF = "10.0.0.1"          # what a client put in front of it
+IPHONE = ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_5_1 like Mac OS X) "
+          "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 "
+          "Safari/604.1")
 
 
 @pytest.fixture(autouse=True)
@@ -290,12 +293,27 @@ def test_a_person_page_names_shared_scenarios_but_not_their_own(client):
 def test_a_person_page_lists_the_addresses_they_arrived_from(client):
     visit(client)
     guest = rows()[0].user_id
-    visit(client, ip="203.0.113.9", ua="Mozilla/5.0 (iPhone; CPU iPhone OS 17_0)")
+    visit(client, ip="203.0.113.9", ua=IPHONE)
 
     detail = read_person(client, guest).json()
     assert [place["ip"] for place in detail["places"]] == ["203.0.113.9", EDGE]
-    assert sorted(detail["devices"]) == ["desktop", "mobile"]
     assert detail["log"]["sessions"] == 2 and detail["is_guest"]
+
+
+def test_a_person_page_names_the_browsers_they_arrive_in(client):
+    visit(client)                                   # the desktop default
+    guest = rows()[0].user_id
+    visit(client, ip="203.0.113.9", ua=IPHONE)
+
+    devices = read_person(client, guest).json()["devices"]
+    # Newest first, and each one says what to test on rather than just "phone".
+    assert [(row["device"], row["browser"], row["platform"]) for row in devices] == [
+        ("mobile", "Safari 17", "iOS 17"),
+        ("desktop", analytics.UNKNOWN, "Windows"),
+    ]
+    # The string itself is still there, because a parser that does not know a
+    # browser should not be the reason the operator cannot see it.
+    assert devices[0]["user_agent"] == IPHONE
 
 
 def test_a_person_page_outlives_the_account(client):
@@ -333,3 +351,45 @@ def test_the_person_page_is_owner_only(client):
     assert read_person(client, guest).status_code == 200
     client.act_as(client.ids["member"])
     assert read_person(client, guest).status_code == 404
+
+
+# ---------- What to test on ----------
+
+def read_devices(client):
+    return client.get("/api/analytics/access/devices")
+
+
+def test_the_device_list_groups_people_by_what_they_browse_in(client):
+    visit(client)                                   # one guest, desktop
+    visit(client, ip="203.0.113.9", ua=IPHONE)      # the same guest, on a phone
+    client.post("/api/auth/login", json={"email": "player@example.com", "password": "hunter2long"},
+                headers={"x-forwarded-for": EDGE, "user-agent": IPHONE})
+
+    rows_by_key = {
+        (row["browser"], row["platform"]): row
+        for row in read_devices(client).json()["devices"]
+    }
+    phone = rows_by_key[("Safari 17", "iOS 17")]
+    # Two people arrived on that browser, one of them twice; the row counts each
+    # person once and every arrival separately.
+    assert phone["people"] == 2 and phone["hits"] == 2 and phone["device"] == "mobile"
+    assert rows_by_key[(analytics.UNKNOWN, "Windows")]["people"] == 1
+
+
+def test_the_device_list_counts_a_failed_attempt_as_nobody(client):
+    client.post("/api/auth/login", json={"email": "ghost@example.com", "password": "wrong"},
+                headers={"x-forwarded-for": EDGE, "user-agent": IPHONE})
+
+    row = read_devices(client).json()["devices"][0]
+    # The browser reached the site, so it is an arrival. It answers for no
+    # account, so it is nobody.
+    assert row["hits"] == 1 and row["people"] == 0
+
+
+def test_the_device_list_is_owner_only(client):
+    visit(client)
+    assert read_devices(client).status_code == 200
+    client.act_as(client.ids["member"])
+    # "devices" must not be read as a user id by the person page, whichever
+    # gate answers first.
+    assert read_devices(client).status_code == 404

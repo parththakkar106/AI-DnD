@@ -230,6 +230,19 @@ function when(iso) {
 
 const DEVICE_WORD = { desktop: 'Desktop', mobile: 'Phone', tablet: 'Tablet', bot: 'Bot' }
 
+// What the server says when a user-agent tells it nothing. Worth a dash rather
+// than the word, in a column of names.
+const UNKNOWN = '(unknown)'
+
+const known = (word) => word && word !== UNKNOWN
+const deviceWord = (device) => DEVICE_WORD[device] || (known(device) ? device : '—')
+
+/* "Safari 17 · iOS 17", and half of it when only half is recognised. Some
+   agents name neither, which is what the full string on the hover is for. */
+function agentLine(row) {
+  return [row.browser, row.platform].filter(known).join(' · ')
+}
+
 function Fact({ term, children }) {
   return (
     <div className="an-fact">
@@ -246,7 +259,6 @@ function PersonCard({ detail }) {
   }
 
   const log = detail.log
-  const devices = detail.devices.map((name) => DEVICE_WORD[name] || name).join(', ')
   const played = detail.scenarios.length > 0 || detail.own_scenarios > 0
   return (
     <div className="an-person">
@@ -325,10 +337,83 @@ function PersonCard({ detail }) {
               </li>
             ))}
           </ul>
-          {devices && <p className="an-person-note">{devices}</p>}
+        </div>
+
+        {/* One line per browser they have arrived in, newest first — the
+            machines to reproduce anything they report on. The full agent
+            string is on the hover, for the ones the parser doesn't know. */}
+        <div className="an-person-block">
+          <h4>Browsers</h4>
+          <ul className="an-person-list">
+            {detail.devices.map((row) => (
+              <li key={`${row.device}|${row.user_agent}`} title={row.user_agent || undefined}>
+                <span className="an-person-name">
+                  {agentLine(row) || 'Unrecognised browser'}
+                </span>
+                <span className="an-cell-dim">{deviceWord(row.device)}</span>
+              </li>
+            ))}
+          </ul>
         </div>
       </div>
     </div>
+  )
+}
+
+/* The browsers the log has seen, which is the list to test against. Grouped by
+   what the agent strings mean rather than by the strings, so one person who
+   updated Chrome twice is one row. It reads the same table the log below does,
+   so it needs no new collection and covers every visit ever recorded. */
+function DevicesSeen() {
+  const [rows, setRows] = useState(null)
+  const [error, setError] = useState(null)
+
+  useEffect(() => {
+    let live = true
+    api.getAccessDevices(10).then(
+      (result) => { if (live) setRows(result.devices) },
+      (err) => { if (live) setError(err.message) },
+    )
+    return () => { live = false }
+  }, [])
+
+  if (error) return <div className="an-card an-empty">Couldn’t load devices: {error}</div>
+  if (!rows) return null
+  return (
+    <section className="an-card">
+      <header className="an-card-head">
+        <h2>What to test on</h2>
+        <span className="an-note">every visit logged, most people first</span>
+      </header>
+      {rows.length === 0 ? (
+        <div className="an-empty">Nothing logged yet.</div>
+      ) : (
+        <div className="an-table-scroll">
+          <table className="an-table an-table-tight">
+            <thead>
+              <tr>
+                <th>Browser</th><th>System</th><th>Kind</th>
+                <th>People</th><th>Arrivals</th><th>Last seen</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => (
+                <tr key={`${row.browser}|${row.platform}|${row.device}`}>
+                  <td>{known(row.browser) ? row.browser : 'Unrecognised'}</td>
+                  <td>{known(row.platform) ? row.platform : '—'}</td>
+                  <td className="an-cell-dim">{deviceWord(row.device)}</td>
+                  {/* A failed sign-in is an arrival that answers for no
+                      account, so a row can have arrivals and nobody. */}
+                  <td>{nf.format(row.people)}</td>
+                  <td className="an-cell-dim">{nf.format(row.hits)}</td>
+                  <td className="an-cell-dim">{row.last_at ? when(row.last_at) : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
   )
 }
 
@@ -471,11 +556,15 @@ function AccessLog() {
                       <td title={event.country || undefined}>
                         {event.country ? countryLabel(event.country) : '—'}
                       </td>
-                      {/* The full user-agent is a wall of text; it lives on the
-                          hover instead of in a column that would push the rest
-                          of the table off screen. */}
+                      {/* "Phone" alone doesn't say what to test on, so the
+                          browser and the system sit under it. The full
+                          user-agent is a wall of text and stays on the hover,
+                          where it doesn't push the table off screen. */}
                       <td className="an-cell-dim" title={event.user_agent || undefined}>
-                        {event.device || '—'}
+                        {deviceWord(event.device)}
+                        {agentLine(event) && (
+                          <div className="an-cell-sub">{agentLine(event)}</div>
+                        )}
                       </td>
                     </tr>
                     {openRow === event.id && (
@@ -574,7 +663,12 @@ export default function Analytics() {
         </button>
       </div>
 
-      {tab === 'access' && <AccessLog />}
+      {tab === 'access' && (
+        <>
+          <DevicesSeen />
+          <AccessLog />
+        </>
+      )}
 
       {tab === 'overview' && error && (
         <div className="an-empty">Couldn’t load analytics: {error}</div>

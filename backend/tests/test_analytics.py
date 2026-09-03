@@ -197,6 +197,40 @@ def test_device_detection(ua, expected):
     assert analytics.device_of(ua) == expected
 
 
+CHROME_WINDOWS = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36")
+SAFARI_IPHONE = ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_5_1 like Mac OS X) "
+                 "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 "
+                 "Safari/604.1")
+
+
+@pytest.mark.parametrize("ua, browser, platform", [
+    (CHROME_WINDOWS, "Chrome 140", "Windows"),
+    # Edge, Opera and Samsung Internet all claim to be Chrome as well, and
+    # Chromium claims to be Safari. Whichever claim is most specific wins.
+    (CHROME_WINDOWS + " Edg/140.0.2535.51", "Edge 140", "Windows"),
+    (SAFARI_IPHONE, "Safari 17", "iOS 17"),
+    (SAFARI_IPHONE.replace("Version/17.5", "CriOS/140.0.0.0"), "Chrome 140", "iOS 17"),
+    ("Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) "
+     "Chrome/140.0.0.0 Mobile Safari/537.36", "Chrome 140", "Android 14"),
+    ("Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) "
+     "SamsungBrowser/23.0 Chrome/115.0.0.0 Mobile Safari/537.36",
+     "Samsung Internet 23", "Android 13"),
+    ("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:131.0) Gecko/20100101 Firefox/131.0",
+     "Firefox 131", "Windows"),
+    ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
+     "(KHTML, like Gecko) Version/17.4.1 Safari/605.1.15", "Safari 17", "macOS"),
+    ("Mozilla/5.0 (X11; CrOS x86_64 14541.0.0) AppleWebKit/537.36 (KHTML, like Gecko) "
+     "Chrome/140.0.0.0 Safari/537.36", "Chrome 140", "ChromeOS"),
+    ("Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+     "Bot", analytics.UNKNOWN),
+    ("", analytics.UNKNOWN, analytics.UNKNOWN),
+])
+def test_browser_and_platform_detection(ua, browser, platform):
+    assert analytics.browser_of(ua) == browser
+    assert analytics.platform_of(ua) == platform
+
+
 def test_only_iso_looking_country_headers_are_trusted():
     assert analytics.country_of({"cf-ipcountry": "de"}) == "DE"
     assert analytics.country_of({"cf-ipcountry": "Norway"}) == analytics.UNKNOWN

@@ -23,9 +23,11 @@ when the day or the address changes for that user. That is the granularity a log
 is read at, such as seen on the 3rd from 1.2.3.4, and it still records someone
 moving networks during a day.
 
-A table of arrivals raises the question it cannot answer, which is what any of
-these people came for. `person` answers that one: it gathers the rows about a
-single user and joins them to what that user played.
+A table of arrivals raises two questions it cannot answer. `person` answers the
+first, which is what one of these people came for: it gathers the rows about a
+single user and joins them to what that user played. `devices_seen` answers the
+second, which is what they all arrive in, by reading the stored user-agent
+strings back as browsers and systems to test on.
 """
 
 import logging
@@ -279,13 +281,24 @@ def person(db: Session, user_id: int) -> dict:
             .limit(8)
         )
     ]
+    # One row per browser they have arrived in, newest first. "Phone" is the
+    # answer the counters give; this is the answer someone testing the app
+    # needs, which is which browser, on which system, on what kind of machine.
     devices = [
-        device
-        for device, in db.execute(
-            select(event.device)
-            .where(event.user_id == user_id, event.device != "")
-            .group_by(event.device)
-            .order_by(desc(func.count()))
+        {
+            "device": device,
+            "browser": analytics.browser_of(agent),
+            "platform": analytics.platform_of(agent),
+            "hits": int(count),
+            "last_at": _iso(last),
+            "user_agent": agent,
+        }
+        for agent, device, count, last in db.execute(
+            select(event.user_agent, event.device, func.count(), func.max(event.at))
+            .where(event.user_id == user_id)
+            .group_by(event.user_agent, event.device)
+            .order_by(desc(func.max(event.at)))
+            .limit(8)
         )
     ]
 
@@ -354,3 +367,58 @@ def person(db: Session, user_id: int) -> dict:
         "places": places,
         "devices": devices,
     }
+
+
+# How many (person, browser) groups `devices_seen` reads. One person on one
+# browser is one group, so this is people times the browsers they use, and the
+# cap is a ceiling on a query that would otherwise grow with the log forever.
+MAX_DEVICE_GROUPS = 2000
+
+
+def devices_seen(db: Session, *, limit: int = 12) -> list[dict]:
+    """Returns the browsers the log has seen, the ones most people use first.
+
+    This is the list to test against. Rows are grouped by what the strings mean
+    rather than by the strings themselves, so a person who updated Chrome twice
+    is one row and not three, and `people` counts each person once however many
+    times they came back.
+
+    Failed sign-ins have no account behind them. Their browser still counts as
+    an arrival, because it is a browser that reached the site, but it counts
+    nobody.
+    """
+    event = models.AccessEvent
+    seen: dict[tuple[str, str, str], dict] = {}
+    for user_id, agent, device, hits, last in db.execute(
+        select(
+            event.user_id,
+            event.user_agent,
+            event.device,
+            func.count(),
+            func.max(event.at),
+        )
+        .group_by(event.user_id, event.user_agent, event.device)
+        .order_by(desc(func.max(event.at)))
+        .limit(MAX_DEVICE_GROUPS)
+    ):
+        key = (analytics.browser_of(agent), analytics.platform_of(agent), device or "")
+        row = seen.get(key)
+        if row is None:
+            row = seen[key] = {
+                "browser": key[0],
+                "platform": key[1],
+                "device": key[2],
+                "people": set(),
+                "hits": 0,
+                "last_at": None,
+            }
+        if user_id is not None:
+            row["people"].add(user_id)
+        row["hits"] += int(hits)
+        when = _iso(last)
+        # Both come from the same database, so both are the same shape and
+        # sort as text.
+        if when and (row["last_at"] is None or when > row["last_at"]):
+            row["last_at"] = when
+    ranked = sorted(seen.values(), key=lambda row: (-len(row["people"]), -row["hits"]))
+    return [{**row, "people": len(row["people"])} for row in ranked[:limit]]

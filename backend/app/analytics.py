@@ -268,6 +268,70 @@ def device_of(user_agent: str) -> str:
     return "desktop"
 
 
+# Browser and system, for the access log rather than for these counters. A
+# counter gets one word out of a user-agent, which is `device_of` above, and
+# stores nothing else. The log does store the string, and the question the
+# operator asks of it is which browsers and systems to test on, so these two
+# turn it into a name and a major version.
+#
+# Order is the whole trick, because a user-agent is self-reported and mostly
+# fiction: every browser claims to be Mozilla, the Chromium ones claim to be
+# both Chrome and Safari, and Edge claims all three. The specific claim is
+# therefore checked before the general one, and Safari is last because it is
+# what is left when nothing more specific matched.
+_BROWSERS = (
+    ("Edge", r"Edg(?:e|A|iOS)?/(\d+)"),
+    ("Samsung Internet", r"SamsungBrowser/(\d+)"),
+    ("Opera", r"OPR/(\d+)"),
+    ("Chrome", r"CriOS/(\d+)"),           # Chrome on iOS, where it is Safari underneath
+    ("Firefox", r"FxiOS/(\d+)"),
+    ("Firefox", r"Firefox/(\d+)"),
+    ("Chrome", r"Chrome/(\d+)"),
+    ("Safari", r"Version/(\d+)[\d.]*(?: Mobile/\S+)? Safari"),
+)
+
+# Windows carries no usable version: 10 and 11 both say "Windows NT 10.0", and
+# telling them apart needs a client hint the app does not ask for. macOS has
+# frozen at "10_15_7" for the same reason, so neither gets a number.
+_PLATFORMS = (
+    ("iOS", r"(?:iPhone OS|CPU OS) (\d+)"),   # iPadOS says "CPU OS", and reports as iOS
+    ("Android", r"Android (\d+)"),
+    ("Windows", r"Windows NT"),
+    ("macOS", r"Mac OS X|Macintosh"),
+    ("ChromeOS", r"CrOS"),
+    ("Linux", r"Linux|X11"),                  # after Android, whose string contains it
+)
+
+
+def browser_of(user_agent: str) -> str:
+    """Returns a browser and its major version, such as "Chrome 140"."""
+    ua = user_agent or ""
+    if not ua:
+        return UNKNOWN
+    if device_of(ua) == "bot":
+        return "Bot"
+    for name, pattern in _BROWSERS:
+        found = re.search(pattern, ua)
+        if found:
+            return f"{name} {found.group(1)}"
+    return UNKNOWN
+
+
+def platform_of(user_agent: str) -> str:
+    """Returns the operating system, with a major version where the string
+    carries one, such as "iOS 17" or "Windows"."""
+    ua = user_agent or ""
+    if not ua:
+        return UNKNOWN
+    for name, pattern in _PLATFORMS:
+        found = re.search(pattern, ua)
+        if not found:
+            continue
+        version = found.groups()[0] if found.groups() else None
+        return f"{name} {version}" if version else name
+    return UNKNOWN
+
+
 # Geo headers an edge network may add. Render fronts services with a CDN that
 # can set `cf-ipcountry`, and the others cost nothing to check. A value is
 # trusted only if it looks like an ISO code, because a client can send any

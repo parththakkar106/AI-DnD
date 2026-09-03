@@ -84,6 +84,8 @@ export const api = {
   },
   // What one person in the access log has done. Owner-only, like the log.
   getPerson: (userId) => request(`/analytics/access/${userId}`),
+  // The browsers the log has seen, the ones most people use first.
+  getAccessDevices: (limit = 12) => request(`/analytics/access/devices?limit=${limit}`),
 
   // Auth (Phase 8 — no-ops in local mode beyond getMe)
   getMe: () => request('/auth/me'),

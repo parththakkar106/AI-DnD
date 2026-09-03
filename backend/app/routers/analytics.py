@@ -11,7 +11,8 @@ way the AI Chat router does: a feature nobody else can use is better off not
 appearing to exist. `/summary` serves the anonymous counters (analytics.py,
 which stores nothing that points at a person) and `/access` serves the access
 log (accesslog.py, which identifies people on purpose). `/access/{user_id}`
-gathers one person's rows and says what they played.
+gathers one person's rows and says what they played, and `/access/devices`
+gathers all of them into the list of browsers to test on.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -136,12 +137,32 @@ def access_log(
                 "ip": event.ip,
                 "country": event.country,
                 "device": event.device,
+                # Parsed here rather than in the browser: the same two
+                # functions answer for the log, for one person, and for the
+                # summary above the table, so they answer in one place.
+                "browser": analytics.browser_of(event.user_agent),
+                "platform": analytics.platform_of(event.user_agent),
                 "user_agent": event.user_agent,
             }
             for event in page["events"]
         ],
         "has_more": page["has_more"],
     }
+
+
+@router.get("/access/devices")
+def access_devices(
+    limit: int = Query(12, ge=1, le=50),
+    db: Session = Depends(get_db),
+    _user: models.User = Owner,
+) -> dict:
+    """The browsers the log has seen, the ones most people use first.
+
+    This route is declared before `/access/{user_id}` on purpose. Paths match in
+    the order they are added, so the other way round "devices" would be handed
+    to the person page as a user id and rejected as one.
+    """
+    return {"devices": accesslog.devices_seen(db, limit=limit)}
 
 
 @router.get("/access/{user_id}")
