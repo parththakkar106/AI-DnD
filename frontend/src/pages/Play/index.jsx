@@ -15,6 +15,7 @@ import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, use
 import { useNavigate, useParams } from 'react-router-dom'
 import { api } from '../../api'
 import { AutoTextarea } from '../../components'
+import { DeltaEditor } from './DeltaEditor'
 import { StateChangeChips } from './reports'
 import { TakePager } from './TakePager'
 import { StatusDrawer } from './drawers/StatusDrawer'
@@ -75,6 +76,11 @@ export default function Play() {
   // (currently "Update from scenario"), which no action count would reflect.
   const [stateKey, setStateKey] = useState(0)
   const [inspectActionId, setInspectActionId] = useState(null)
+  // The turn whose state changes are open for editing, or null. Only ever the
+  // newest turn: every state after a turn was played from what it left behind,
+  // so re-running an older one would leave those behind describing a turn the
+  // story no longer contains. The server refuses it too.
+  const [revising, setRevising] = useState(null)
   // Which take is being read, when it is not the live one (see TakePager).
   // One at a time; null when every message is showing the take the story tells.
   //
@@ -507,6 +513,10 @@ export default function Play() {
 
   const lastIsAi = actions.length > 0 && actions[actions.length - 1].type === 'ai'
   const canUndo = actions.length > 0 && actions[actions.length - 1].type !== 'start'
+  // The one turn whose state changes can be revised, or null. An adventure with
+  // no RPG layer has none: the editor asks the server for the schema and says so
+  // rather than the button being hidden, because `actions` does not carry it.
+  const revisableId = lastIsAi ? actions[actions.length - 1].id : null
 
   return (
     <div className={`play-layout ${panel ? 'with-panel' : ''}`}>
@@ -604,7 +614,27 @@ export default function Play() {
                       which the take on screen didn't make — so they're hidden
                       rather than shown against the wrong text. */}
                   {action.type === 'ai' && !shown && (
-                    <StateChangeChips changes={action.world_changes} />
+                    <StateChangeChips changes={action.world_changes}
+                      revised={action.world_changes_revised} />
+                  )}
+                  {/* Closes itself when the turn stops being the newest one
+                      — a turn played under it, an undo — because that is the
+                      moment the server stops accepting a revision of it. */}
+                  {revising === action.id && action.id === revisableId
+                    && !shown && !busy && (
+                    <DeltaEditor
+                      advId={id}
+                      actionId={action.id}
+                      onClose={() => setRevising(null)}
+                      onSaved={(result) => {
+                        // The chips are rendered from the action, so the row
+                        // has to take the revised one. The drawers read the
+                        // live world state, which this just moved.
+                        setActions((prev) => prev.map(
+                          (a) => (a.id === result.action.id ? result.action : a)))
+                        setStateKey((k) => k + 1)
+                      }}
+                    />
                   )}
                   {/* On every kind of node, not only the AI's: a player's own
                       turn can be played again too (SP9), so it can have takes
@@ -664,6 +694,15 @@ export default function Play() {
                               fork: true,
                             }))}
                         >⑂</button>
+                      )}
+                      {/* Only on the newest turn. An older turn's changes are
+                          the starting position of every turn under it, so the
+                          referee cannot replay one without the states below it
+                          becoming wrong. */}
+                      {action.id === revisableId && !shown && (
+                        <button title="Adjust this turn's state changes"
+                          onClick={() => setRevising(
+                            (open) => (open === action.id ? null : action.id))}>⚖</button>
                       )}
                       <button title="Delete" onClick={() => removeAction(action.id)}>✕</button>
                     </span>

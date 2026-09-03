@@ -247,3 +247,60 @@
   color: var(--accent);
 }
 
+
+/* The newest turn's state changes, opened for editing under its chips. It sits
+   inside the story column, so every control has to survive a phone width: the
+   rows wrap and the inputs shrink rather than pushing the row wider. */
+.delta-editor {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-input);
+  font-size: 0.8rem;
+}
+.dlt-head { color: var(--text-dim); margin-bottom: 8px; }
+.dlt-empty { margin-bottom: 8px; }
+.dlt-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+}
+.dlt-path { flex: 1 1 120px; min-width: 0; overflow-wrap: anywhere; }
+.dlt-num { width: 5.5em; font-variant-numeric: tabular-nums; }
+.dlt-text { flex: 2 1 140px; min-width: 0; }
+.dlt-num, .dlt-text, .dlt-pick, .dlt-add {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text);
+  padding: 3px 6px;
+  font-size: 0.8rem;
+}
+.dlt-fixed { color: var(--accent-bright); }
+.dlt-drop {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 0 4px;
+}
+.dlt-drop:hover { color: var(--danger); }
+.dlt-add { margin-top: 6px; width: 100%; }
+/* What the referee did with the last save. Not an error: a clamp is the rules
+   working, and the wording comes from the engine, which quotes the real limit. */
+.dlt-report {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  color: var(--text-dim);
+  font-size: 0.76rem;
+}
+.dlt-report li { padding: 2px 0; }
+.dlt-failed { color: var(--danger); }
+.dlt-actions { display: flex; gap: 8px; margin-top: 10px; }
+/* A turn whose changes a player corrected. Marked, not highlighted: the chips
+   beside it are the ones that matter, and this only says whose numbers they are. */
+.chg-revised { font-style: italic; opacity: 0.8; }

@@ -1,5 +1,11 @@
 """The delta block: the rule the model is given, and reading back what it sent.
 
+The block is labelled `state_delta`, and everything here says "delta" or "changes"
+rather than "state" for one reason: a block labelled `state` sitting under a turn
+reads, on the next turn, as that turn's world state, and a model that reads it that
+way sends totals where the engine expects movements. The live totals have a section
+of their own, and it says so in its own header. See `render.render_state_section`.
+
 The model writes one fenced block per turn. This module holds the instruction
 text, the parser that survives the ways a model gets the format wrong, and the
 report rendering that tells a player which changes were refused.
@@ -16,8 +22,10 @@ EMIT_RULE = (
     "going up or down, time passing, a relationship or mood shifting, a status turning on "
     "or off, progress toward a goal, an item or piece of information gained or lost — you "
     "MUST record it, including the numbers, not just on/off flags. After your narration, "
-    "append a fenced code block labelled `state` with a JSON object of the CHANGES ONLY, "
-    "as deltas (not new totals). Update every value the scene affected this turn, not only "
+    "append a fenced code block labelled `state_delta` with a JSON object of the CHANGES "
+    "ONLY — the amount each value MOVES this turn, never the value it lands on. The live "
+    "totals are given to you in the `Current world state` section above; the block you "
+    "write is what to add to them. Update every value the scene affected this turn, not only "
     "the obvious ones. Read the range and band labels shown for each stat and keep every "
     "change proportionate to the moment: an ordinary or minor event nudges a value slightly, "
     "while a large change — or reaching a stat's minimum or maximum — is reserved for a "
@@ -33,8 +41,9 @@ EMIT_RULE = (
     "in full (not a delta), e.g. what the player is now wearing or holding; only send it when "
     "it actually changed. Send only things that actually "
     "changed and never restate unchanged values; if truly nothing changed, omit the block. "
-    "Example:\n"
-    '```state\n{"player.hp": -15, "npc.gwen.trust": 5, "milestones.escaped": true, '
+    "Example — a turn in which hp fell by 15 and Gwen's trust rose by 5, whatever those "
+    "totals happen to be:\n"
+    '```state_delta\n{"player.hp": -15, "npc.gwen.trust": 5, "milestones.escaped": true, '
     '"player.outfit": "torn traveling cloak"}\n```'
 )
 
@@ -42,13 +51,14 @@ EMIT_RULE = (
 # A short reminder placed at the end of the prompt, which is the strongest
 # recency position, so the emit rule is close to where the model generates.
 EMIT_REMINDER = (
-    "[Reminder: end your reply with a ```state block of the changes this turn "
-    "(deltas only), or omit it if truly nothing changed.]"
+    "[Reminder: end your reply with a ```state_delta block of the changes this turn "
+    "— how much each value moved, not what it now totals — or omit it if truly "
+    "nothing changed.]"
 )
 
 
 def render_delta_block(delta: dict) -> str:
-    """Renders a stored delta back into the fenced `state` block the AI emitted.
+    """Renders a stored delta back into the fenced `state_delta` block the AI emitted.
 
     The caller replays past turns into the context with this, so the model copies
     the format. An empty delta returns an empty string, which means the turn
@@ -56,7 +66,7 @@ def render_delta_block(delta: dict) -> str:
     """
     if not isinstance(delta, dict) or not delta:
         return ""
-    return "```state\n" + json.dumps(delta, ensure_ascii=False) + "\n```"
+    return "```state_delta\n" + json.dumps(delta, ensure_ascii=False) + "\n```"
 
 
 def applied_delta(world_delta: dict | None) -> dict:
@@ -117,12 +127,17 @@ def render_refusals(world_delta: dict | None) -> str:
     if not lines:
         return ""
     body = "\n".join(f"- {ln}" for ln in lines)
-    return ("[Part of your last state block was not applied. Correct it in this "
-            f"turn's block:\n{body}]")
+    return ("[Part of your last state_delta block was not applied. Correct it in "
+            f"this turn's block:\n{body}]")
 
 
-# ```state { ... } ``` (also tolerates ```json or an unlabelled fence); DOTALL.
-_FENCE_RE = re.compile(r"```(?:state|json)?\s*(\{.*?\})\s*```", re.DOTALL | re.IGNORECASE)
+# ```state_delta { ... } ```. The bare `state` label is still accepted: it is what the
+# rule asked for before, so it is what every turn already stored was written with, and a
+# model that has read a summarized history may still copy it. ```json and an unlabelled
+# fence are tolerated for the same reason they always were — models reach for them.
+_FENCE_RE = re.compile(
+    r"```(?:state_delta|state|json)?\s*(\{.*?\})\s*```", re.DOTALL | re.IGNORECASE
+)
 
 
 # Fallback: a bare JSON object hugging the end of the text.
@@ -142,7 +157,7 @@ def _tolerant_load(blob: str) -> dict:
 
 
 def extract_delta(text: str) -> tuple[str, dict]:
-    """Removes the trailing state block from an AI response.
+    """Removes the trailing state_delta block from an AI response.
 
     The return value is `(clean_text, delta)`. `delta` is `{}` when there is no
     block or the block cannot be parsed, and `clean_text` has the block removed.

@@ -76,6 +76,42 @@ needed; nothing requires reading a row of anyone's story.
 
 ---
 
+## What happened on 2026-09-03, part two — the delta block, named and editable
+
+**The model was reading its own delta as the state.** Each past AI turn has its block
+re-attached to the replayed history (`_history_text`), and the block was labelled
+`state` while the live values were headed `World state`. Two things named the same, one
+under a turn and one further up, and the model would sometimes take the block for that
+turn's state and answer with totals — `player.hp: 55` meaning "hp is now 55", which
+`apply_delta` reads as *plus 55*. The fence is now `state_delta`, the live section is
+headed `Current world state (running totals; report changes to these in your state_delta
+block)`, and `EMIT_RULE` says the block is the amount each value MOVES and points at that
+section by name. The parser still accepts a bare `state` fence: every delta already
+stored was written under the old label, and a model that has read a summarized history
+may still copy it.
+
+**The newest turn's changes can now be edited, through the same referee.** The referee
+stops a delta that breaks the rules; it cannot stop one that is merely wrong, and a graze
+that cost 40 hp is legal. `PUT /adventures/{id}/actions/{id}/world-delta` takes the whole
+delta back, edited — a number changed, a change dropped, a change the turn missed added —
+rewinds the world state to what the turn started from (the preceding node's
+`world_state_after`), and puts the edited delta through `apply_delta` at the same depth.
+So the caps, the cooldowns, the counters and the sticky milestones all still hold, and an
+edit past `max_delta_per_turn` comes back clamped and says so. The revised outcome is
+written back onto the node, because undo and take-switching restore a node's outcome and
+would otherwise put the model's numbers back.
+
+**Only the newest turn, deliberately.** Every state after a turn was played from what
+that turn left behind, so re-running an older delta would leave the states below it
+describing a turn the story no longer contains. The endpoint answers 409 for any other
+turn and the `⚖` button is drawn on the tip alone. This is not the World drawer's `✎`:
+that one sets values outright, ignoring every limit, and is still the way to say "the
+value is now that" rather than "the turn did this".
+
+`backend/tests/test_world_delta_revision.py`, 9 tests. Full suite 663 green.
+
+---
+
 ## What happened on 2026-09-03 — the access log says what people came for
 
 **A row in the log named someone and stopped there.** Who arrived, from which address,

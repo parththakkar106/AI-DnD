@@ -12,15 +12,15 @@ const SECTION_LABELS = {
   story_summary: 'Story Summary',
   used_memories: 'Used Memories (memory bank)',
   world_state_guide: 'World State (stat guide)',
-  world_state: 'World State (RPG)',
-  world_state_rule: 'World State (reporting rule)',
+  world_state: 'World State (live totals)',
+  world_state_rule: 'World State (delta reporting rule)',
   world_lore: 'World Lore (story cards)',
   history: 'Story history',
   authors_note: "Author's Note",
   recent_history: 'Recent history',
   front_memory: 'Front memory',
   length_hint: 'Length guidance',
-  world_state_reminder: 'World State (emit reminder)',
+  world_state_reminder: 'World State (delta reminder)',
 }
 
 // One colour per context section, and the single source of truth for it: the

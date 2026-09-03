@@ -27,11 +27,19 @@ const REJECT_REASONS = {
 // Refused changes appear here too. A clamped stat is marked, and a stat whose
 // clamp left it exactly where it started reads "no change" rather than "+0",
 // which looked like an ordinary update.
-function StateChangeChips({ changes }) {
+// `revised` marks a turn whose changes a player corrected. The chips are then
+// their numbers rather than the model's, so the row says whose they are — the
+// same chips with no marker read as what the AI proposed.
+function StateChangeChips({ changes, revised }) {
   if (!changes?.length) return null
   const nice = (s) => String(s).replace(/_/g, ' ')
   return (
     <div className="turn-changes">
+      {revised && (
+        <span className="chg chg-revised" title="You adjusted this turn's changes">
+          adjusted
+        </span>
+      )}
       {changes.map((c, i) => {
         if (c.kind === 'flag') {
           return <span key={i} className="chg chg-flag">{nice(c.label)}: <span className="chg-val">{c.on ? 'on' : 'off'}</span></span>

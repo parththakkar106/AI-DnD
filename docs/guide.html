@@ -615,7 +615,7 @@ already there — issuing a query beside them would mean paying twice.</p>
 
 <pre><code>narration: "The blade catches your shoulder. Gwen shouts and drags you back."
 
-```state
+```state_delta
 {"player.hp": -15, "npc.gwen.trust": 5, "milestones.escaped": true}
 ```</code></pre>
 
@@ -663,12 +663,44 @@ one it will get wrong often enough to matter.</p>
 <p>Nothing in the world-state engine raises. A malformed delta returns <code>{}</code> and the
 turn continues. The parser is deliberately tolerant — it strips trailing commas and leading
 <code>+</code> signs on numbers, both of which weaker free models emit and strict JSON rejects. It
-accepts a <code>state</code>, <code>json</code> or unlabelled fence, and falls back to a bare JSON
+accepts a <code>state_delta</code> fence, the older <code>state</code>, a <code>json</code> or an
+unlabelled one, and falls back to a bare JSON
 object at the end of the text, but only if it parses into something that looks like a delta, so
 prose ending in <code>}</code> is never eaten.</p>
 
 <p>This matters because the public demo runs on free-tier models. A stricter parser would mean a
 good model works and a free one doesn’t.</p>
+
+<h4>The block is named after the change, not the state</h4>
+
+<p>The fence is <code>state_delta</code>, and the live values are headed <em>Current world state
+(running totals)</em>. Both used to read <em>state</em>, and models confused the two often enough
+to matter. A past turn's block is replayed into the history, and a block labelled
+<code>state</code> sitting under a turn reads, on the next turn, as <em>that turn's state</em>. A
+model reading it that way sends totals where the engine expects movements —
+<code>player.hp: 55</code> meaning “hp is now 55”, which the referee applies as <em>plus 55</em>.
+Naming the block after the change, and the section after the totals, is the whole fix. The parser
+still accepts the old label, because every delta already stored was written under it.</p>
+
+<h4>Correcting a turn's numbers by hand</h4>
+
+<p>The referee stops a delta that breaks the rules. It cannot stop one that is merely wrong — a
+graze that cost 40 hp is legal and still not what the scene described. So the newest turn carries
+an editor (<code>⚖</code> under the message;
+<code>PUT /adventures/{id}/actions/{id}/world-delta</code>). It takes the whole delta back,
+edited: a number changed, a change dropped, a change the turn missed added.</p>
+
+<p>It is a <strong>replay, not a patch</strong>. The world state is rewound to what the turn
+started from — the preceding node's <code>world_state_after</code> — and the edited delta goes
+through <code>apply_delta</code> at the same depth, so every limit still holds: an edit past
+<code>max_delta_per_turn</code> is clamped and says so. The revised outcome is written back onto
+the node, because undo and take-switching restore a node's outcome and would otherwise put the
+model's numbers back. Only the newest turn can be revised — every state after a turn was played
+from what that turn left behind — and the endpoint returns 409 for any other.</p>
+
+<p>Setting a value outright, ignoring caps and cooldowns, is a different act with its own
+endpoint: <code>PUT /adventures/{id}/world-state</code>, the World drawer's <code>✎</code>. A
+revision says <em>the turn did this</em>; an override says <em>the value is now that</em>.</p>
 
 <h4>One call, not two</h4>
 

@@ -39,10 +39,19 @@ def render_state_section(world_state: dict, stat_schema: dict,
     ws = world_state if isinstance(world_state, dict) else {}
     lines: list[str] = []
 
+    # The header names these as the running totals, and names the block the
+    # model writes as the movements. The two used to be "World state" and a
+    # ```state block, and a model reading its own last block back in the history
+    # took it for the state, then wrote totals into the next one. Whatever this
+    # header says, say the same thing in `parse.EMIT_RULE`, which points at it
+    # by name.
+    lines.append("Current world state (running totals; report changes to these "
+                 "in your state_delta block):")
+
     world_defs = stat_schema.get("world") or {}
     world_line = _stat_line(world_defs, ws.get("world") or {})
-    header = "World state" + (f" — {world_line}." if world_line else ".")
-    lines.append(header)
+    if world_line:
+        lines.append(f"World: {world_line}.")
 
     player_defs = stat_schema.get("player") or {}
     player_line = _stat_line(player_defs, ws.get("player") or {})

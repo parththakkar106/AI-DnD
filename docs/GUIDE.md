@@ -264,7 +264,7 @@ stored.
 ````
 narration: "The blade catches your shoulder. Gwen shouts and drags you back."
 
-```state
+```state_delta
 {"player.hp": -15, "npc.gwen.trust": 5, "milestones.escaped": true}
 ```
 ````
@@ -309,12 +309,47 @@ so a solid hit should take him to very weak" is a judgment a model can make. "55
 Nothing in the world-state engine raises. A malformed delta returns `{}` and the turn
 continues. The parser is deliberately tolerant: it strips trailing commas and leading `+`
 signs on numbers, both of which weaker free models emit and strict JSON rejects. It accepts
-a fence labeled `state`, one labeled `json`, or an unlabeled one, and falls back to a bare
+a fence labeled `state_delta`, the older `state`, one labeled `json`, or an unlabeled one,
+and falls back to a bare
 JSON object at the end of the text, but only if it parses into something that looks like a
 delta, so prose ending in `}` is never eaten.
 
 This matters because the hosted demo runs on free-tier models. A stricter parser would mean
 a good model works and a free one doesn't.
+
+### The block is named after the change, not the state
+
+The fence is `state_delta` and the live values are headed `Current world state (running
+totals)`. Both used to read `state`, and models confused the two often enough to matter: a
+past turn's block is replayed into the history, and a block labeled `state` sitting under a
+turn reads, on the next turn, as *that turn's state*. A model that reads it that way sends
+totals where the engine expects movements — `player.hp: 55` meaning "hp is now 55", which
+the referee applies as *plus 55*. Naming the block after the change, and the section after
+the totals, is the whole fix. The parser still accepts the old label, because every delta
+already stored was written under it.
+
+### Correcting a turn's numbers by hand
+
+The referee stops a delta that breaks the rules. It cannot stop one that is merely wrong —
+a graze that cost 40 hp is legal and still not what the scene described. So the newest turn
+carries an editor (`⚖` under the message; `PUT /adventures/{id}/actions/{id}/world-delta`).
+It takes the whole delta back, edited: a number changed, a change dropped, a change the
+turn missed added.
+
+It is a **replay, not a patch**. The world state is rewound to what the turn started from —
+the preceding node's `world_state_after` — and the edited delta goes through `apply_delta`
+at the same depth. Every limit therefore still holds: an edit past `max_delta_per_turn` is
+clamped and says so, and the cooldown clock reads the same as it did when the turn played.
+The revised outcome is written back onto the node, because undo and take-switching restore a
+node's outcome and would otherwise put the model's numbers back.
+
+Only the newest turn can be revised, and the endpoint returns 409 for any other. Every state
+after a turn was played from what that turn left behind, so re-running an older one would
+leave the states below it describing a turn the story no longer contains.
+
+Setting a value outright — ignoring caps, cooldowns and counters — is a different act and has
+its own endpoint: `PUT /adventures/{id}/world-state`, the World drawer's `✎`. A revision says
+"the turn did this"; an override says "the value is now that".
 
 ### One call, not two
 

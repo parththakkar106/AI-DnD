@@ -109,6 +109,18 @@ export const api = {
   getWorldState: (id) => request(`/adventures/${id}/world-state`),
   overrideWorldState: (id, overrides) =>
     request(`/adventures/${id}/world-state`, { method: 'PUT', body: JSON.stringify(overrides) }),
+  // One turn's proposed changes, by path, and what the referee did with them.
+  // Read when the delta editor opens; `editable` is false for any turn but the
+  // newest, which is the only one a revision may touch.
+  getWorldDelta: (id, actionId) =>
+    request(`/adventures/${id}/actions/${actionId}/world-delta`),
+  // Replays the newest turn's changes with `delta` in place of the AI's. The
+  // body is the whole corrected object, not a patch: a path left out is a
+  // change removed. It goes through the same referee a turn does, so the reply
+  // carries a report that may clamp or refuse what was sent.
+  reviseWorldDelta: (id, actionId, delta) =>
+    request(`/adventures/${id}/actions/${actionId}/world-delta`,
+      { method: 'PUT', body: JSON.stringify(delta) }),
   createAdventure: (data) => request('/adventures', { method: 'POST', body: JSON.stringify(data) }),
   updateAdventure: (id, data) => request(`/adventures/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteAdventure: (id) => request(`/adventures/${id}`, { method: 'DELETE' }),

@@ -37,6 +37,7 @@ from . import (  # noqa: F401
     insights,
     memories,
     actions,
+    worlddelta,
 )
 from ... import limits  # noqa: F401  `adventures.limits` is patched by tests.
 from .crud import SNIPPET_MAX, _snippet

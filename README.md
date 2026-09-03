@@ -47,8 +47,10 @@ isn't the live one starts a new branch.*
   cast; the adventure carries their live values. The AI proposes deltas, and a Python engine
   referees them: it clamps values to range, enforces per-turn caps and cooldowns, keeps counters
   monotonic and milestones sticky, then strips the machine-readable block out of the prose
-  (`backend/app/worldstate/engine.py`). Word-labeled bands (`40–60: minor damage`) make the
-  model reliable at it. No dice and no scripting are required.
+  (`backend/app/worldstate/`). Word-labeled bands (`40–60: minor damage`) make the
+  model reliable at it. When a turn's numbers are legal but wrong, ⚖ under the newest message
+  edits them and replays the turn through the same referee. No dice and no scripting are
+  required.
 - **AI Dungeon-compatible context engine.** Memory, author's note, and story cards (world
   info) are triggered by keywords in recent story text, then assembled under a token budget
   (`backend/app/context/builder.py`).

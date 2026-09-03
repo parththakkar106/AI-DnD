@@ -446,6 +446,17 @@ class Action(Base):
     adventure: Mapped[Adventure] = relationship(back_populates="actions")
 
     @property
+    def world_changes_revised(self) -> bool:
+        """True when a player replaced this turn's state changes with their own.
+
+        The changes below are then the player's numbers rather than the model's,
+        put through the same referee. The flag is written by the revision
+        endpoint and read only for display, so that a turn whose numbers were
+        corrected says so on re-reading the story."""
+        wd = self.world_delta if isinstance(self.world_delta, dict) else None
+        return bool(wd and wd.get("revised"))
+
+    @property
     def world_changes(self) -> list[dict]:
         """Compact per-turn RPG state changes (Phase 12), for the inline summary
         under an AI message. Labels are path-based (no schema needed):

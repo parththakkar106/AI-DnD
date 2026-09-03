@@ -185,7 +185,7 @@ def test_volatile_sections_sit_after_the_history(story):
     db, adventure, settings = story
     _, story_text, _ = builder.build_context(adventure, settings)
     history_at = story_text.index("[5] The road bends")
-    for label in ("Story summary:", "World state"):
+    for label in ("Story summary:", "Current world state"):
         assert story_text.index(label) > history_at, label
 
 

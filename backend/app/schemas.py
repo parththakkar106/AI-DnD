@@ -205,6 +205,9 @@ class ActionOut(ORMModel):
     # Phase 12: the compact RPG state changes for this turn, read from the
     # model property.
     world_changes: list[dict] = []
+    # True when those changes are a player's correction of the turn rather than
+    # the model's own proposal. See `PUT /actions/{id}/world-delta`.
+    world_changes_revised: bool = False
     # SP9: the pager, such as `2/4`. It reports how many attempts this turn has
     # and which one is on screen. It is keyed on the parent, so it counts the
     # attempts of this turn rather than every node that shares a depth, and it
