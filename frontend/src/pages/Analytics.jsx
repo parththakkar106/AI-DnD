@@ -8,9 +8,10 @@
    Charts are plain HTML — a flex row of columns, a row of bars — rather than
    SVG or a charting library. At this size that is less code, responsive for
    free, and keeps the CSP as tight as it is. */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useOutletContext } from 'react-router-dom'
 import { api } from '../api'
+import { codeForCountry, countryLabel } from '../countries'
 
 const RANGES = [
   { days: 7, label: '7 days' },
@@ -168,7 +169,9 @@ function Funnel({ steps }) {
   )
 }
 
-function TopList({ title, rows, note, empty = 'Nothing yet' }) {
+/* `labelOf` exists for the country list, whose labels are stored as ISO codes
+   and are unreadable as they stand. Every other list already holds words. */
+function TopList({ title, rows, note, empty = 'Nothing yet', labelOf = (label) => label }) {
   const max = Math.max(1, ...rows.map((r) => r.hits))
   return (
     <section className="an-card">
@@ -185,7 +188,7 @@ function TopList({ title, rows, note, empty = 'Nothing yet' }) {
               {/* The bar is the row's own background, so a long label stays
                   readable on top of it instead of being squeezed beside it. */}
               <span className="an-list-fill" style={{ width: `${(row.hits / max) * 100}%` }} />
-              <span className="an-list-label" title={row.label}>{row.label}</span>
+              <span className="an-list-label" title={row.label}>{labelOf(row.label)}</span>
               <span className="an-list-value">{nf.format(row.hits)}</span>
             </li>
           ))}
@@ -217,6 +220,118 @@ function when(iso) {
   return date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
 }
 
+/* What one person did, opened from their row in the table.
+
+   The table answers who arrived. This answers what they came for: counts,
+   dates, the shared scenarios they chose, and the addresses they arrived from.
+   It shows nothing they wrote. The server does not send their adventure titles
+   or their text, and it counts the scenarios they wrote themselves without
+   naming them. */
+
+const DEVICE_WORD = { desktop: 'Desktop', mobile: 'Phone', tablet: 'Tablet', bot: 'Bot' }
+
+function Fact({ term, children }) {
+  return (
+    <div className="an-fact">
+      <dt>{term}</dt>
+      <dd>{children}</dd>
+    </div>
+  )
+}
+
+function PersonCard({ detail }) {
+  if (!detail) return <div className="an-person an-empty">Reading…</div>
+  if (detail.error) {
+    return <div className="an-person an-empty">Couldn’t open this person: {detail.error}</div>
+  }
+
+  const log = detail.log
+  const devices = detail.devices.map((name) => DEVICE_WORD[name] || name).join(', ')
+  const played = detail.scenarios.length > 0 || detail.own_scenarios > 0
+  return (
+    <div className="an-person">
+      <div className="an-person-tiles">
+        <div className="an-person-tile">
+          <b>{nf.format(detail.adventures)}</b><span>Adventures</span>
+        </div>
+        <div className="an-person-tile">
+          <b>{nf.format(detail.turns)}</b><span>Turns played</span>
+        </div>
+        {/* One session row per day per address, so this is days here rather
+            than visits, and it is the honest name for it. */}
+        <div className="an-person-tile">
+          <b>{nf.format(log.sessions)}</b><span>Days seen</span>
+        </div>
+        <div className="an-person-tile">
+          <b>{nf.format(log.logins)}</b><span>Sign-ins</span>
+        </div>
+      </div>
+
+      <div className="an-person-cols">
+        <dl className="an-facts">
+          <Fact term="First seen">{when(log.first_at)}</Fact>
+          <Fact term="Last seen">{when(log.last_at)}</Fact>
+          <Fact term="Last played">
+            {detail.last_played_at ? when(detail.last_played_at) : 'No turns yet'}
+          </Fact>
+          <Fact term="Account">
+            {!detail.account_exists
+              ? 'Deleted — the log kept the rows'
+              : detail.is_guest
+                ? 'Guest, never registered'
+                : log.registered_at
+                  ? `Registered ${when(log.registered_at)}`
+                  : `Account since ${when(detail.account_since)}`}
+          </Fact>
+          {detail.demo_turns_today > 0 && (
+            <Fact term="On the demo key">
+              {nf.format(detail.demo_turns_today)} turns today
+            </Fact>
+          )}
+        </dl>
+
+        <div className="an-person-block">
+          <h4>What they played</h4>
+          {!played ? (
+            <p className="an-person-note">Nothing started yet.</p>
+          ) : (
+            <ul className="an-person-list">
+              {detail.scenarios.map((row) => (
+                <li key={row.title}>
+                  <span className="an-person-name" title={row.title}>{row.title}</span>
+                  <span className="an-cell-dim">{nf.format(row.adventures)}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {detail.own_scenarios > 0 && (
+            <p className="an-person-note">
+              {nf.format(detail.own_scenarios)} scenario
+              {detail.own_scenarios === 1 ? '' : 's'} of their own, which this
+              page counts but doesn’t name.
+            </p>
+          )}
+        </div>
+
+        <div className="an-person-block">
+          <h4>Where from</h4>
+          <ul className="an-person-list">
+            {detail.places.map((place) => (
+              <li key={`${place.ip}|${place.country}`}>
+                <span className="an-cell-mono">{place.ip || '—'}</span>
+                <span className="an-cell-dim" title={place.country || undefined}>
+                  {place.country ? countryLabel(place.country) : '—'}
+                </span>
+              </li>
+            ))}
+          </ul>
+          {devices && <p className="an-person-note">{devices}</p>}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function AccessLog() {
   const [kind, setKind] = useState('')
   const [search, setSearch] = useState('')
@@ -224,6 +339,12 @@ function AccessLog() {
   const [page, setPage] = useState(null)   // { events, has_more }
   const [error, setError] = useState(null)
   const [busy, setBusy] = useState(false)
+  const [openRow, setOpenRow] = useState(null)   // which row is expanded
+  // user id -> their detail, kept so reopening a person is instant. The same
+  // person usually owns several rows on screen, and each one opens the same
+  // card. A missing entry is one still in flight, which the card reads as
+  // "Reading…".
+  const [people, setPeople] = useState({})
 
   // Typing shouldn't fire a request per keystroke against a table scan.
   useEffect(() => {
@@ -231,15 +352,37 @@ function AccessLog() {
     return () => clearTimeout(timer)
   }, [search])
 
+  // The country column is stored as an ISO code, so a search for "Germany"
+  // would match nothing. A search that names exactly one country is sent as
+  // that country's code; anything else is sent as typed.
+  const lookup = useMemo(() => codeForCountry(query) || query, [query])
+
   useEffect(() => {
     let live = true
     setPage(null)
-    api.getAccessLog({ kind, q: query }).then(
+    setOpenRow(null)
+    api.getAccessLog({ kind, q: lookup }).then(
       (result) => { if (live) { setPage(result); setError(null) } },
       (err) => { if (live) setError(err.message) },
     )
     return () => { live = false }
-  }, [kind, query])
+  }, [kind, lookup])
+
+  // A row with no user id is a failed sign-in: it names an address that no
+  // account answers to, so there is nothing to open. Asked-for ids live in a
+  // ref rather than in `people`, so that opening the same person twice while
+  // the first request is still out doesn't send a second one.
+  const asked = useRef(new Set())
+  const openPerson = useCallback((event) => {
+    if (!event.user_id) return
+    setOpenRow((current) => (current === event.id ? null : event.id))
+    if (asked.current.has(event.user_id)) return
+    asked.current.add(event.user_id)
+    api.getPerson(event.user_id).then(
+      (detail) => setPeople((now) => ({ ...now, [event.user_id]: detail })),
+      (err) => setPeople((now) => ({ ...now, [event.user_id]: { error: err.message } })),
+    )
+  }, [])
 
   const loadMore = useCallback(async () => {
     if (!page?.events.length || busy) return
@@ -248,7 +391,7 @@ function AccessLog() {
       // Anchored on the oldest row already on screen, so rows arriving while
       // this is open can't shift the next page.
       const next = await api.getAccessLog({
-        kind, q: query, beforeId: page.events[page.events.length - 1].id,
+        kind, q: lookup, beforeId: page.events[page.events.length - 1].id,
       })
       setPage({ events: [...page.events, ...next.events], has_more: next.has_more })
     } catch (err) {
@@ -256,7 +399,7 @@ function AccessLog() {
     } finally {
       setBusy(false)
     }
-  }, [page, kind, query, busy])
+  }, [page, kind, lookup, busy])
 
   return (
     <section className="an-card">
@@ -300,22 +443,47 @@ function AccessLog() {
               </thead>
               <tbody>
                 {page.events.map((event) => (
-                  <tr key={event.id} className={event.kind === 'login_failed' ? 'failed' : undefined}>
-                    <td className="an-cell-dim">{when(event.at)}</td>
-                    <td>
-                      {event.who}
-                      {event.is_guest && <span className="an-tag">guest</span>}
-                    </td>
-                    <td>{KIND_LABEL[event.kind] || event.kind}</td>
-                    <td className="an-cell-mono">{event.ip || '—'}</td>
-                    <td>{event.country || '—'}</td>
-                    {/* The full user-agent is a wall of text; it lives on the
-                        hover instead of in a column that would push the rest
-                        of the table off screen. */}
-                    <td className="an-cell-dim" title={event.user_agent || undefined}>
-                      {event.device || '—'}
-                    </td>
-                  </tr>
+                  <Fragment key={event.id}>
+                    <tr className={event.kind === 'login_failed' ? 'failed' : undefined}>
+                      <td className="an-cell-dim">{when(event.at)}</td>
+                      <td>
+                        {/* The name is the way in to what this person did.
+                            A failed sign-in has no account behind it, so that
+                            row's name is plain text. */}
+                        {event.user_id ? (
+                          <button
+                            type="button"
+                            className="an-who"
+                            aria-expanded={openRow === event.id}
+                            onClick={() => openPerson(event)}
+                          >
+                            <span className="an-who-mark">
+                              {openRow === event.id ? '▾' : '▸'}
+                            </span>
+                            {event.who}
+                          </button>
+                        ) : event.who}
+                        {event.is_guest && <span className="an-tag">guest</span>}
+                      </td>
+                      <td>{KIND_LABEL[event.kind] || event.kind}</td>
+                      <td className="an-cell-mono">{event.ip || '—'}</td>
+                      {/* Stored as an ISO code, read as a country. */}
+                      <td title={event.country || undefined}>
+                        {event.country ? countryLabel(event.country) : '—'}
+                      </td>
+                      {/* The full user-agent is a wall of text; it lives on the
+                          hover instead of in a column that would push the rest
+                          of the table off screen. */}
+                      <td className="an-cell-dim" title={event.user_agent || undefined}>
+                        {event.device || '—'}
+                      </td>
+                    </tr>
+                    {openRow === event.id && (
+                      <tr className="an-person-row">
+                        <td colSpan={6}><PersonCard detail={people[event.user_id]} /></td>
+                      </tr>
+                    )}
+                  </Fragment>
                 ))}
               </tbody>
             </table>
@@ -458,7 +626,7 @@ export default function Analytics() {
             />
             <TopList title="Scenarios started" rows={data.scenarios}
               note="shared scenarios only" empty="No adventures started yet." />
-            <TopList title="Countries" rows={data.countries} />
+            <TopList title="Countries" rows={data.countries} labelOf={countryLabel} />
             <TopList title="Devices" rows={data.devices} />
             <TopList title="API errors" rows={data.errors} empty="None — clean run." />
           </div>

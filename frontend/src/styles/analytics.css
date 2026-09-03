@@ -285,3 +285,77 @@
   max-width: 70ch;
 }
 
+
+/* ----- One person, opened from their row ----- */
+
+/* The name is a control, so it looks like one on hover and nowhere else: a
+   table where every name is underlined reads as a page of links. */
+.an-who {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.an-who:hover { color: var(--accent-bright); }
+.an-who-mark { color: var(--text-dim); margin-right: 6px; font-size: 0.7rem; }
+.an-who:hover .an-who-mark { color: var(--accent-bright); }
+
+/* The card sits in one cell that spans the table, so it is a panel inside the
+   row rather than six more columns to line up. */
+.an-person-row td { padding: 0; white-space: normal; }
+.an-person-row:hover { background: none; }
+.an-person {
+  background: var(--bg);
+  border-left: 2px solid var(--accent);
+  padding: 14px 16px;
+}
+.an-person-tiles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 22px;
+  margin-bottom: 14px;
+}
+.an-person-tile { display: flex; flex-direction: column; gap: 2px; }
+.an-person-tile b {
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  font-weight: 400;
+  color: var(--accent-bright);
+}
+.an-person-tile span { font-size: 0.72rem; color: var(--text-dim); }
+
+.an-person-cols {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 16px 30px;
+}
+/* The tracks stretch so that three of them fill the table, but their contents
+   do not: these are pairs of a name and a number, and a full-width row would
+   leave the number stranded at the far edge. */
+.an-person-cols > * { max-width: 340px; }
+.an-facts { margin: 0; display: flex; flex-direction: column; gap: 6px; }
+.an-fact { display: flex; justify-content: space-between; gap: 12px; }
+.an-fact dt { color: var(--text-dim); font-size: 0.76rem; }
+.an-fact dd { margin: 0; font-size: 0.78rem; text-align: right; }
+
+.an-person-block h4 {
+  margin: 0 0 8px;
+  font-family: var(--font-display);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  font-weight: 500;
+}
+.an-person-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
+.an-person-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 0.78rem;
+}
+/* A scenario title is the one value here that can be any length. */
+.an-person-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.an-person-note { margin: 8px 0 0; font-size: 0.72rem; color: var(--text-dim); line-height: 1.5; }

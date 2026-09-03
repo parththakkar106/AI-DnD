@@ -5,7 +5,9 @@ so these tests pin the details that would quietly make it wrong. The
 address recorded must be the hardened one, not a header a client chose.
 Session rows must be thinned instead of written on every page load. And a
 row must outlive the account it describes, because guest cleanup deletes
-accounts on a schedule, and a log that deletes itself is not a log.
+accounts on a schedule, and a log that deletes itself is not a log. The
+person page adds a second limit to hold: it reports what someone played,
+and never what they wrote.
 
     python -m pytest tests/test_accesslog.py -v
 """
@@ -206,3 +208,128 @@ def test_the_log_filters_by_kind_and_searches(client):
     by_ip = read_log(client, q="203.0.113.44").json()["events"]
     assert len(by_ip) == 1
     assert read_log(client, q="nobody@example.com").json()["events"] == []
+
+
+# ---------- One person ----------
+
+def read_person(client, user_id):
+    return client.get(f"/api/analytics/access/{user_id}")
+
+
+def played(user_id, *, turns=0, scenario=None):
+    """Gives a user an adventure with `turns` AI replies in it."""
+    db = SessionLocal()
+    try:
+        adventure = models.Adventure(user_id=user_id, title="Their story")
+        if scenario is not None:
+            adventure.scenario_id = scenario
+        db.add(adventure)
+        db.flush()
+        for _ in range(turns):
+            db.add(models.Action(adventure_id=adventure.id, type="ai", text="..."))
+        db.commit()
+        return adventure.id
+    finally:
+        db.close()
+
+
+def scenario(title, *, public, user_id=None):
+    db = SessionLocal()
+    try:
+        row = models.Scenario(title=title, is_public=public, user_id=user_id)
+        db.add(row)
+        db.commit()
+        return row.id
+    finally:
+        db.close()
+
+
+def test_a_person_page_says_what_they_played(client):
+    member = client.ids["member"]
+    client.post("/api/auth/login", json={"email": "player@example.com", "password": "hunter2long"},
+                headers={"x-forwarded-for": EDGE})
+    played(member, turns=3)
+    played(member, turns=2)
+
+    detail = read_person(client, member).json()
+    assert detail["who"] == "player@example.com"
+    assert detail["account_exists"] and not detail["is_guest"]
+    assert detail["adventures"] == 2
+    # A turn is one AI reply, which is what the dashboard counts as a turn.
+    assert detail["turns"] == 5
+    assert detail["log"]["logins"] == 1
+    assert detail["last_played_at"] and detail["first_adventure_at"]
+
+
+def test_a_person_page_dates_the_registration_from_the_log(client):
+    visit(client)               # creates the guest whose session then registers
+    guest = rows()[0].user_id
+    client.act_as(guest)
+    client.post("/api/auth/register", json={"email": "new@example.com", "password": "hunter2long"})
+    client.act_as(client.ids["owner"])
+
+    detail = read_person(client, guest).json()
+    # `User.created_at` is when the guest row was made, because registration
+    # upgrades that row in place. The register row is the date they signed up.
+    assert detail["log"]["registered_at"] and detail["account_since"]
+    assert not detail["is_guest"]
+
+
+def test_a_person_page_names_shared_scenarios_but_not_their_own(client):
+    member = client.ids["member"]
+    played(member, turns=1, scenario=scenario("The Sunken Library", public=True))
+    played(member, turns=1, scenario=scenario("My private draft", public=False, user_id=member))
+
+    detail = read_person(client, member).json()
+    # A scenario everyone can see is a choice worth reporting. One they wrote is
+    # their writing, so it is counted and left unnamed.
+    assert [row["title"] for row in detail["scenarios"]] == ["The Sunken Library"]
+    assert detail["own_scenarios"] == 1
+
+
+def test_a_person_page_lists_the_addresses_they_arrived_from(client):
+    visit(client)
+    guest = rows()[0].user_id
+    visit(client, ip="203.0.113.9", ua="Mozilla/5.0 (iPhone; CPU iPhone OS 17_0)")
+
+    detail = read_person(client, guest).json()
+    assert [place["ip"] for place in detail["places"]] == ["203.0.113.9", EDGE]
+    assert sorted(detail["devices"]) == ["desktop", "mobile"]
+    assert detail["log"]["sessions"] == 2 and detail["is_guest"]
+
+
+def test_a_person_page_outlives_the_account(client):
+    visit(client)
+    entry = rows()[0]
+    played(entry.user_id, turns=2)
+    db = SessionLocal()
+    try:
+        db.delete(db.get(models.User, entry.user_id))
+        db.commit()
+    finally:
+        db.close()
+
+    detail = read_person(client, entry.user_id).json()
+    # Guest cleanup deletes accounts on a schedule. The rows stay, so the page
+    # still names them and reports that the account is gone.
+    assert detail["who"] == entry.who and not detail["account_exists"]
+    assert detail["log"]["sessions"] == 1
+    # The adventures went with the account, which is what the cascade is for.
+    assert detail["adventures"] == 0
+
+
+def test_a_failed_sign_in_has_no_person_page(client):
+    client.post("/api/auth/login", json={"email": "ghost@example.com", "password": "wrong"},
+                headers={"x-forwarded-for": EDGE})
+    failure = rows(accesslog.LOGIN_FAILED)[0]
+    # The row names an address, not an account, so there is nothing to open.
+    assert failure.user_id is None
+    assert read_person(client, 9999).status_code == 404
+
+
+def test_the_person_page_is_owner_only(client):
+    visit(client)
+    guest = rows()[0].user_id
+    assert read_person(client, guest).status_code == 200
+    client.act_as(client.ids["member"])
+    assert read_person(client, guest).status_code == 404

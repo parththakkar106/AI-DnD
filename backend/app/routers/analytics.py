@@ -10,7 +10,8 @@ The two reading endpoints are owner-only and 404 for everyone else, the same
 way the AI Chat router does: a feature nobody else can use is better off not
 appearing to exist. `/summary` serves the anonymous counters (analytics.py,
 which stores nothing that points at a person) and `/access` serves the access
-log (accesslog.py, which identifies people on purpose).
+log (accesslog.py, which identifies people on purpose). `/access/{user_id}`
+gathers one person's rows and says what they played.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -128,6 +129,9 @@ def access_log(
                 "at": event.at.isoformat(),
                 "kind": event.kind,
                 "who": event.who,
+                # NULL for a failed sign-in, which names an address rather than
+                # an account. The page opens a row only when there is one.
+                "user_id": event.user_id,
                 "is_guest": event.is_guest,
                 "ip": event.ip,
                 "country": event.country,
@@ -138,3 +142,25 @@ def access_log(
         ],
         "has_more": page["has_more"],
     }
+
+
+@router.get("/access/{user_id}")
+def access_person(
+    user_id: int,
+    db: Session = Depends(get_db),
+    _user: models.User = Owner,
+) -> dict:
+    """What one person in the access log has done.
+
+    The table says that somebody arrived. This says what they came for, which is
+    the question a row of addresses always raises. Same owner gate, and the same
+    limit on what it will say: counts, dates, addresses and the shared scenarios
+    they chose, but nothing they wrote.
+
+    A failed sign-in names an address that no account answers to, so there is
+    nothing to open and this returns 404.
+    """
+    detail = accesslog.person(db, user_id)
+    if not detail:
+        raise HTTPException(404, "Not found")
+    return detail

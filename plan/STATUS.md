@@ -3,7 +3,7 @@
 Read this first when picking the project back up. Updated at the end of a working
 session; the per-phase plan files hold the detail, this holds the thread.
 
-**Last updated: 2026-08-31.**
+**Last updated: 2026-09-03.**
 
 ---
 
@@ -73,6 +73,52 @@ endpoint, not `-pooler`: through transaction pooling it is unreliable.
 **Aggregates only, and ask first.** Real users are on this database. Counts,
 `octet_length` sums and catalog sizes answer every sizing question this project has
 needed; nothing requires reading a row of anyone's story.
+
+---
+
+## What happened on 2026-09-03 — the access log says what people came for
+
+**A row in the log named someone and stopped there.** Who arrived, from which address,
+on what device — and no way to ask what any of them actually did. Clicking a name now
+opens a card under that row: adventures started, turns played, days seen, sign-ins,
+first and last seen, when they last played, the shared scenarios they chose, and every
+address they have arrived from with its country and device. `accesslog.person` gathers
+it and `GET /api/analytics/access/{user_id}` serves it, behind the same owner gate as
+the rest.
+
+**It reports what they played and never what they wrote.** No adventure title and no
+line of anyone's story reaches this endpoint. Scenarios are named only when
+`is_public` — a scenario someone wrote themselves is counted and left unnamed, which is
+the one number on the card with a sentence under it explaining why it has no titles.
+The split the two modules exist to keep holds: the counters still cannot identify
+anyone, and this half still says nothing about content.
+
+**A failed sign-in has no card.** Those rows carry `user_id` NULL, because they name an
+address that no account answers to, so the name stays plain text and the endpoint 404s.
+A deleted account does have one: `user_id` has no foreign key and `who` is a snapshot,
+so the card names them from the newest surviving row and says the account is gone. Their
+adventures went with it, which is what the cascade is for, so the play counts read zero.
+
+**Country codes are now countries.** `frontend/src/countries.js` turns `IN` into
+`🇮🇳 India` — `Intl.DisplayNames` for the name, in the reader's own language, and
+arithmetic on the regional indicator letters for the flag, so no table of 250 names ships
+to anybody. Both places that showed a code use it: the log's Country column and the
+Countries list on the Overview tab. The search box goes the other way, since the rows
+store codes: a query that names exactly one country is sent as that country's code, and
+"Ind", which is India and Indonesia, stays a plain text search rather than a guess.
+
+**One thing the API had to give up.** `/access` rows now carry `user_id`, because the
+page cannot open a person it cannot name. `func.max` over a `DateTime` returns a datetime
+on PostgreSQL and a string on SQLite, so `accesslog._iso` accepts both.
+
+Seven new tests in `test_accesslog.py`: what the card counts, that it dates the
+registration from the log, that it names shared scenarios and not their own, that it
+lists the addresses, that it outlives the account, that a failed attempt has no card,
+and that a member gets a 404 from it. The five files around this work — access log,
+analytics, rate limits, guest cleanup, egress — are 96 green. The rest of the suite was not run here: this session's sandbox blocks the
+download `tiktoken` does on import, which fails every test that builds a prompt, and
+that is the environment rather than the code. Run `python -m pytest` on a machine with
+network before this is called green.
 
 ---
 

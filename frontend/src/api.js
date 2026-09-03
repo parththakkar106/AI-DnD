@@ -82,6 +82,8 @@ export const api = {
     if (q) params.set('q', q)
     return request(`/analytics/access?${params}`)
   },
+  // What one person in the access log has done. Owner-only, like the log.
+  getPerson: (userId) => request(`/analytics/access/${userId}`),
 
   // Auth (Phase 8 — no-ops in local mode beyond getMe)
   getMe: () => request('/auth/me'),

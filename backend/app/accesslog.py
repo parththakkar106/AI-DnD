@@ -22,12 +22,16 @@ load, and one row per load would be noise rather than a log. A row is written
 when the day or the address changes for that user. That is the granularity a log
 is read at, such as seen on the 3rd from 1.2.3.4, and it still records someone
 moving networks during a day.
+
+A table of arrivals raises the question it cannot answer, which is what any of
+these people came for. `person` answers that one: it gathers the rows about a
+single user and joins them to what that user played.
 """
 
 import logging
 import threading
 
-from sqlalchemy import desc, or_, select
+from sqlalchemy import desc, func, or_, select
 from sqlalchemy.orm import Session
 
 from . import analytics, models
@@ -166,3 +170,187 @@ def recent(
     rows = list(db.scalars(statement.limit(limit + 1)))
     has_more = len(rows) > limit
     return {"events": rows[:limit], "has_more": has_more}
+
+
+def _iso(value) -> str | None:
+    """Returns a timestamp from an aggregate as an ISO string.
+
+    `func.max` over a DateTime column returns a datetime on PostgreSQL and a
+    string on SQLite, because SQLite has no date type and SQLAlchemy cannot
+    infer one through the function. Both are already ISO here; only the datetime
+    needs converting.
+    """
+    if not value:
+        return None
+    return value.isoformat() if hasattr(value, "isoformat") else str(value)
+
+
+def _snapshot(db: Session, user_id: int):
+    """Returns the newest log row for a user, which is the only description of
+    them that survives the account."""
+    return db.scalars(
+        select(models.AccessEvent)
+        .where(models.AccessEvent.user_id == user_id)
+        .order_by(desc(models.AccessEvent.id))
+        .limit(1)
+    ).first()
+
+
+def _describe_gone(snapshot, user_id: int) -> str:
+    """Returns how to name a user whose account no longer exists."""
+    return snapshot.who if snapshot and snapshot.who else f"User #{user_id}"
+
+
+def _is_guest(user, snapshot) -> bool:
+    """Whether this person is a guest, from the account or from the log."""
+    if user is not None:
+        return bool(user.is_guest)
+    return bool(snapshot.is_guest) if snapshot is not None else False
+
+
+def _demo_turns_today(user) -> int:
+    """Turns they have taken on the shared demo key today, and 0 on any other
+    day: the stored tally is reset lazily, by the next turn."""
+    if user is None or user.demo_turns_date != analytics._today():
+        return 0
+    return int(user.demo_turns_used)
+
+def person(db: Session, user_id: int) -> dict:
+    """Returns what one person in the log has done, or {} when nobody matches.
+
+    The table answers who arrived. This answers what they came back for: how
+    many adventures they started, how many turns they played, which shared
+    scenarios they chose, and the addresses and devices those arrivals came
+    from. The log half comes from this module's own table, the play half from
+    their adventures.
+
+    Two things are deliberately absent. Adventure titles and any text they
+    wrote are their story, not their record, so nothing here reads a story, and
+    the scenario list names only scenarios everyone can see. A failed sign-in
+    has no account behind it and so has no entry here, which is the one case
+    that returns {} while the row itself stays in the table.
+
+    An account that guest cleanup has since deleted does have an entry. The log
+    outlives the account by design, so the answer becomes "gone, and this is
+    what they did while they were here" rather than an error.
+    """
+    event = models.AccessEvent
+    seen = db.execute(
+        select(func.count(), func.min(event.at), func.max(event.at))
+        .where(event.user_id == user_id)
+    ).one()
+    user = db.get(models.User, user_id)
+    if not seen[0] and user is None:
+        return {}
+    # When the account is gone, the newest row is the only description of them
+    # that is left. Guest cleanup deletes accounts on a schedule, so this is the
+    # ordinary case for anyone who visited once and never registered.
+    snapshot = _snapshot(db, user_id) if user is None else None
+
+    # The register row, of which an account has at most one, is the only record
+    # of when they stopped being a guest.
+    registered_at = db.scalar(
+        select(func.max(event.at))
+        .where(event.user_id == user_id, event.kind == REGISTER)
+    )
+    kinds = {
+        kind: int(count)
+        for kind, count in db.execute(
+            select(event.kind, func.count())
+            .where(event.user_id == user_id)
+            .group_by(event.kind)
+        )
+    }
+    # One row per address the person has arrived from, the eight most recent
+    # first. A visitor on a phone and a laptop, or one who moved networks, is
+    # the reason this is a list rather than a single last-seen address.
+    places = [
+        {
+            "ip": ip,
+            "country": country,
+            "hits": int(count),
+            "last_at": _iso(last),
+        }
+        for ip, country, count, last in db.execute(
+            select(event.ip, event.country, func.count(), func.max(event.at))
+            .where(event.user_id == user_id)
+            .group_by(event.ip, event.country)
+            .order_by(desc(func.max(event.at)))
+            .limit(8)
+        )
+    ]
+    devices = [
+        device
+        for device, in db.execute(
+            select(event.device)
+            .where(event.user_id == user_id, event.device != "")
+            .group_by(event.device)
+            .order_by(desc(func.count()))
+        )
+    ]
+
+    adventure = models.Adventure
+    started, first_started = db.execute(
+        select(func.count(), func.min(adventure.created_at))
+        .where(adventure.user_id == user_id)
+    ).one()
+    # A turn is one AI reply, counted the same way the dashboard counts it. This
+    # number includes retries, because a retry is a turn that was played and
+    # paid for even when the reply was thrown away. The newest of those replies
+    # is when they last played, which `Adventure.updated_at` is not: editing an
+    # adventure's memory moves that column without a turn being played.
+    turns, last_played = db.execute(
+        select(func.count(), func.max(models.Action.created_at))
+        .select_from(models.Action)
+        .join(adventure, models.Action.adventure_id == adventure.id)
+        .where(adventure.user_id == user_id, models.Action.type == "ai")
+    ).one()
+    scenarios = [
+        {"title": title, "adventures": int(count)}
+        for title, count in db.execute(
+            select(models.Scenario.title, func.count())
+            .join(adventure, adventure.scenario_id == models.Scenario.id)
+            .where(adventure.user_id == user_id, models.Scenario.is_public.is_(True))
+            .group_by(models.Scenario.title)
+            .order_by(desc(func.count()))
+            .limit(6)
+        )
+    ]
+    # Their own scenarios are counted but never named, for the reason in the
+    # docstring: a scenario they wrote is their writing.
+    own_scenarios = db.scalar(
+        select(func.count())
+        .select_from(models.Scenario)
+        .where(models.Scenario.user_id == user_id, models.Scenario.is_public.is_(False))
+    )
+
+    return {
+        "user_id": user_id,
+        "who": describe(user) if user is not None else _describe_gone(snapshot, user_id),
+        "is_guest": _is_guest(user, snapshot),
+        "account_exists": user is not None,
+        # When the row was created, which for a registered account is their
+        # first visit as a guest: registration upgrades the row in place. The
+        # date they registered is the log's own `register` row, above.
+        "account_since": _iso(user.created_at) if user is not None else None,
+        "last_seen_at": _iso(user.last_seen_at) if user is not None else None,
+        # The tally resets on the first turn taken on a new UTC day, so a stored
+        # count from an earlier day is spent, not owed.
+        "demo_turns_today": _demo_turns_today(user),
+        "adventures": int(started or 0),
+        "turns": int(turns or 0),
+        "first_adventure_at": _iso(first_started),
+        "last_played_at": _iso(last_played),
+        "scenarios": scenarios,
+        "own_scenarios": int(own_scenarios or 0),
+        "log": {
+            "rows": int(seen[0]),
+            "first_at": _iso(seen[1]),
+            "last_at": _iso(seen[2]),
+            "sessions": kinds.get(SESSION, 0),
+            "logins": kinds.get(LOGIN, 0),
+            "registered_at": _iso(registered_at),
+        },
+        "places": places,
+        "devices": devices,
+    }
