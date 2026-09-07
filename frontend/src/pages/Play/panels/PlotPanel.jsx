@@ -73,9 +73,9 @@ function PlotPanel({ adventure, setAdventure, onWorldStateChanged }) {
     }
   }
 
-  // Throw the current summary away and write a new one from the story. The
-  // versions before it stay on the server, so this is undone by deleting the
-  // version it wrote rather than by regretting the click.
+  // Discard the current summary and write a new one from the story. The
+  // versions before it stay on the server, so deleting the version this writes
+  // reverses the rebuild.
   const rebuildSummary = async () => {
     setRebuilding(true)
     try {
@@ -152,11 +152,11 @@ function PlotPanel({ adventure, setAdventure, onWorldStateChanged }) {
           placeholder="Running summary of events so far. Updated automatically every 15 actions when auto-summarization is on; your edits are kept as the base for the next update." />
         <div className="summary-actions">
           <span className="dim">
-            Each update is kept with the turn it was written at, so deleting a turn
-            or branching away from it brings back the summary from before.
+            Each update is stored with the turn that wrote it. If you delete that turn
+            or branch away from it, the summary from before it returns.
           </span>
           <button className="linklike" onClick={rebuildSummary} disabled={rebuilding}
-            title="Read the story again and write a new summary, ignoring the current one">
+            title="Read the story again and write a new summary from it, ignoring the current one">
             {rebuilding ? 'Rebuilding…' : '⟳ Regenerate from story'}
           </button>
         </div>

@@ -338,11 +338,11 @@ MIGRATIONS: list[tuple[int, str | dict[str, str]]] = [
     (74, "ALTER TABLE adventures ADD COLUMN persona_name VARCHAR(80) NOT NULL DEFAULT ''"),
     (75, "ALTER TABLE adventures ADD COLUMN persona_pronouns VARCHAR(40) NOT NULL DEFAULT ''"),
     (76, "ALTER TABLE adventures ADD COLUMN persona_desc TEXT NOT NULL DEFAULT ''"),
-    # The story summary becomes a row on the tree, like a memory. `create_all`
+    # The story summary becomes a row on the tree, as a memory is. `create_all`
     # makes the `summaries` table on both fresh and existing databases, so the
-    # only work left here is moving each adventure's text into it and dropping
-    # the column. The index is the DDL for 77 because a migration needs a
-    # statement to run, and it is the one this table wants: every read filters on
+    # work left here is moving each adventure's text into it and dropping the
+    # column. A migration needs a statement to run, and the index is the
+    # statement this table needs: every read filters on
     # (adventure_id, branch_id, depth). `_backfill_summary_rows` runs after it.
     (77, "CREATE INDEX IF NOT EXISTS ix_summaries_adventure_branch_depth "
          "ON summaries (adventure_id, branch_id, depth)"),
@@ -795,32 +795,31 @@ def _backfill_cursor_anchors(conn) -> None:
 def _backfill_summary_rows(conn) -> None:
     """Moves each adventure's `story_summary` text into the `summaries` table.
 
-    One row per adventure that has any text, anchored where that text had got
-    to. The summary cursor is the honest answer to "where had it got to": it
-    names the last action the summarizer folded in. An adventure whose cursor
-    was never set gets the opening node instead, which is the earliest
-    coordinate on the story and therefore the one visible from every branch.
-    Anchoring later than the truth would hide the text from a branch that forked
-    before the anchor, and this text is all the summary an upgrading player has.
+    The pass writes one row per adventure that has any text, anchored where that
+    text had read to. The summary cursor records where: it names the last action
+    the summarizer folded in. If an adventure has no cursor, the row goes on the
+    opening node, the earliest coordinate on the story and the only one visible
+    from every branch. A later anchor would hide the text from a branch that
+    forked before it, and this text is the whole summary an upgrading player has.
 
-    `source_start` is 0 rather than NULL, which says the row folded in the story
-    from its beginning. That is true of a summary built by repeated incremental
-    updates, and it makes withdrawal safe: deleting the node this row sits on
-    rewinds the summary cursor to before the story started, so the whole story
-    is folded in again rather than counted as read by a row that no longer
-    exists.
+    `source_start` is 0 rather than NULL, which records that the row folded in
+    the story from its beginning. That is true of a summary built by repeated
+    incremental updates, and it makes a withdrawal safe. Deleting the node this
+    row sits on rewinds the summary cursor to before the story starts, so the
+    pass folds the whole story in again rather than counting it as read by a row
+    that no longer exists.
 
-    The pass is guarded on the table being empty for that adventure, so a run
+    The pass runs only when the table holds no row for that adventure, so a run
     that fails partway through resumes without writing a second row.
     """
     if not _has_columns(conn, "adventures", "story_summary"):
         return
-    # A summary needs a branch to hang from: a row whose `branch_id` is NULL
-    # matches no lineage clause and would be invisible to every read. Migration
-    # 52 gave every adventure that existed then a root branch, and an adventure
-    # created since gets one from `tree.root_branch` on first use — which an
-    # adventure with a typed summary and no turns has never reached. This is
-    # step 1 of `_backfill_tree`, run again for those.
+    # A summary needs a branch. A row whose `branch_id` is NULL matches no
+    # lineage clause, so every read skips it. Migration 52 gave a root branch to
+    # every adventure that existed then, and an adventure created since gets one
+    # from `tree.root_branch` on first use. An adventure with a typed summary and
+    # no turns has never reached that call. This statement is step 1 of
+    # `_backfill_tree`, run again for those adventures.
     conn.execute(text("""
         INSERT INTO branches (adventure_id, parent_branch_id, fork_depth, lineage, created_at)
         SELECT a.id, NULL, NULL, '[]', CURRENT_TIMESTAMP
@@ -1165,9 +1164,9 @@ def bootstrap(engine: Engine, through: int = LATEST_VERSION) -> None:
                     _backfill_tree(conn)
                 if version == CURSOR_ANCHOR_VERSION:
                     _backfill_cursor_anchors(conn)
-                # Between 77, which indexes the table, and 78, which drops the
-                # column this reads. The loop is one transaction, so a failure
-                # here rolls the DROP back with it and the text is still there.
+                # This runs between 77, which indexes the table, and 78, which
+                # drops the column it reads. The loop is one transaction, so if
+                # this raises, the DROP rolls back with it and the text remains.
                 if version == SUMMARY_ROWS_VERSION:
                     _backfill_summary_rows(conn)
                 # The order matters. The split reads what the first pass wrote

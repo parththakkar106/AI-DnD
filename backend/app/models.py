@@ -107,9 +107,9 @@ class Adventure(Base):
     authors_note: Mapped[str] = mapped_column(Text, default="")
     ai_instructions: Mapped[str] = mapped_column(Text, default="")
     # The story summary is not a column. It is a row in `summaries`, anchored at
-    # the node it was written at, exactly as a memory is. `story_summary` below
-    # is a read-only property that resolves the newest one on the story being
-    # played. See `app/summaries.py` for why, and for what the column got wrong.
+    # the node that produced it, as a memory is. `story_summary` below is a
+    # read-only property that returns the newest version on the story being
+    # played. For the reasons, see `app/summaries.py`.
     # Phase 18: who the player is playing as. The AI never writes these — they
     # are user-only, which is what lets them sit in the cached system block
     # rather than below the history with the values that change. An empty
@@ -198,18 +198,17 @@ class Adventure(Base):
 
     @property
     def story_summary(self) -> str:
-        """The summary of the story being played, or "" if none was written yet.
+        """Returns the summary of the story being played, or "" if none exists.
 
-        This is a property rather than a column because a column had one value
-        per adventure, and the story does not. Deleting a turn left the text the
-        deleted turn produced in place, and a fork read the summary of the line
-        it left. Both are fixed by the summary being a row with a coordinate,
-        which `app/summaries.py` explains in full.
+        This is a property rather than a column. A column held one value per
+        adventure, and a story does not have one value: deleting a turn left the
+        text that turn produced in place, and a fork read the summary of the line
+        the player left. A row with a coordinate corrects both.
+        `app/summaries.py` explains the design in full.
 
-        There is no setter. Everything that writes a summary writes a row, and
-        an assignment here would write a value that the next read would not see.
-        A missing setter turns that mistake into an AttributeError rather than
-        into a summary that silently fails to change.
+        There is no setter. Everything that writes a summary writes a row. An
+        assignment here would store a value that the next read does not return,
+        so a missing setter raises `AttributeError` instead.
         """
         from . import summaries
 
@@ -332,24 +331,23 @@ class Memory(Base):
 class Summary(Base):
     """One version of the running story summary, anchored at a node.
 
-    The columns mirror `Memory`, because the two are the same kind of thing: work
-    derived from a stretch of story, attached to the node that stretch ends on.
-    A read asks which summaries are on the path being played and takes the
-    newest, so a fork sees the summary of the line it forked from and not of the
-    line it left, and deleting a turn takes the summary that turn produced with
-    it and uncovers the version before it.
+    The columns mirror `Memory`, because the two are the same kind of record:
+    work derived from a stretch of story, attached to the node that stretch ends
+    on. A read selects the summaries on the path being played and takes the
+    newest. A fork therefore reads the summary of the line it forked from rather
+    than the line the player left, and deleting a turn removes the summary that
+    turn produced and returns the version before it.
 
-    `source_start` and `source_end` are depths on `branch_id`, giving the stretch
-    this version folded in. Both are NULL on a version the player typed, which
-    describes no stretch of story. `depth` mirrors `source_end` on a written
-    version and takes the head on a typed one, which is the same rule
-    `tree.place_memory` applies to a hand-written memory.
+    `source_start` and `source_end` are depths on `branch_id`. They give the
+    stretch of story this version folded in. Both are NULL on a version the
+    player typed, which describes no story. `depth` repeats `source_end` on a
+    written version and takes the head on a typed one. `tree.place_memory`
+    applies the same rule to a hand-written memory.
 
-    Versions are kept rather than overwritten, and nothing prunes them. One is
-    written per `SUMMARY_INTERVAL` actions and holds at most
-    `SUMMARY_MAX_WORDS`, so a long adventure accumulates a few kilobytes. Those
-    old rows are what a delete falls back to, so pruning them would put back the
-    behavior this table exists to fix.
+    Versions are kept rather than overwritten, and nothing prunes them. The pass
+    writes one per `SUMMARY_INTERVAL` actions, of at most `SUMMARY_MAX_WORDS`, so
+    a long adventure accumulates a few kilobytes. A delete returns the reader to
+    an old row, so pruning old rows would restore the defect this table corrects.
     """
 
     __tablename__ = "summaries"
@@ -363,9 +361,9 @@ class Summary(Base):
         ForeignKey("branches.id", ondelete="CASCADE"), nullable=True
     )
     depth: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    # Whether the player wrote this version. The summary pass reads it to decide
-    # nothing — it rewrites from whatever text is current either way — and it is
-    # here so that a reader of the table can tell the two apart.
+    # Whether the player wrote this version. No code branches on this column.
+    # The summary pass rewrites from the current text either way. The column is
+    # here so that someone reading the table can tell the two kinds apart.
     hand_edited: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 

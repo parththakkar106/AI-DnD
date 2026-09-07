@@ -139,8 +139,8 @@ def story():
                              type="ai" if i % 2 else "do",
                              text=f"[{i}] The road bends onward past the treeline."))
     db.flush()
-    # The summary is a row on the tree, not a column, so it is written after the
-    # actions exist: `summaries.record` anchors it at the head. See
+    # The summary is a row on the tree, not a column, so it is written after
+    # the actions exist. `summaries.record` anchors it at the head. See
     # `app/summaries.py`.
     summaries.record(db, adventure, "The hero left the village.")
     db.commit()

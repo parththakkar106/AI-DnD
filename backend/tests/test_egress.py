@@ -368,9 +368,9 @@ def _fat_adventures(user_id: int, count: int = 5, body: int = 20_000) -> None:
     script_state, world_state and the plot text belong to the play screen. The
     index shows a title, a stamp and a snippet, and used to load all of it.
 
-    The story summary is no longer among them: it is a row in `summaries` rather
-    than a column here, so the check on it below is that the index does not read
-    that table at all.
+    The story summary is no longer one of those columns. It is a row in
+    `summaries`, so the check below asserts that the index never reads that
+    table.
     """
     db = SessionLocal()
     try:
@@ -412,8 +412,8 @@ def test_the_index_does_not_read_the_adventure_body(client, sql_log):
         )
     assert not any("FROM summaries" in s for s in sql_log), (
         "the index read the summaries table, which nothing on that screen "
-        "displays. `Adventure.story_summary` is a property that queries, so a "
-        "listing that loads whole entities pays for one query per row."
+        "displays. `Adventure.story_summary` is a property that runs a query, "
+        "so a listing that loads whole entities costs one query per row."
     )
 
 

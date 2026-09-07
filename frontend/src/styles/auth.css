@@ -98,8 +98,9 @@
 }
 .plot-source .linklike { flex-shrink: 0; }
 
-/* The rebuild sits under the summary field, because it replaces what is in it.
-   `.plot-source` is the same row a step up, above the fields it overwrites. */
+/* The rebuild control sits under the summary field, because it replaces the
+   contents of that field. `.plot-source` is the same row one level up, above
+   the fields it overwrites. */
 .summary-actions {
   display: flex;
   align-items: baseline;

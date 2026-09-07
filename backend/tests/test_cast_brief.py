@@ -233,6 +233,6 @@ def test_the_summary_prompt_carries_the_brief_too(db, monkeypatch):
     assert "third person" in system
     assert adventure.story_summary == "Memory 1."
     assert summaries.newest(db, adventure).source_start == 0, (
-        "the version has to record where it started reading, or withdrawing it "
-        "would not return that stretch of story to the pass"
+        "the version has to record where it started reading, or a withdrawal "
+        "does not return that stretch of story to the pass"
     )
