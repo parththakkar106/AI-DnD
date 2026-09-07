@@ -1,37 +1,36 @@
-"""The story summary, as versions anchored on the story tree.
+"""The story summary, stored as versions anchored on the story tree.
 
 The summary used to be one text column on the adventure. That column was the
-last piece of derived work that had no coordinate, and it behaved the way
-everything without a coordinate behaves once a story can branch:
+last piece of derived work without a coordinate. Three defects followed from
+that:
 
-- Delete the turn whose summarizer run you did not like, and the text that run
-  wrote stayed. `forget_node` withdrew the memories at that coordinate and
-  rewound the cursors, and there was nothing about the summary for it to
-  withdraw.
-- Fork two turns back and the new line read the summary of the line it left,
-  because both lines were the same row.
-- Neither was recoverable afterwards. The rewrite is incremental: it hands the
-  model the current text and asks for it to be updated, so once a bad version
-  was stored, every later version was built on top of it.
+- Deleting a turn left the summary that turn produced in place. `forget_node`
+  withdrew the memories at the turn's coordinate and rewound the cursors. It had
+  no summary row to withdraw.
+- Forking two turns back read the same text as the line the player left, because
+  both lines shared one column.
+- Neither defect was recoverable. The rewrite is incremental. It sends the model
+  the current text and asks for an updated version. Once a bad summary was
+  stored, every later summary was built from it.
 
-A version here is a row with `(branch_id, depth)`, which is what a memory has
-had since Phase 14. Reading the summary means taking the newest version on the
-path being played, so all three fix themselves:
+A version here is a row with a `(branch_id, depth)` coordinate. A memory has had
+one since Phase 14. A read takes the newest version on the path being played,
+which corrects all three defects:
 
-- Deleting a turn deletes the versions anchored on it, and the read falls
-  through to the version before it. `forget_node` below does the deleting, from
-  the same call sites that already withdraw memories.
+- Deleting a turn deletes the versions anchored on it. The read then returns the
+  version before it. `forget_node` below performs the delete, from the same call
+  sites that withdraw memories.
 - A fork inherits the versions written before the fork point and none written
-  after it, because that is what the lineage clause selects. Nothing is copied.
-- Every earlier version is still in the table, so falling back is a read rather
+  after it, because that is what the lineage clause selects. No row is copied.
+- Every earlier version stays in the table, so returning to one is a read rather
   than a repair.
 
-Nothing prunes the table. See `models.Summary` for the arithmetic on that.
+Nothing prunes the table. For the size arithmetic, see `models.Summary`.
 
-What lives where: this module owns the rows, meaning how a version is written,
-which one is current, and what a deleted node takes with it. `app/memorybank.py`
-owns the AI calls that produce the text, both the incremental pass that runs
-after a turn and the full rebuild behind "Regenerate".
+This module owns the rows. It defines how a version is written, which version is
+current, and which versions a delete removes. `app/memorybank.py` owns the AI
+calls that produce the text, both the incremental pass after a turn and the full
+rebuild behind "Regenerate".
 """
 
 from sqlalchemy.orm import Session, object_session
@@ -43,13 +42,12 @@ from .context import cursors, lineage
 # ------------------------------------------------------------------ reading
 
 def newest(db: Session, adventure: models.Adventure) -> models.Summary | None:
-    """The current version, meaning the deepest one on the path being played.
+    """Returns the current version, the deepest one on the path being played.
 
-    Ties break on id, so the newest row wins when a version the player typed and
-    a version the pass wrote share a coordinate. That happens when the player
-    edits the summary at the tip and the pass then folds in the turns since the
-    last update: the edit is what the pass rewrote from, and the rewrite is what
-    the story should read.
+    Ties break on id, so the newest row wins when two versions share a
+    coordinate. Two versions share one when a player edits the summary at the
+    tip and the pass then folds in the turns since the last update. The pass
+    rewrites from the player's edit, and the story reads the rewrite.
     """
     if adventure.id is None:
         return None
@@ -65,12 +63,12 @@ def newest(db: Session, adventure: models.Adventure) -> models.Summary | None:
 
 
 def current(adventure: models.Adventure) -> str:
-    """The current version's text, or "" when the story has no summary yet.
+    """Returns the current version's text, or "" if the story has no version.
 
-    This takes the adventure rather than a session, like `history.count`, so
-    that `build_context` and `models.Adventure.story_summary` can call it with
-    what they already hold. A detached adventure has no session to ask and
-    answers "", which is the same answer an adventure with no versions gives.
+    This takes the adventure rather than a session, as `history.count` does, so
+    `build_context` and `models.Adventure.story_summary` can call it with the
+    value they hold. A detached adventure has no session to query and returns
+    "", which is also the answer for an adventure with no versions.
     """
     db = object_session(adventure)
     if db is None:
@@ -84,17 +82,17 @@ def current(adventure: models.Adventure) -> str:
 def _coordinate(
     db: Session, adventure: models.Adventure, node: models.Action | None
 ) -> tuple[int, int]:
-    """Where a new version goes: the node's coordinate, or the head.
+    """Returns where a new version goes: the node's coordinate, or the head.
 
-    A version the pass wrote names the last action it folded in. A version the
-    player typed names no action, so it takes the head, which records the story
-    they were reading while they typed. That is the rule `tree.place_memory`
-    applies to a hand-written memory, and it is the reason a typed version stops
-    following the reader onto branches whose story it does not describe.
+    A version the pass writes names the last action it folded in. A version the
+    player types names no action, so it takes the head. The head records the
+    story the player read while typing. `tree.place_memory` applies the same rule
+    to a hand-written memory. The rule stops a typed version from following the
+    reader onto branches whose story it does not describe.
 
-    `head_branch` creates the root branch if the adventure has none. Every
-    caller here is a write, so creating it is allowed, and a version with no
-    branch would be invisible to every read.
+    If the adventure has no branch, `head_branch` creates the root branch. Every
+    caller here writes, so creating a branch is allowed. A version with no branch
+    is invisible to every read.
     """
     if node is not None and node.branch_id is not None and node.depth is not None:
         return node.branch_id, node.depth
@@ -112,9 +110,9 @@ def record(
 ) -> models.Summary:
     """Adds a version. The caller commits.
 
-    `source_start` is the first depth this version folded in, and it is what
-    `forget_node` rewinds the summary cursor to when the version is withdrawn.
-    Leave it None for a version the player typed, which folded in nothing.
+    `source_start` is the first depth this version folded in. When `forget_node`
+    withdraws the version, it rewinds the summary cursor to that depth. Pass None
+    for a version the player typed, which folds in no story.
     """
     branch_id, depth = _coordinate(db, adventure, node)
     row = models.Summary(
@@ -131,18 +129,18 @@ def record(
 
 
 def set_text(db: Session, adventure: models.Adventure, text: str) -> models.Summary:
-    """Stores what the player typed into the Story Summary field.
+    """Stores what the player types into the Story Summary field.
 
-    The field saves on a debounce, so one editing session sends several
-    requests. Each would otherwise become a version, and the table would fill up
-    with the prefixes of a sentence. Instead an edit at a coordinate that
-    already holds the current version rewrites that version in place, and one
-    editing session produces one version.
+    The field saves on a debounce, so one editing session sends several requests.
+    Each request would otherwise add a version, and the table would fill with the
+    prefixes of a sentence. If the current version already sits at the head
+    coordinate, this rewrites that version instead. One editing session then
+    produces one version.
 
-    Rewriting in place keeps `source_start` if the version had one. The player
-    is replacing the text of a version that folded in a stretch of story, not
-    unclaiming the stretch: dropping the mark would leave the summary cursor
-    past a stretch that nothing describes if the turn were later deleted.
+    A rewrite keeps `source_start` if the version has one. The player replaces
+    the text of a version that folded in a stretch of story, and does not
+    unclaim the stretch. If this cleared the mark and the turn were deleted
+    later, the summary cursor would sit past a stretch that no version describes.
     """
     branch_id, depth = _coordinate(db, adventure, None)
     row = newest(db, adventure)
@@ -158,24 +156,24 @@ def set_text(db: Session, adventure: models.Adventure, text: str) -> models.Summ
 def forget_node(
     db: Session, adventure: models.Adventure, action: models.Action
 ) -> int:
-    """Withdraws the versions anchored on `action`, because it is being removed.
+    """Withdraws the versions anchored on `action`, which is being removed.
 
-    `memorybank.forget_node` calls this, so every caller that already withdraws
+    `memorybank.forget_node` calls this, so every call site that withdraws
     memories withdraws summaries too: deleting a turn, retrying one, and
     switching to another take of one.
 
-    Withdrawing is the whole fix for the reported bug. The version the deleted
+    This withdrawal is the fix for the reported defect. The version the deleted
     turn produced goes, the version before it becomes current, and the summary
-    cursor rewinds to where the withdrawn version started reading, so the
-    stretch it covered is folded in again rather than counted as read.
+    cursor rewinds to the depth the withdrawn version started reading at. The
+    pass then folds in that stretch again rather than counting it as read.
 
-    Only the summary cursor rewinds. The memory cursor is the caller's business,
-    and the memories at this coordinate are withdrawn by their own pass.
+    Only the summary cursor rewinds. The caller owns the memory cursor, and the
+    memory pass withdraws the memories at this coordinate.
 
-    The opening node is the exception, and for the reason given in
-    `memorybank.forget_node`: a version that folded in no stretch of story is one
-    the player typed, so no deletion invalidates it, and at depth 0 it is
-    typically the only version an adventure has.
+    The opening node is the exception, for the reason `memorybank.forget_node`
+    gives. A version that folded in no story is one the player typed, so no
+    deletion invalidates it. At depth 0 it is usually the only version an
+    adventure has.
     """
     if action.branch_id is None or action.depth is None:
         return 0

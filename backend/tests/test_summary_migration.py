@@ -1,9 +1,9 @@
 """Migrations 77 and 78: the story summary column becomes a row on the tree.
 
 The text in `adventures.story_summary` is the only summary an upgrading player
-has, and 78 drops the column that holds it. If 77's backfill misplaces the row
-or skips an adventure, nothing raises: the player opens their adventure and the
-summary is simply gone, or is invisible from the branch they are on.
+has, and 78 drops the column that holds it. If the backfill in 77 misplaces the
+row or skips an adventure, nothing raises. The player opens the adventure and
+the summary is missing, or the branch they play on cannot see it.
 
     python -m pytest tests/test_summary_migration.py -v
 """
@@ -17,12 +17,12 @@ from tests import schema_rewind
 
 @pytest.fixture()
 def pre_summaries():
-    """A database stamped at 76, with the column back and three adventures in it.
+    """A database stamped at 76, with the column back and three adventures.
 
     * "Anchored" has a summary and a cursor, so the row belongs at that node.
-    * "Unanchored" has a summary and no cursor, which is what an adventure whose
-      player typed one but never reached an update looks like.
-    * "Blank" has no summary at all and must get no row.
+    * "Unanchored" has a summary and no cursor. That is the state of an
+      adventure whose player typed a summary but never reached an update.
+    * "Blank" has no summary, and must get no row.
     """
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
@@ -38,9 +38,9 @@ def pre_summaries():
             ("Unanchored", "Typed, and never updated."),
             ("Blank", ""),
         ):
-            # Every NOT NULL column is named. `create_all` builds them without
-            # SQL defaults, because the defaults are Python-side, so a raw
-            # INSERT has to supply them.
+            # This INSERT names every NOT NULL column. The defaults for those
+            # columns are Python-side, so `create_all` builds them without SQL
+            # defaults and a raw INSERT has to supply the values.
             conn.execute(text(
                 "INSERT INTO adventures ("
                 "  user_id, title, memory, authors_note, ai_instructions,"
@@ -91,11 +91,11 @@ def test_the_text_moves_into_a_row_where_the_cursor_says_it_had_got_to(pre_summa
         row = db.query(models.Summary).filter(
             models.Summary.adventure_id == adventure.id).one()
         assert row.text == "Folded in up to the third turn."
-        assert row.depth == 3, "the summary cursor named the node it had read to"
+        assert row.depth == 3, "the summary cursor names the node it read to"
         assert row.branch_id == adventure.head_branch_id
         assert row.source_start == 0, (
             "a summary built by repeated updates read from the beginning, so "
-            "withdrawing it has to rewind that far"
+            "a withdrawal has to rewind that far"
         )
         assert adventure.story_summary == "Folded in up to the third turn."
     finally:
@@ -106,8 +106,8 @@ def test_an_adventure_with_no_cursor_keeps_its_summary_on_the_opening_node(
     pre_summaries
 ):
     """Depth 0 is at or before every fork point, so the row stays visible from
-    every branch the adventure can grow. Anchoring later would hide the only
-    summary the player has from a line that forked before it."""
+    every branch the adventure can grow. A later anchor would hide the player's
+    only summary from a line that forked before it."""
     migrations.bootstrap(engine)
     db = SessionLocal()
     try:
@@ -139,8 +139,8 @@ def test_the_column_is_gone_and_the_stamp_is_current(pre_summaries):
             row[1] for row in conn.execute(text("PRAGMA table_info(adventures)"))
         }
         assert "story_summary" not in columns, (
-            "the column has to go, or it is a second place a summary can live "
-            "and the two disagree the moment either is written"
+            "the column has to go, or a summary has two homes and the two "
+            "disagree as soon as either one is written"
         )
         assert conn.execute(text("PRAGMA user_version")).scalar() == (
             migrations.LATEST_VERSION
@@ -149,7 +149,7 @@ def test_the_column_is_gone_and_the_stamp_is_current(pre_summaries):
 
 def test_running_the_backfill_twice_writes_one_row(pre_summaries):
     """The pass runs inside the transaction that holds the schema change, so a
-    failure anywhere in the loop replays the whole thing on the next boot."""
+    failure anywhere in the loop replays every statement on the next boot."""
     migrations.bootstrap(engine)
     with engine.begin() as conn:
         conn.execute(text(f"PRAGMA user_version = {migrations.SUMMARY_ROWS_VERSION - 1}"))

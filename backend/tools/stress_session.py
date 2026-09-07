@@ -375,8 +375,8 @@ def add_rich_extras(db, args, rng: random.Random, user, adventure) -> None:
     # are past the start. `build_fixture` translates the marks into anchors
     # once the actions exist. See `rich_cursor_positions`.
     adventure.auto_summarize = True
-    # A row on the tree, not a column. It is anchored at the head, which the
-    # actions written above have already set. See `app/summaries.py`.
+    # A row on the tree, not a column, anchored at the head. The actions
+    # written above have already set the head. See `app/summaries.py`.
     summaries.record(db, adventure, RICH_SUMMARY)
 
     for kind, name, keys, entry in RICH_CARDS:

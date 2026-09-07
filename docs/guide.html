@@ -791,28 +791,27 @@ never be summarized before it stopped being retryable; correctness no longer res
 the repair exists whether or not the invalidation happens at the tip.</p>
 
 <p><strong>The story summary is a version at a coordinate too</strong>, not a text column. It
-follows the same rule as a memory and for the same reasons, and it did not always: it used to be one
-<code>story_summary</code> column on the adventure, and being the last piece of derived work without
-a coordinate broke it in exactly the ways a coordinate prevents. Deleting the turn whose summarizer
-run you disliked left the text it wrote in place, because there was nothing for
-<code>forget_node</code> to withdraw. Forking two turns back read the same row, because there was
-only one. And neither was recoverable, because the rewrite is incremental — it hands the model the
-current text and asks for it updated — so a version that went wrong became the base of every version
-after it.</p>
+follows the same rule as a memory, for the same reasons. It did not always. It used to be one
+<code>story_summary</code> column on the adventure, and three defects followed from being the last
+piece of derived work without a coordinate. Deleting the turn whose summarizer run you disliked left
+the text that run wrote in place, because <code>forget_node</code> had no summary row to withdraw.
+Forking two turns back read the same row, because there was only one row. Neither defect was
+recoverable, because the rewrite is incremental. It sends the model the current text and asks for an
+updated version, so a bad version becomes the base of every version after it.</p>
 
-<p>Each update now writes a row in <code>summaries</code> anchored at the last node it folded in,
-and reading the summary means taking the deepest version on the path being played. Deleting a turn
-drops the versions anchored on it and uncovers the one before; a fork inherits the versions above
-the fork point and none below it; and what a player types into the Story Summary field is a version
-too, anchored at the node they were reading when they typed it. Old versions are kept and nothing
-prunes them — they are what a delete falls back to.</p>
+<p>Each update now writes a row in <code>summaries</code>, anchored at the last node it folded in.
+Reading the summary means taking the deepest version on the path being played. Deleting a turn
+removes the versions anchored on it and returns the version before it. A fork inherits the versions
+above the fork point and none below it. What a player types into the Story Summary field is a
+version too, anchored at the node they read while typing. Old versions stay in the table and nothing
+prunes them, because a delete returns the reader to one.</p>
 
-<p><strong>“Regenerate from story” is the way out of a bad summary that deleting cannot reach.</strong>
-It rebuilds from the memories on the current path in one call, or, on an adventure with no memory
-bank, by reading the story in chunks — capped at <code>MAX_DIGEST_CHUNKS</code> calls, with the chunk
-size derived from the story’s length so one click costs the same on a long adventure as on a short
-one. It hands the model no prior text, which is what makes it a rebuild rather than another
-increment, and it writes its result as a new version on top of the ones already there.</p>
+<p><strong>“Regenerate from story” corrects a bad summary that deleting cannot reach.</strong>
+It rebuilds from the memories on the current path in one call. On an adventure with no memory bank,
+it reads the story in chunks instead, limited to <code>MAX_DIGEST_CHUNKS</code> calls. The chunk
+size comes from the story’s length, so one press costs the same on a long adventure as on a short
+one. It sends the model no previous text, which is what makes it a rebuild rather than another
+increment, and it writes the result as a new version above the ones already there.</p>
 
 <p><strong>A block still waits for one action to settle past it</strong>
 (<code>SETTLE_SLACK</code>), and that is a cost rule rather than a correctness one. Retry and

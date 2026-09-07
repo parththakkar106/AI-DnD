@@ -1,18 +1,18 @@
-"""The story summary is a row on the tree, and behaves like a memory.
+"""The story summary is a row on the tree, and behaves as a memory does.
 
-The bug this file guards: the summary used to be one text column on the
+This file guards one defect. The summary used to be one text column on the
 adventure, so it had no coordinate and nothing could withdraw it. Deleting the
 turn whose summarizer run produced a bad summary left the text in place, and
-forking away from that turn read the same row. Neither was recoverable
-afterwards, because the rewrite is incremental and every later version was built
-on the bad one.
+forking away from that turn read the same row. Neither result was recoverable,
+because the rewrite is incremental and every later version was built from the
+bad one.
 
-Each claim below fails silently in production if it is wrong: the summary is
-never shown next to the turn that wrote it, so a stale one reads as a summary
-that is merely poor.
+Each claim below fails silently in production if it is wrong. The app never
+shows the summary next to the turn that wrote it, so a stale summary reads as a
+summary that is merely poor.
 
-The fork is built by hand, exactly as `test_memory_nodes.py` builds it, so that
-these tests do not pass by agreeing with a bug in the fork code.
+These tests build the fork by hand, as `test_memory_nodes.py` does, so that they
+cannot pass by agreeing with a defect in the fork code.
 
     python -m pytest tests/test_summary_versions.py -v
 """
@@ -60,7 +60,7 @@ def add_node(db, adventure, branch, depth, label):
 
 
 class Stub:
-    """A summarizer that records its prompts and returns canned text."""
+    """A summarizer that records its prompts and returns fixed text."""
 
     def __init__(self, *replies):
         self.replies = list(replies) or ["A summary."]
@@ -75,7 +75,7 @@ class Stub:
 def story():
     """A0..A7 on one branch, with the head at A7.
 
-    Tests that need a fork make one from this with `fork_at`.
+    A test that needs a fork makes one from this fixture with `fork_at`.
     """
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
@@ -102,7 +102,7 @@ def story():
 
 
 def fork_at(db, adventure, parent, depth, count=2):
-    """A branch off `parent` at `depth`, with `count` nodes of its own."""
+    """A branch off `parent` at `depth`, holding `count` nodes of its own."""
     branch = make_branch(db, adventure, parent=parent, fork_depth=depth)
     for i in range(count):
         add_node(db, adventure, branch, depth + 1 + i, "B")
@@ -117,12 +117,11 @@ def fork_at(db, adventure, parent, depth, count=2):
 def test_deleting_the_turn_a_summary_was_written_at_brings_back_the_one_before(
     story
 ):
-    """The reported bug, in one test.
+    """The reported defect, in one test.
 
     The player dislikes the summary a turn produced, deletes the AI message, and
-    continues. Before this change the deleted turn's summary was still what the
-    next prompt carried, because the text was a column and no coordinate pointed
-    at it.
+    continues. Before this change, the next prompt still carried the deleted
+    turn's summary, because the text was a column and no coordinate named it.
     """
     db, adventure, settings, a, nodes = story
     summaries.record(db, adventure, "Older, and fine.", node=nodes[3], source_start=0)
@@ -138,7 +137,8 @@ def test_deleting_the_turn_a_summary_was_written_at_brings_back_the_one_before(
     assert adventure.story_summary == "Older, and fine."
     assert cursors.SUMMARY.stored(adventure) == (a.id, 3), (
         "the cursor has to return the stretch the withdrawn version covered, "
-        "or that stretch is counted as summarized while nothing describes it"
+        "or the pass counts that stretch as summarized while no version "
+        "describes it"
     )
 
 
@@ -157,10 +157,10 @@ def test_a_delete_that_touches_no_version_leaves_the_summary_alone(story):
 
 
 def test_a_typed_summary_on_the_opening_node_survives_a_delete(story):
-    """The exception `memorybank.forget_node` makes for memories, made here too.
+    """The exception `memorybank.forget_node` makes for memories applies here.
 
-    A version that folded in no stretch of story is one the player typed, and at
-    depth 0 it is usually the only summary an adventure has.
+    A version that folded in no story is one the player typed, and at depth 0 it
+    is usually the only summary an adventure has.
     """
     db, adventure, settings, a, nodes = story
     adventure.head_depth = 0
@@ -185,7 +185,7 @@ def test_a_fork_reads_the_version_from_before_it_and_not_the_one_after(story):
     fork_at(db, adventure, a, depth=3)
 
     assert adventure.story_summary == "Before the fork.", (
-        "the new line inherited the summary of the line it left"
+        "the new line read the summary of the line the player left"
     )
 
 
@@ -220,7 +220,7 @@ def test_a_typed_summary_is_anchored_at_the_head(story):
 
 def test_editing_twice_at_one_coordinate_makes_one_version(story):
     """The field saves on a debounce, so one editing session sends several
-    requests. Each must not become a version, or the table fills with the
+    requests. If each request added a version, the table would fill with the
     prefixes of a sentence."""
     db, adventure, settings, a, nodes = story
     for text in ("The", "The hero", "The hero left."):
@@ -232,8 +232,8 @@ def test_editing_twice_at_one_coordinate_makes_one_version(story):
 
 def test_editing_the_version_a_run_wrote_keeps_where_it_started_reading(story):
     """Rewriting the text does not unclaim the story the version folded in. If
-    it did, deleting the turn would leave the cursor past a stretch that nothing
-    describes."""
+    it did, deleting the turn would leave the cursor past a stretch that no
+    version describes."""
     db, adventure, settings, a, nodes = story
     summaries.record(db, adventure, "What the model wrote.", node=nodes[7],
                      source_start=4)
@@ -276,7 +276,7 @@ def test_the_pass_adds_a_version_instead_of_overwriting(story, monkeypatch):
     assert db.query(models.Summary).count() == 2
     row = summaries.newest(db, adventure)
     assert (row.branch_id, row.depth) == (a.id, 7)
-    assert row.source_start == 4, "the version starts where the mark left off"
+    assert row.source_start == 4, "the version starts at the depth after the mark"
     assert row.hand_edited is False
 
 
@@ -297,9 +297,9 @@ def test_the_pass_rewrites_from_the_version_the_player_typed(story, monkeypatch)
 # ------------------------------------------------------------- the rebuild
 
 def test_regenerate_ignores_the_current_text(story, monkeypatch):
-    """The whole point of the button. The incremental pass hands the model the
-    current summary and asks for it to be updated, so a version that went wrong
-    is the base of every version after it."""
+    """The reason the button exists. The incremental pass sends the model the
+    current summary and asks for an updated version, so a bad version becomes
+    the base of every version after it."""
     db, adventure, settings, a, nodes = story
     stub = Stub("Rebuilt from the story.")
     monkeypatch.setattr(memorybank, "summary_provider", lambda s: stub)
@@ -322,7 +322,7 @@ def test_regenerate_ignores_the_current_text(story, monkeypatch):
 
 
 def test_regenerate_keeps_the_version_it_replaced(story, monkeypatch):
-    """So a rebuild that comes out worse is undone by deleting its row."""
+    """Deleting the new row then reverses a rebuild that comes out worse."""
     db, adventure, settings, a, nodes = story
     monkeypatch.setattr(memorybank, "summary_provider", lambda s: Stub("Rebuilt."))
     summaries.record(db, adventure, "The old one.", node=nodes[3], source_start=0)
@@ -338,8 +338,8 @@ def test_regenerate_keeps_the_version_it_replaced(story, monkeypatch):
 
 
 def test_regenerate_reads_the_story_when_there_is_no_memory_bank(story, monkeypatch):
-    """An adventure played with auto-summarization off has no bank, and is
-    exactly the adventure whose summary most needs rebuilding."""
+    """An adventure played with auto-summarization off has no bank, and it is
+    the adventure whose summary most needs rebuilding."""
     db, adventure, settings, a, nodes = story
     stub = Stub("Digested.", "Digested.", "Rebuilt from raw story.")
     monkeypatch.setattr(memorybank, "summary_provider", lambda s: stub)
@@ -349,13 +349,13 @@ def test_regenerate_reads_the_story_when_there_is_no_memory_bank(story, monkeypa
     asyncio.run(memorybank.regenerate(adventure, settings, db))
 
     assert len(stub.prompts) > 1, "the story was never chunked"
-    assert "A0 the road bends" in stub.prompts[0], "a chunk carries raw story text"
+    assert "A0 the road bends" in stub.prompts[0], "a chunk holds raw story text"
     assert adventure.story_summary == "Rebuilt from raw story."
 
 
 def test_the_rebuild_caps_how_many_calls_one_click_costs(story, monkeypatch):
-    """A fixed chunk size would make this unbounded, and the button would cost a
-    few cents on one save and a few dollars on another."""
+    """A fixed chunk size would leave the call count unbounded, and the button
+    would cost a few cents on one save and a few dollars on another."""
     db, adventure, settings, a, nodes = story
     stub = Stub("Digested.")
     monkeypatch.setattr(memorybank, "summary_provider", lambda s: stub)
@@ -407,7 +407,7 @@ def test_a_bundle_round_trip_keeps_every_version_where_it_was(story):
 
 def test_a_file_that_predates_the_table_keeps_its_one_summary(story):
     """An export written by an older build has `storySummary` and no
-    `summaries`. That text is all the summary the file has, so it has to
+    `summaries`. That text is the whole summary the file holds, so it has to
     survive the import."""
     db, adventure, settings, a, nodes = story
     summaries.record(db, adventure, "The only summary.", node=nodes[3], source_start=0)
@@ -426,10 +426,10 @@ def test_a_file_that_predates_the_table_keeps_its_one_summary(story):
         .filter(models.Summary.adventure_id == copy.id)
         .one()
     )
-    assert row.depth == 3, "it goes where the summary anchor says it had got to"
+    assert row.depth == 3, "the row goes where the summary anchor says it read to"
     assert row.source_start == 0, (
         "a summary built by repeated updates read the story from its beginning, "
-        "so withdrawing it has to rewind that far"
+        "so a withdrawal has to rewind that far"
     )
 
 
@@ -437,7 +437,7 @@ def test_a_file_that_predates_the_table_keeps_its_one_summary(story):
 
 @pytest.fixture()
 def client(monkeypatch):
-    """The API, signed in as the owner of an adventure with a little story."""
+    """The API, signed in as the owner of an adventure with a short story."""
     from fastapi import Depends
     from fastapi.testclient import TestClient
 
@@ -487,8 +487,8 @@ class _NotDemo:
 
 
 def test_patching_the_summary_writes_a_version_and_reads_it_back(client):
-    """`AdventureUpdate` still carries `story_summary`, so the field in the
-    plot panel is unchanged. The PATCH handler routes it into a row."""
+    """`AdventureUpdate` still carries `story_summary`, so the field in the plot
+    panel is unchanged. The PATCH handler routes the value into a row."""
     c, adventure_id = client
     r = c.patch(f"/api/adventures/{adventure_id}",
                 json={"story_summary": "What the player typed."})

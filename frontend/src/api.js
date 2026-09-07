@@ -126,8 +126,8 @@ export const api = {
   deleteAdventure: (id) => request(`/adventures/${id}`, { method: 'DELETE' }),
   // Rebuild the story summary from the story, discarding the current text.
   // Returns the whole adventure, because the summary is the only field that
-  // changes and the caller already holds one. Slow on an adventure with no
-  // memory bank: the server reads the story in chunks.
+  // changes and the caller already holds one. This is slow on an adventure
+  // with no memory bank, where the server reads the story in chunks.
   regenerateSummary: (id) =>
     request(`/adventures/${id}/summary/regenerate`, { method: 'POST' }),
   // A page of the story, walking backwards. `beforeId` is the oldest action

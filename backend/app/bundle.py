@@ -100,11 +100,11 @@ def export(db: Session, adventure: models.Adventure) -> dict:
         "memory": adventure.memory,
         "authorsNote": adventure.authors_note,
         "aiInstructions": adventure.ai_instructions,
-        # The current version's text, for a reader that knows only one summary:
-        # a v1 file, and this app before the summary became a row on the tree.
-        # `summaries` below carries the versions with their coordinates, which is
-        # what an import here reads. A file written by an older build has no such
-        # key, and the import falls back to this one.
+        # The current version's text, for a reader that knows only one summary.
+        # That covers a v1 file, and this app before the summary became a row on
+        # the tree. The `summaries` key below carries the versions with their
+        # coordinates, and an import here reads that key. A file written by an
+        # older build has no `summaries` key, so the import reads this one.
         "storySummary": adventure.story_summary,
         # Phase 18. A bundle written before personas existed has no key here,
         # and the import below reads it with `.get`, so it lands with an empty
@@ -455,16 +455,15 @@ def _planned_memories(bundle: dict, branches: int) -> list[dict]:
 
 
 def _planned_summaries(bundle: dict, branches: int) -> list[dict]:
-    """The summary versions, or the one text a file without them carries.
+    """Returns the summary versions, or the one text a file without them holds.
 
     A file written before the summary became a row on the tree has a
-    `storySummary` string and nothing else. It becomes a single version, and
-    `_write_summaries` gives it the coordinate the anchors name, which is where
-    that text had got to. `sourceStart` of 0 says it read the story from the
-    beginning, which is true of a summary built by repeated updates and is what
-    makes withdrawing it rewind far enough. This is the rule
-    `migrations._backfill_summary_rows` applies to a database, written again for
-    a file.
+    `storySummary` string and nothing else. That string becomes a single version.
+    `_write_summaries` gives the version the coordinate the anchors name, which
+    is where the text had read to. A `sourceStart` of 0 records that the version
+    read the story from the beginning. That is true of a summary built by
+    repeated updates, and it makes a withdrawal rewind far enough.
+    `migrations._backfill_summary_rows` applies the same rule to a database.
     """
     raw = bundle.get("summaries")
     if not isinstance(raw, list):
@@ -514,8 +513,8 @@ def write(db: Session, adventure: models.Adventure, story: dict) -> None:
     _write_memories(db, adventure, story["memories"], ids)
     _point_the_head(adventure, story, ids)
     _write_anchors(adventure, story, ids)
-    # Last, because a version imported from a file that has no coordinates for
-    # it takes the summary anchor, which the line above sets.
+    # Last, because a version imported from a file that carries no coordinate
+    # takes the summary anchor, which the line above sets.
     _write_summaries(db, adventure, story["summaries"], ids)
 
 
@@ -636,16 +635,15 @@ def _write_summaries(
         branch = spec["branch"]
         depth = spec["depth"]
         if branch is None or depth is None:
-            # The single version salvaged from a file that predates this table.
-            # It goes where the summary anchor says the text had got to, which a
-            # version 2 file carries and `_write_anchors` has already stored.
-            # A version 1 file stores a count instead, which `settle` cannot
-            # resolve until after the flush, so the anchor still reads as unset
-            # here and this falls back to the root at depth 0. That is the right
-            # fallback rather than a gap: depth 0 is at or before every fork
-            # point, so the version is visible from every branch this adventure
-            # can grow, and it is the only version the file has, so wherever it
-            # sits it is the current one.
+            # The single version recovered from a file that predates this
+            # table. It goes where the summary anchor says the text had read to.
+            # A version 2 file carries that anchor, and `_write_anchors` has
+            # already stored it. A version 1 file stores a count instead, which
+            # `settle` cannot resolve until after the flush, so the anchor still
+            # reads as unset here and this code uses the root at depth 0. Depth 0
+            # is at or before every fork point, so the version stays visible from
+            # every branch this adventure can grow. It is also the only version
+            # the file holds, so it is the current one wherever it sits.
             anchor_branch, anchor_depth = cursors.SUMMARY.stored(adventure)
             branch = ids.index(anchor_branch) if anchor_branch in ids else 0
             depth = anchor_depth if anchor_depth > lineage.NO_DEPTH else lineage.ROOT_DEPTH

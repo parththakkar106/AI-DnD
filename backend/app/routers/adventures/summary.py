@@ -1,10 +1,10 @@
 """Rebuilding the story summary on demand.
 
-There is no endpoint here for reading or editing the summary. It travels on the
-adventure as `story_summary`, and the player's edits arrive through
+This module holds no endpoint for reading or editing the summary. The summary
+travels on the adventure as `story_summary`, and a player's edits arrive through
 `PATCH /adventures/{id}`, which `crud.update_adventure` routes into
-`summaries.set_text`. This module is only the button that throws the current
-version away and reads the story again.
+`summaries.set_text`. This module serves one button, which discards the current
+version and reads the story again.
 """
 
 from fastapi import Depends, HTTPException
@@ -24,16 +24,16 @@ async def regenerate_summary(
     user: models.User = CurrentUser,
     adventure: models.Adventure = Depends(current_adventure),
 ):
-    """Writes a new summary from the story, owing nothing to the current one.
+    """Writes a new summary from the story, without reading the current one.
 
     This runs in the request rather than as a post-turn task. The player pressed
-    a button and is waiting to read the result, and an adventure with no memory
-    bank is read in chunks, so the call can take a while. `memorybank.regenerate`
-    caps how many chunks that is.
+    a button and waits for the result. The call can take a while, because this
+    reads an adventure with no memory bank in chunks. `memorybank.regenerate`
+    limits the number of chunks.
 
-    The shared demo key is refused, for the reason the rest of the app refuses
-    it: these are the player's own summarization calls, and the demo key pays
-    for turns.
+    The endpoint refuses the shared demo key, for the reason the rest of the app
+    refuses it. These are the player's own summarization calls, and the demo key
+    pays for turns.
     """
     settings = get_settings(db, user)
     if auth.resolve_provider_config(settings).using_demo:

@@ -96,10 +96,11 @@ def list_adventures(db: Session = Depends(get_db), user: models.User = CurrentUs
     # `placeholders`, `memory`, `authors_note`, and `ai_instructions`. That is
     # about 15 kB per row in production, fetched once per adventure on every
     # index load, and this screen uses none of it. Naming the columns also means
-    # a wide column added to Adventure later has to opt in to being listed here,
-    # and it keeps `story_summary` out — that one is a property that queries the
-    # `summaries` table, so loading whole entities here would cost a query per
-    # row rather than a wide column. `test_egress` guards both.
+    # a wide column added to Adventure later has to opt in to being listed here.
+    # Naming them keeps `story_summary` out as well. That attribute is a property
+    # that queries the `summaries` table, so loading whole entities here would
+    # cost one query per row rather than one wide column. `test_egress` checks
+    # both rules.
     rows = (
         db.query(
             models.Adventure.id,
@@ -327,10 +328,10 @@ def update_adventure(
     adventure: models.Adventure = Depends(current_adventure),
 ):
     fields = payload.model_dump(exclude_unset=True)
-    # The summary is a row on the tree rather than a column, so it is written
-    # rather than assigned — `Adventure.story_summary` has no setter, and this
-    # loop would raise on it. `set_text` anchors what the player typed at the
-    # node they were reading while they typed it. See `app/summaries.py`.
+    # The summary is a row on the tree rather than a column, so this writes it
+    # rather than assigning it. `Adventure.story_summary` has no setter, and the
+    # loop below would raise on it. `set_text` anchors what the player typed at
+    # the node they read while typing. See `app/summaries.py`.
     if "story_summary" in fields:
         summaries.set_text(db, adventure, fields.pop("story_summary"))
     for field, value in fields.items():
