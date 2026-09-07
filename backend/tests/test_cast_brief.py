@@ -20,7 +20,7 @@ import asyncio
 
 import pytest
 
-from app import memorybank, models
+from app import memorybank, models, summaries
 from app.database import Base, SessionLocal, engine
 
 GWEN = "A loyal ranger and the player's ally. Quick with a bow, fiercely protective."
@@ -232,3 +232,7 @@ def test_the_summary_prompt_carries_the_brief_too(db, monkeypatch):
     assert "Kaelen (he/him) — the protagonist" in user
     assert "third person" in system
     assert adventure.story_summary == "Memory 1."
+    assert summaries.newest(db, adventure).source_start == 0, (
+        "the version has to record where it started reading, or withdrawing it "
+        "would not return that stretch of story to the pass"
+    )

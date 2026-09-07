@@ -106,7 +106,10 @@ class Adventure(Base):
     memory: Mapped[str] = mapped_column(Text, default="")
     authors_note: Mapped[str] = mapped_column(Text, default="")
     ai_instructions: Mapped[str] = mapped_column(Text, default="")
-    story_summary: Mapped[str] = mapped_column(Text, default="")
+    # The story summary is not a column. It is a row in `summaries`, anchored at
+    # the node it was written at, exactly as a memory is. `story_summary` below
+    # is a read-only property that resolves the newest one on the story being
+    # played. See `app/summaries.py` for why, and for what the column got wrong.
     # Phase 18: who the player is playing as. The AI never writes these — they
     # are user-only, which is what lets them sit in the cached system block
     # rather than below the history with the values that change. An empty
@@ -187,6 +190,30 @@ class Adventure(Base):
         cascade="all, delete-orphan",
         order_by="Memory.id",
     )
+    summaries: Mapped[list["Summary"]] = relationship(
+        back_populates="adventure",
+        cascade="all, delete-orphan",
+        order_by="Summary.id",
+    )
+
+    @property
+    def story_summary(self) -> str:
+        """The summary of the story being played, or "" if none was written yet.
+
+        This is a property rather than a column because a column had one value
+        per adventure, and the story does not. Deleting a turn left the text the
+        deleted turn produced in place, and a fork read the summary of the line
+        it left. Both are fixed by the summary being a row with a coordinate,
+        which `app/summaries.py` explains in full.
+
+        There is no setter. Everything that writes a summary writes a row, and
+        an assignment here would write a value that the next read would not see.
+        A missing setter turns that mistake into an AttributeError rather than
+        into a summary that silently fails to change.
+        """
+        from . import summaries
+
+        return summaries.current(self)
 
 
 class Branch(Base):
@@ -300,6 +327,53 @@ class Memory(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     adventure: Mapped[Adventure] = relationship(back_populates="memories")
+
+
+class Summary(Base):
+    """One version of the running story summary, anchored at a node.
+
+    The columns mirror `Memory`, because the two are the same kind of thing: work
+    derived from a stretch of story, attached to the node that stretch ends on.
+    A read asks which summaries are on the path being played and takes the
+    newest, so a fork sees the summary of the line it forked from and not of the
+    line it left, and deleting a turn takes the summary that turn produced with
+    it and uncovers the version before it.
+
+    `source_start` and `source_end` are depths on `branch_id`, giving the stretch
+    this version folded in. Both are NULL on a version the player typed, which
+    describes no stretch of story. `depth` mirrors `source_end` on a written
+    version and takes the head on a typed one, which is the same rule
+    `tree.place_memory` applies to a hand-written memory.
+
+    Versions are kept rather than overwritten, and nothing prunes them. One is
+    written per `SUMMARY_INTERVAL` actions and holds at most
+    `SUMMARY_MAX_WORDS`, so a long adventure accumulates a few kilobytes. Those
+    old rows are what a delete falls back to, so pruning them would put back the
+    behavior this table exists to fix.
+    """
+
+    __tablename__ = "summaries"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    adventure_id: Mapped[int] = mapped_column(ForeignKey("adventures.id", ondelete="CASCADE"))
+    text: Mapped[str] = mapped_column(Text, default="")
+    source_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    branch_id: Mapped[int | None] = mapped_column(
+        ForeignKey("branches.id", ondelete="CASCADE"), nullable=True
+    )
+    depth: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Whether the player wrote this version. The summary pass reads it to decide
+    # nothing — it rewrites from whatever text is current either way — and it is
+    # here so that a reader of the table can tell the two apart.
+    hand_edited: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    adventure: Mapped[Adventure] = relationship(back_populates="summaries")
+
+    __table_args__ = (
+        Index("ix_summaries_adventure_branch_depth", "adventure_id", "branch_id", "depth"),
+    )
 
 
 class StoryCard(Base):

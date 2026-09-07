@@ -33,8 +33,9 @@ from collections import OrderedDict
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, defer, object_session
 
-from . import models, tree, vectors
+from . import models, summaries, tree, vectors
 from .context import (
+    count_tokens,
     cursors,
     history,
     lineage,
@@ -55,6 +56,16 @@ RETRIEVAL_WINDOW_TOKENS = 600  # recent story text used as the similarity query
 RETRIEVAL_WINDOW_ACTIONS = 4  # ...taken from this many of the newest actions
 SUMMARY_MAX_WORDS = 250
 MEMORY_EXCERPT_TOKENS = 2000  # of the block, when a block is longer than this
+
+# The rebuild behind "Regenerate", for an adventure with no memory bank to read.
+# `DIGEST_CHUNK_TOKENS` is the chunk it would like, and `MAX_DIGEST_CHUNKS` is
+# the number of calls it is allowed, which wins: a longer story gets coarser
+# chunks rather than more calls. 30 chunks of 2000 tokens is about 60k tokens of
+# story, and a story longer than that is read at a coarser grain instead of
+# costing more. The cap is on one click of a button the player asked for, so it
+# is generous where the per-turn passes are frugal.
+DIGEST_CHUNK_TOKENS = 2000
+MAX_DIGEST_CHUNKS = 30
 
 # How much story has to sit past a block before that block is summarized.
 #
@@ -264,8 +275,18 @@ def forget_node(db: Session, adventure: models.Adventure, action: models.Action)
     The opening node is the one exception, because migration 62 placed the whole
     pre-coordinate bank on it. See the comment on `lineage.ROOT_DEPTH`.
 
-    Returns the number of memories withdrawn.
+    The story summary is withdrawn here as well, by `summaries.forget_node`.
+    Both are work derived from this node, both are found by its coordinate, and
+    both have to go when it does. Keeping the two in one function is what makes
+    every call site correct at once: this one is called from the delete
+    endpoint, from undo, from retry, and from switching takes, and none of them
+    should have to know that the summary exists.
+
+    Returns the number of memories withdrawn. The summaries withdrawn are not
+    counted in it, because the callers report memories and a combined number
+    would be wrong in a way nothing checks.
     """
+    summaries.forget_node(db, adventure, action)
     if action.branch_id is None or action.depth is None:
         return 0  # A pre-tree row. No path contains it, so nothing refers to it.
     doomed = (
@@ -711,11 +732,40 @@ async def _update_story_summary(
         block = history.after(adventure, anchor, uncovered)
         events_text = truncate_to_last_tokens("\n\n".join(a.text for a in block), 2000)
 
-    current = adventure.story_summary.strip()
+    current = summaries.current(adventure).strip()
+    try:
+        text = await _fold(adventure, settings, current, events_text)
+    except ProviderError:
+        return
+    if not text:
+        return
+    # A version, not an overwrite. `source_start` is the first depth this run
+    # folded in, so withdrawing the version returns exactly that stretch to the
+    # pass. See `app/summaries.py`.
+    summaries.record(db, adventure, text, node=caught_up, source_start=anchor + 1)
+    cursors.SUMMARY.anchor_at(adventure, caught_up)
+    db.commit()
+
+
+async def _fold(
+    adventure: models.Adventure,
+    settings: models.Settings,
+    current: str,
+    events_text: str,
+) -> str:
+    """Folds `events_text` into `current` and returns the updated summary.
+
+    Both the incremental pass and the rebuild come through here, for the reason
+    `summarize_block` gives: a prompt assembled in two places drifts, and
+    nothing reports the difference. The rebuild passes an empty `current`, which
+    is what makes it a rebuild rather than another increment.
+
+    Raises `ProviderError`, which each caller handles its own way.
+    """
     # The summary is built from the memories, so it inherits their framing for
     # free once they are named and third-person. It still gets the brief of its
-    # own, because the fallback above hands it raw second-person story text
-    # whenever memory creation has fallen behind.
+    # own, because the fallback in the caller hands it raw second-person story
+    # text whenever memory creation has fallen behind.
     brief = cast_brief(adventure, f"{current}\n\n{events_text}")
     user_prompt = (
         f"Current story summary:\n{current or '(none yet)'}\n\n"
@@ -724,17 +774,115 @@ async def _update_story_summary(
     )
     if brief:
         user_prompt = f"{brief}\n\n{user_prompt}"
-    try:
-        text = await summary_provider(settings).complete(
-            SUMMARY_SYSTEM_PROMPT, user_prompt, max_tokens=600
+    return await summary_provider(settings).complete(
+        SUMMARY_SYSTEM_PROMPT, user_prompt, max_tokens=600
+    )
+
+
+async def regenerate(
+    adventure: models.Adventure, settings: models.Settings, db: Session
+) -> str:
+    """Rebuilds the summary from the story, discarding the current text.
+
+    The incremental pass cannot undo a bad summary. It hands the model the
+    current text and asks for it to be updated, which is right for keeping the
+    player's edits but means a version that went wrong is the base of every
+    version after it. This is the way out: it reads the story again and writes a
+    version that owes nothing to the one before it.
+
+    It reads whichever source can cover the whole path:
+
+    - The memory bank, when there is anything on this path. One call. The bank
+      is a compression of the same story, so this is both the cheap answer and
+      the one that agrees with what the model is shown at retrieval time.
+    - The story itself otherwise, in chunks. An adventure played with
+      auto-summarization off has no bank to read, and that is exactly the
+      adventure whose summary most needs rebuilding.
+
+    The old versions stay in the table. This adds one on top, so a rebuild that
+    comes out worse than what it replaced is undone by deleting its row rather
+    than by regretting it.
+
+    Raises `ProviderError` if the model cannot be reached, and `ValueError` if
+    the adventure has no story to read.
+    """
+    caught_up = history.newest(adventure)
+    if caught_up is None:
+        raise ValueError("This adventure has no story to summarize yet.")
+
+    memories = db.execute(
+        select(models.Memory.text)
+        .where(
+            models.Memory.adventure_id == adventure.id,
+            lineage.path_of(db, adventure).clause(models.Memory),
         )
-    except ProviderError:
-        return
+        .order_by(models.Memory.depth)
+    ).scalars().all()
+    if memories:
+        events_text = "\n".join(f"- {t}" for t in memories)
+    else:
+        events_text = "\n".join(
+            f"- {line}" for line in await _story_digest(adventure, settings)
+        )
+    if not events_text.strip():
+        raise ValueError("This adventure has no story to summarize yet.")
+
+    # An empty `current` is what separates a rebuild from an increment: the
+    # model is given the events and no prior text to preserve.
+    text = await _fold(adventure, settings, "", events_text)
     if not text:
-        return
-    adventure.story_summary = text
+        raise ProviderError("The model returned an empty summary.")
+    # `source_start` is 0 because a rebuild reads the story from its beginning.
+    # Withdrawing this version therefore returns the whole story to the pass,
+    # which is the safe direction: covering ground twice costs one call, and
+    # skipping it loses that stretch for good.
+    summaries.record(db, adventure, text, node=caught_up, source_start=0)
     cursors.SUMMARY.anchor_at(adventure, caught_up)
     db.commit()
+    return text
+
+
+async def _story_digest(
+    adventure: models.Adventure, settings: models.Settings
+) -> list[str]:
+    """Compresses the whole story on this path into memory-sized lines.
+
+    This is the rebuild's fallback for an adventure with no memory bank. It
+    chunks the story, writes one memory-shaped line per chunk with the prompt
+    the bank uses, and hands the lines back for the fold. The lines are not
+    stored: the bank is off on such an adventure, and turning "regenerate the
+    summary" into "and also fill the bank" would be a second, larger thing done
+    behind one button.
+
+    How many chunks the story is cut into is decided before any of it is read,
+    rather than by filling chunks until the story runs out. Filling greedily
+    leaves each chunk part empty, so the story spills into one chunk more than
+    the arithmetic promised, and `MAX_DIGEST_CHUNKS` would be a cap that is
+    exceeded by one on most stories. Deciding first makes the cap exact, which
+    is the point of having one: this is a button, and the player should not pay
+    a few cents on one save and a few dollars on another with nothing on screen
+    to say which.
+
+    A story long enough to need chunks coarser than `MEMORY_EXCERPT_TOKENS` has
+    each chunk truncated to its last tokens by `summarize_block`, exactly as an
+    over-long block is in the bank. That is the cost of a fixed budget, and it
+    falls on the oldest end of an adventure far longer than the cap was sized
+    for.
+    """
+    actions = history.story_actions(adventure)
+    if not actions:
+        return []
+    total = count_tokens("\n\n".join(a.text for a in actions))
+    chunks = min(max(-(-total // DIGEST_CHUNK_TOKENS), 1), MAX_DIGEST_CHUNKS)
+    per_chunk = -(-len(actions) // chunks)
+    provider = summary_provider(settings)
+
+    lines: list[str] = []
+    for start in range(0, len(actions), per_chunk):
+        lines.append(
+            await summarize_block(adventure, provider, actions[start:start + per_chunk])
+        )
+    return [line for line in lines if line]
 
 
 async def _embed_pending(

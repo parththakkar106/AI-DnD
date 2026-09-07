@@ -120,7 +120,11 @@ def pre_tree():
         # Dropping the tables is the only way to remove the columns.
         # SQLite refuses to drop a column that a foreign key references,
         # and that is exactly the case for `branch_id`.
-        for table in ("actions", "memories", "branches", "adventures"):
+        # `summaries` leads, because it references both `branches` and
+        # `adventures`; leaving it behind makes dropping either of those fail.
+        # Like `branches`, it did not exist at schema 45, and the replay's
+        # `create_all` puts it back.
+        for table in ("summaries", "actions", "memories", "branches", "adventures"):
             conn.execute(text(f"DROP TABLE IF EXISTS {table}"))
         for ddl in PRE_TREE_DDL:
             conn.execute(text(ddl))
@@ -594,7 +598,11 @@ def pre_split():
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     with engine.begin() as conn:
-        for table in ("actions", "memories", "branches", "adventures"):
+        # `summaries` leads, because it references both `branches` and
+        # `adventures`; leaving it behind makes dropping either of those fail.
+        # Like `branches`, it did not exist at schema 45, and the replay's
+        # `create_all` puts it back.
+        for table in ("summaries", "actions", "memories", "branches", "adventures"):
             conn.execute(text(f"DROP TABLE IF EXISTS {table}"))
         for ddl in PRE_TREE_DDL:
             conn.execute(text(ddl))

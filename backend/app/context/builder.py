@@ -289,9 +289,14 @@ def build_context(
     # memories change on most turns, and the stat values change on nearly every
     # turn. `world_lore` is added below, because the history window determines
     # which cards trigger and that window is not known yet.
+    # `story_summary` is a property that resolves the version belonging to the
+    # story being played, not a column. Reading it here rather than importing
+    # `app.summaries` also keeps this package free of an import back into the
+    # app, which `app.summaries` imports from. See `app/summaries.py`.
+    story_summary = adventure.story_summary.strip()
     summary_section = (
-        Section("story_summary", f"Story summary:\n{adventure.story_summary.strip()}")
-        if adventure.story_summary.strip()
+        Section("story_summary", f"Story summary:\n{story_summary}")
+        if story_summary
         else None
     )
     memories_section = None

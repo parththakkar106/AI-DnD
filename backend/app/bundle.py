@@ -100,6 +100,11 @@ def export(db: Session, adventure: models.Adventure) -> dict:
         "memory": adventure.memory,
         "authorsNote": adventure.authors_note,
         "aiInstructions": adventure.ai_instructions,
+        # The current version's text, for a reader that knows only one summary:
+        # a v1 file, and this app before the summary became a row on the tree.
+        # `summaries` below carries the versions with their coordinates, which is
+        # what an import here reads. A file written by an older build has no such
+        # key, and the import falls back to this one.
         "storySummary": adventure.story_summary,
         # Phase 18. A bundle written before personas existed has no key here,
         # and the import below reads it with `.get`, so it lands with an empty
@@ -121,6 +126,7 @@ def export(db: Session, adventure: models.Adventure) -> dict:
         "memoryCursor": _exported_anchor(adventure, cursors.MEMORY, local),
         "summaryCursor": _exported_anchor(adventure, cursors.SUMMARY, local),
         "memories": [_exported_memory(m, local) for m in adventure.memories],
+        "summaries": [_exported_summary(x, local) for x in adventure.summaries],
         "storyCards": [
             {"type": c.type, "name": c.name, "keys": c.keys,
              "entry": c.entry, "notes": c.notes}
@@ -202,6 +208,16 @@ def _exported_memory(memory: models.Memory, local: dict[int, int]) -> dict:
     }
 
 
+def _exported_summary(row: models.Summary, local: dict[int, int]) -> dict:
+    return {
+        "text": row.text,
+        "sourceStart": row.source_start, "sourceEnd": row.source_end,
+        "handEdited": row.hand_edited,
+        "branch": _local(row.branch_id, local),
+        "depth": row.depth,
+    }
+
+
 def _imported_persona(persona) -> dict:
     """Reads a bundle's `persona` block into `Adventure` keyword arguments.
 
@@ -266,6 +282,7 @@ def plan(bundle: dict, version: str) -> dict:
         "branches": branches,
         "nodes": nodes,
         "memories": _planned_memories(bundle, len(branches)),
+        "summaries": _planned_summaries(bundle, len(branches)),
         "head": _as_index(bundle.get("headBranch"), len(branches), default=0),
         # Version 2 records where the derived work reached. Version 1 counted
         # it, and a count cannot become a node until the nodes exist. See
@@ -437,6 +454,40 @@ def _planned_memories(bundle: dict, branches: int) -> list[dict]:
     return out
 
 
+def _planned_summaries(bundle: dict, branches: int) -> list[dict]:
+    """The summary versions, or the one text a file without them carries.
+
+    A file written before the summary became a row on the tree has a
+    `storySummary` string and nothing else. It becomes a single version, and
+    `_write_summaries` gives it the coordinate the anchors name, which is where
+    that text had got to. `sourceStart` of 0 says it read the story from the
+    beginning, which is true of a summary built by repeated updates and is what
+    makes withdrawing it rewind far enough. This is the rule
+    `migrations._backfill_summary_rows` applies to a database, written again for
+    a file.
+    """
+    raw = bundle.get("summaries")
+    if not isinstance(raw, list):
+        text = str(bundle.get("storySummary") or "")
+        return [{
+            "text": text, "sourceStart": 0, "sourceEnd": None,
+            "handEdited": False, "branch": None, "depth": None,
+        }] if text.strip() else []
+    out: list[dict] = []
+    for entry in raw:
+        if not isinstance(entry, dict) or not str(entry.get("text") or "").strip():
+            continue
+        out.append({
+            "text": str(entry["text"]),
+            "sourceStart": entry.get("sourceStart"),
+            "sourceEnd": entry.get("sourceEnd"),
+            "handEdited": bool(entry.get("handEdited", False)),
+            "branch": _as_index(entry.get("branch"), branches, default=0),
+            "depth": entry.get("depth") if _is_int(entry.get("depth")) else None,
+        })
+    return out
+
+
 def _planned_anchors(bundle: dict, branches: int) -> dict:
     anchors = {}
     for name in ("memory", "summary"):
@@ -463,6 +514,9 @@ def write(db: Session, adventure: models.Adventure, story: dict) -> None:
     _write_memories(db, adventure, story["memories"], ids)
     _point_the_head(adventure, story, ids)
     _write_anchors(adventure, story, ids)
+    # Last, because a version imported from a file that has no coordinates for
+    # it takes the summary anchor, which the line above sets.
+    _write_summaries(db, adventure, story["summaries"], ids)
 
 
 def _write_branches(
@@ -575,6 +629,37 @@ def _write_memories(
         db.add(memory)
 
 
+def _write_summaries(
+    db: Session, adventure: models.Adventure, specs: list[dict], ids: list[int]
+) -> None:
+    for spec in specs:
+        branch = spec["branch"]
+        depth = spec["depth"]
+        if branch is None or depth is None:
+            # The single version salvaged from a file that predates this table.
+            # It goes where the summary anchor says the text had got to, which a
+            # version 2 file carries and `_write_anchors` has already stored.
+            # A version 1 file stores a count instead, which `settle` cannot
+            # resolve until after the flush, so the anchor still reads as unset
+            # here and this falls back to the root at depth 0. That is the right
+            # fallback rather than a gap: depth 0 is at or before every fork
+            # point, so the version is visible from every branch this adventure
+            # can grow, and it is the only version the file has, so wherever it
+            # sits it is the current one.
+            anchor_branch, anchor_depth = cursors.SUMMARY.stored(adventure)
+            branch = ids.index(anchor_branch) if anchor_branch in ids else 0
+            depth = anchor_depth if anchor_depth > lineage.NO_DEPTH else lineage.ROOT_DEPTH
+        db.add(models.Summary(
+            adventure_id=adventure.id,
+            text=spec["text"],
+            source_start=spec["sourceStart"],
+            source_end=spec["sourceEnd"],
+            hand_edited=spec["handEdited"],
+            branch_id=ids[branch],
+            depth=depth,
+        ))
+
+
 def _point_the_head(
     adventure: models.Adventure, story: dict, ids: list[int]
 ) -> None:
@@ -653,7 +738,6 @@ def materialize(
         memory=str(payload.get("memory") or ""),
         authors_note=str(payload.get("authorsNote") or ""),
         ai_instructions=str(payload.get("aiInstructions") or ""),
-        story_summary=str(payload.get("storySummary") or ""),
         script_state=payload.get("scriptState") or {},
         world_state=payload.get("worldState") or {},
         auto_summarize=bool(payload.get("autoSummarize", False)),

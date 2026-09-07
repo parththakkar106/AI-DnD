@@ -98,6 +98,19 @@
 }
 .plot-source .linklike { flex-shrink: 0; }
 
+/* The rebuild sits under the summary field, because it replaces what is in it.
+   `.plot-source` is the same row a step up, above the fields it overwrites. */
+.summary-actions {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: -6px 0 16px;
+  font-size: 0.78rem;
+}
+.summary-actions .linklike { flex-shrink: 0; }
+
 /* ---------- Debug log (Settings) ---------- */
 
 .debug-entry {
