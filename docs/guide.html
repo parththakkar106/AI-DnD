@@ -766,7 +766,7 @@ into the inn, it should come back.</p>
   <thead><tr><th>Layer</th><th>Cadence</th><th>Purpose</th></tr></thead>
   <tbody>
     <tr><td><strong>Memory</strong></td><td>every 6 actions, from 12, once one action sits past the block</td><td>One or two past-tense sentences of concrete fact.</td></tr>
-    <tr><td><strong>Story summary</strong></td><td>every 15 actions</td><td>A single ≤250-word overview, rewritten by folding in the new memories.</td></tr>
+    <tr><td><strong>Story summary</strong></td><td>every 15 actions</td><td>A single ≤250-word overview, rewritten by folding in the new memories. Each update is a version anchored at the turn it read to.</td></tr>
     <tr><td><strong>Retrieval</strong></td><td>every turn</td><td>Embed the last 4 actions (≤600 tokens), cosine-rank the bank, inject the top 5.</td></tr>
   </tbody>
 </table>
@@ -789,6 +789,30 @@ rewinds both marks to just before the stretch it covered, so that ground is summ
 what the story now says. An earlier version instead held the newest action back a turn so it could
 never be summarized before it stopped being retryable; correctness no longer rests on that, because
 the repair exists whether or not the invalidation happens at the tip.</p>
+
+<p><strong>The story summary is a version at a coordinate too</strong>, not a text column. It
+follows the same rule as a memory and for the same reasons, and it did not always: it used to be one
+<code>story_summary</code> column on the adventure, and being the last piece of derived work without
+a coordinate broke it in exactly the ways a coordinate prevents. Deleting the turn whose summarizer
+run you disliked left the text it wrote in place, because there was nothing for
+<code>forget_node</code> to withdraw. Forking two turns back read the same row, because there was
+only one. And neither was recoverable, because the rewrite is incremental — it hands the model the
+current text and asks for it updated — so a version that went wrong became the base of every version
+after it.</p>
+
+<p>Each update now writes a row in <code>summaries</code> anchored at the last node it folded in,
+and reading the summary means taking the deepest version on the path being played. Deleting a turn
+drops the versions anchored on it and uncovers the one before; a fork inherits the versions above
+the fork point and none below it; and what a player types into the Story Summary field is a version
+too, anchored at the node they were reading when they typed it. Old versions are kept and nothing
+prunes them — they are what a delete falls back to.</p>
+
+<p><strong>“Regenerate from story” is the way out of a bad summary that deleting cannot reach.</strong>
+It rebuilds from the memories on the current path in one call, or, on an adventure with no memory
+bank, by reading the story in chunks — capped at <code>MAX_DIGEST_CHUNKS</code> calls, with the chunk
+size derived from the story’s length so one click costs the same on a long adventure as on a short
+one. It hands the model no prior text, which is what makes it a rebuild rather than another
+increment, and it writes its result as a new version on top of the ones already there.</p>
 
 <p><strong>A block still waits for one action to settle past it</strong>
 (<code>SETTLE_SLACK</code>), and that is a cost rule rather than a correctness one. Retry and

@@ -30,7 +30,14 @@ from sqlalchemy.engine import Engine
 # cannot be rewound past them. `migrations._column_already_there` handles
 # this case. It skips DDL that already ran, so the tree migrations run their
 # backfill against a schema that already has the columns.
+# Undoing a migration that DROPPED a column means adding it back. The entries
+# below are "statements that make the schema look older", which for an
+# `ADD COLUMN` migration is a drop and for a `DROP COLUMN` one is an add.
 _UNDO: list[tuple[int, tuple[str, ...]]] = [
+    # The story summary moved into the `summaries` table. `create_all` makes
+    # that table on a current database, which is what migration 77 expects; only
+    # the column 78 drops has to come back.
+    (78, ("ALTER TABLE adventures ADD COLUMN story_summary TEXT NOT NULL DEFAULT ''",)),
     # Packed float32 vectors and the flag beside them.
     (39, ("ALTER TABLE memories DROP COLUMN embedded",)),
     (38, ("ALTER TABLE memories DROP COLUMN embedding_blob",)),

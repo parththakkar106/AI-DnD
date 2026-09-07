@@ -365,8 +365,12 @@ def test_reading_one_action_does_not_cost_the_whole_story(client, meter):
 def _fat_adventures(user_id: int, count: int = 5, body: int = 20_000) -> None:
     """Adventures whose bodies are heavy and whose index cards are not.
 
-    script_state, world_state and story_summary belong to the play screen. The
+    script_state, world_state and the plot text belong to the play screen. The
     index shows a title, a stamp and a snippet, and used to load all of it.
+
+    The story summary is no longer among them: it is a row in `summaries` rather
+    than a column here, so the check on it below is that the index does not read
+    that table at all.
     """
     db = SessionLocal()
     try:
@@ -376,7 +380,6 @@ def _fat_adventures(user_id: int, count: int = 5, body: int = 20_000) -> None:
                 title=f"Adventure {i}",
                 script_state={"log": "s" * body},
                 world_state={"player": {"notes": "w" * body}},
-                story_summary="y" * body,
                 memory="m" * body,
             ))
         db.commit()
@@ -401,12 +404,17 @@ def test_the_index_does_not_read_the_adventure_body(client, sql_log):
         if "FROM adventures" in s and s.lstrip().upper().startswith("SELECT")
     ]
     assert listing, "expected a listing query"
-    for column in ("script_state", "world_state", "story_summary", "memory",
+    for column in ("script_state", "world_state", "memory",
                    "authors_note", "ai_instructions", "placeholders"):
         assert not any(column in s for s in listing), (
             f"the index read adventures.{column}, which nothing on that "
             f"screen displays"
         )
+    assert not any("FROM summaries" in s for s in sql_log), (
+        "the index read the summaries table, which nothing on that screen "
+        "displays. `Adventure.story_summary` is a property that queries, so a "
+        "listing that loads whole entities pays for one query per row."
+    )
 
 
 def test_the_index_stays_under_its_byte_ceiling(client, meter):

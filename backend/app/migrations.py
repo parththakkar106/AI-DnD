@@ -338,6 +338,15 @@ MIGRATIONS: list[tuple[int, str | dict[str, str]]] = [
     (74, "ALTER TABLE adventures ADD COLUMN persona_name VARCHAR(80) NOT NULL DEFAULT ''"),
     (75, "ALTER TABLE adventures ADD COLUMN persona_pronouns VARCHAR(40) NOT NULL DEFAULT ''"),
     (76, "ALTER TABLE adventures ADD COLUMN persona_desc TEXT NOT NULL DEFAULT ''"),
+    # The story summary becomes a row on the tree, like a memory. `create_all`
+    # makes the `summaries` table on both fresh and existing databases, so the
+    # only work left here is moving each adventure's text into it and dropping
+    # the column. The index is the DDL for 77 because a migration needs a
+    # statement to run, and it is the one this table wants: every read filters on
+    # (adventure_id, branch_id, depth). `_backfill_summary_rows` runs after it.
+    (77, "CREATE INDEX IF NOT EXISTS ix_summaries_adventure_branch_depth "
+         "ON summaries (adventure_id, branch_id, depth)"),
+    (78, "ALTER TABLE adventures DROP COLUMN story_summary"),
 ]
 
 LATEST_VERSION = max((v for v, _ in MIGRATIONS), default=1)
@@ -351,6 +360,7 @@ TREE_BACKFILL_VERSION = 52
 CURSOR_ANCHOR_VERSION = 56
 SIBLING_SPLIT_VERSION = 60
 PARENT_BACKFILL_VERSION = 64
+SUMMARY_ROWS_VERSION = 77
 
 # An adventure with no actions has no tip. A value of -1 keeps the rule that the
 # next node goes at `head_depth + 1` true without a special case. This matches
@@ -782,6 +792,69 @@ def _backfill_cursor_anchors(conn) -> None:
         """))
 
 
+def _backfill_summary_rows(conn) -> None:
+    """Moves each adventure's `story_summary` text into the `summaries` table.
+
+    One row per adventure that has any text, anchored where that text had got
+    to. The summary cursor is the honest answer to "where had it got to": it
+    names the last action the summarizer folded in. An adventure whose cursor
+    was never set gets the opening node instead, which is the earliest
+    coordinate on the story and therefore the one visible from every branch.
+    Anchoring later than the truth would hide the text from a branch that forked
+    before the anchor, and this text is all the summary an upgrading player has.
+
+    `source_start` is 0 rather than NULL, which says the row folded in the story
+    from its beginning. That is true of a summary built by repeated incremental
+    updates, and it makes withdrawal safe: deleting the node this row sits on
+    rewinds the summary cursor to before the story started, so the whole story
+    is folded in again rather than counted as read by a row that no longer
+    exists.
+
+    The pass is guarded on the table being empty for that adventure, so a run
+    that fails partway through resumes without writing a second row.
+    """
+    if not _has_columns(conn, "adventures", "story_summary"):
+        return
+    # A summary needs a branch to hang from: a row whose `branch_id` is NULL
+    # matches no lineage clause and would be invisible to every read. Migration
+    # 52 gave every adventure that existed then a root branch, and an adventure
+    # created since gets one from `tree.root_branch` on first use — which an
+    # adventure with a typed summary and no turns has never reached. This is
+    # step 1 of `_backfill_tree`, run again for those.
+    conn.execute(text("""
+        INSERT INTO branches (adventure_id, parent_branch_id, fork_depth, lineage, created_at)
+        SELECT a.id, NULL, NULL, '[]', CURRENT_TIMESTAMP
+        FROM adventures a
+        WHERE TRIM(a.story_summary) <> ''
+          AND NOT EXISTS (SELECT 1 FROM branches b WHERE b.adventure_id = a.id)
+    """))
+    conn.execute(text(
+        "UPDATE branches SET lineage = json_array(json_array(id, null)) "
+        "WHERE json_array_length(lineage) = 0"
+        if conn.dialect.name == "sqlite" else
+        "UPDATE branches SET lineage = "
+        "jsonb_build_array(jsonb_build_array(id, null))::json "
+        "WHERE json_array_length(lineage) = 0"
+    ))
+    conn.execute(text(f"""
+        INSERT INTO summaries (
+            adventure_id, text, source_start, source_end,
+            branch_id, depth, hand_edited, created_at
+        )
+        SELECT a.id,
+               a.story_summary,
+               0,
+               COALESCE(NULLIF(a.summary_cursor_depth, {NO_DEPTH}), 0),
+               COALESCE(a.summary_cursor_branch_id, {_root_branch_of('a.id')}),
+               COALESCE(NULLIF(a.summary_cursor_depth, {NO_DEPTH}), 0),
+               false,
+               CURRENT_TIMESTAMP
+        FROM adventures a
+        WHERE TRIM(a.story_summary) <> ''
+          AND NOT EXISTS (SELECT 1 FROM summaries s WHERE s.adventure_id = a.id)
+    """))
+
+
 # The per-attempt slices of a context snapshot, frozen here as they stood at
 # version 60, where they were `adventures.VARIANT_SNAPSHOT_KEYS` and are now
 # `attempts.ATTEMPT_KEYS`. Everything else in a snapshot is the assembled prompt,
@@ -1092,6 +1165,11 @@ def bootstrap(engine: Engine, through: int = LATEST_VERSION) -> None:
                     _backfill_tree(conn)
                 if version == CURSOR_ANCHOR_VERSION:
                     _backfill_cursor_anchors(conn)
+                # Between 77, which indexes the table, and 78, which drops the
+                # column this reads. The loop is one transaction, so a failure
+                # here rolls the DROP back with it and the text is still there.
+                if version == SUMMARY_ROWS_VERSION:
+                    _backfill_summary_rows(conn)
                 # The order matters. The split reads what the first pass wrote
                 # for the rows it does not change, and overwrites it for the
                 # rows it does, because an attempt's own outcome takes priority

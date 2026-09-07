@@ -9,7 +9,10 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import set_committed_value
 
-from ... import analytics, attempts, images, limits, memorybank, models, schemas, tree, worldstate
+from ... import (
+    analytics, attempts, images, limits, memorybank, models, schemas, summaries,
+    tree, worldstate,
+)
 from ...database import get_db
 
 from .deps import CurrentUser, current_adventure, router
@@ -90,11 +93,13 @@ def _latest_narration(db: Session, head_branches: dict[int, int | None]) -> dict
 def list_adventures(db: Session = Depends(get_db), user: models.User = CurrentUser):
     # Select named columns rather than the whole Adventure entity. The entity is
     # sixteen columns wide and includes `script_state`, `world_state`,
-    # `placeholders`, `story_summary`, `memory`, `authors_note`, and
-    # `ai_instructions`. That is about 15 kB per row in production, fetched once
-    # per adventure on every index load, and this screen uses none of it. Naming
-    # the columns also means a wide column added to Adventure later has to opt
-    # in to being listed here.
+    # `placeholders`, `memory`, `authors_note`, and `ai_instructions`. That is
+    # about 15 kB per row in production, fetched once per adventure on every
+    # index load, and this screen uses none of it. Naming the columns also means
+    # a wide column added to Adventure later has to opt in to being listed here,
+    # and it keeps `story_summary` out — that one is a property that queries the
+    # `summaries` table, so loading whole entities here would cost a query per
+    # row rather than a wide column. `test_egress` guards both.
     rows = (
         db.query(
             models.Adventure.id,
@@ -321,7 +326,14 @@ def update_adventure(
     db: Session = Depends(get_db),
     adventure: models.Adventure = Depends(current_adventure),
 ):
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    fields = payload.model_dump(exclude_unset=True)
+    # The summary is a row on the tree rather than a column, so it is written
+    # rather than assigned — `Adventure.story_summary` has no setter, and this
+    # loop would raise on it. `set_text` anchors what the player typed at the
+    # node they were reading while they typed it. See `app/summaries.py`.
+    if "story_summary" in fields:
+        summaries.set_text(db, adventure, fields.pop("story_summary"))
+    for field, value in fields.items():
         setattr(adventure, field, value)
     db.commit()
     return adventure

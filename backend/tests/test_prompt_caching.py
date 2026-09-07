@@ -29,7 +29,7 @@ import os
 
 import pytest
 
-from app import models, worldstate
+from app import models, summaries, worldstate
 from app.context import builder
 from app.database import Base, SessionLocal, engine
 from app.providers.openai_compatible import OpenAICompatibleProvider
@@ -128,7 +128,6 @@ def story():
         user_id=user.id, title="A", scenario_id=scenario.id, script_state={},
         memory="The hero hunts bandits.",
         ai_instructions="Write in second person.",
-        story_summary="The hero left the village.",
         world_state=worldstate.instantiate(SCHEMA),
         # Phase 18. Set here so that every test in this file runs with a
         # persona present: it is user-only, so it belongs in the static block,
@@ -143,6 +142,11 @@ def story():
         db.add(models.Action(adventure_id=adventure.id,
                              type="ai" if i % 2 else "do",
                              text=f"[{i}] The road bends onward past the treeline."))
+    db.flush()
+    # The summary is a row on the tree, not a column, so it is written after the
+    # actions exist: `summaries.record` anchors it at the head. See
+    # `app/summaries.py`.
+    summaries.record(db, adventure, "The hero left the village.")
     db.commit()
     db.expire_all()
     adventure = db.get(models.Adventure, adventure.id)
@@ -219,7 +223,7 @@ def test_live_sections_are_still_charged_to_the_budget(story):
     settings = db.get(models.Settings, settings.id)
 
     _, _, lean = builder.build_context(adventure, settings)
-    adventure.story_summary = "The hero left the village. " * 150
+    summaries.set_text(db, adventure, "The hero left the village. " * 150)
     db.commit()
     _, _, fat = builder.build_context(adventure, settings)
 

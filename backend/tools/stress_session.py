@@ -136,7 +136,9 @@ from fastapi import Depends
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
-from app import auth, limits, memorybank, models, security, seed, tree, worldstate
+from app import (
+    auth, limits, memorybank, models, security, seed, summaries, tree, worldstate,
+)
 from app.context import cursors
 from app.database import Base, SessionLocal, engine, get_db
 from app.main import app
@@ -373,7 +375,9 @@ def add_rich_extras(db, args, rng: random.Random, user, adventure) -> None:
     # are past the start. `build_fixture` translates the marks into anchors
     # once the actions exist. See `rich_cursor_positions`.
     adventure.auto_summarize = True
-    adventure.story_summary = RICH_SUMMARY
+    # A row on the tree, not a column. It is anchored at the head, which the
+    # actions written above have already set. See `app/summaries.py`.
+    summaries.record(db, adventure, RICH_SUMMARY)
 
     for kind, name, keys, entry in RICH_CARDS:
         db.add(models.StoryCard(

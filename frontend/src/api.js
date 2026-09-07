@@ -124,6 +124,12 @@ export const api = {
   createAdventure: (data) => request('/adventures', { method: 'POST', body: JSON.stringify(data) }),
   updateAdventure: (id, data) => request(`/adventures/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteAdventure: (id) => request(`/adventures/${id}`, { method: 'DELETE' }),
+  // Rebuild the story summary from the story, discarding the current text.
+  // Returns the whole adventure, because the summary is the only field that
+  // changes and the caller already holds one. Slow on an adventure with no
+  // memory bank: the server reads the story in chunks.
+  regenerateSummary: (id) =>
+    request(`/adventures/${id}/summary/regenerate`, { method: 'POST' }),
   // A page of the story, walking backwards. `beforeId` is the oldest action
   // already on screen; omit it for the newest window. Anchored on an action
   // rather than an offset so a turn landing mid-scroll cannot shift the page

@@ -20,7 +20,7 @@ import pytest
 from fastapi import Depends
 from fastapi.testclient import TestClient
 
-from app import auth, limits, models, worldstate
+from app import auth, limits, models, summaries, worldstate
 from app.context import builder
 from app.database import Base, SessionLocal, engine, get_db
 from app.main import app
@@ -127,7 +127,6 @@ def story():
         user_id=user.id, title="A", scenario_id=scenario.id, script_state={},
         memory="The hero hunts bandits.",
         ai_instructions="Write in second person.",
-        story_summary="The hero left the village.",
         world_state=worldstate.instantiate(SCHEMA),
         persona_name="Kaelen",
         persona_pronouns="he/him",
@@ -139,6 +138,11 @@ def story():
         db.add(models.Action(adventure_id=adventure.id,
                              type="ai" if i % 2 else "do",
                              text=f"[{i}] The road bends onward past the treeline."))
+    db.flush()
+    # The summary is a row on the tree, not a column, so it is written after the
+    # actions exist: `summaries.record` anchors it at the head. See
+    # `app/summaries.py`.
+    summaries.record(db, adventure, "The hero left the village.")
     db.commit()
     db.expire_all()
     adventure = db.get(models.Adventure, adventure.id)

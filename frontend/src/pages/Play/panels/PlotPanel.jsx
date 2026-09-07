@@ -10,6 +10,7 @@ function PlotPanel({ adventure, setAdventure, onWorldStateChanged }) {
   const toast = useToast()
   const [plan, setPlan] = useState(null)      // non-null while the modal is open
   const [planning, setPlanning] = useState(false)
+  const [rebuilding, setRebuilding] = useState(false)
   const debounceSave = useDebouncedSave()
 
   const setField = (field, value) => {
@@ -72,6 +73,21 @@ function PlotPanel({ adventure, setAdventure, onWorldStateChanged }) {
     }
   }
 
+  // Throw the current summary away and write a new one from the story. The
+  // versions before it stay on the server, so this is undone by deleting the
+  // version it wrote rather than by regretting the click.
+  const rebuildSummary = async () => {
+    setRebuilding(true)
+    try {
+      setAdventure(await api.regenerateSummary(adventure.id))
+      toast('Summary rebuilt from the story.')
+    } catch (err) {
+      toast(err.message, 'error')
+    } finally {
+      setRebuilding(false)
+    }
+  }
+
   const applyRefresh = async (placeholders) => {
     try {
       const updated = await api.refreshFromScenario(adventure.id, placeholders)
@@ -130,9 +146,21 @@ function PlotPanel({ adventure, setAdventure, onWorldStateChanged }) {
       <Field label="AI Instructions" value={adventure.ai_instructions}
         onChange={(v) => setField('ai_instructions', v)} textarea rows={2}
         placeholder="Behavioral guidance for the model." />
-      <Field label="Story Summary" value={adventure.story_summary}
-        onChange={(v) => setField('story_summary', v)} textarea
-        placeholder="Running summary of events so far. Updated automatically every 15 actions when auto-summarization is on; your edits are kept as the base for the next update." />
+      <div className="summary-field">
+        <Field label="Story Summary" value={adventure.story_summary}
+          onChange={(v) => setField('story_summary', v)} textarea
+          placeholder="Running summary of events so far. Updated automatically every 15 actions when auto-summarization is on; your edits are kept as the base for the next update." />
+        <div className="summary-actions">
+          <span className="dim">
+            Each update is kept with the turn it was written at, so deleting a turn
+            or branching away from it brings back the summary from before.
+          </span>
+          <button className="linklike" onClick={rebuildSummary} disabled={rebuilding}
+            title="Read the story again and write a new summary, ignoring the current one">
+            {rebuilding ? 'Rebuilding…' : '⟳ Regenerate from story'}
+          </button>
+        </div>
+      </div>
 
       <div className="page-header" style={{ marginTop: 18 }}>
         <h3 style={{ margin: 0 }}>Story Cards</h3>
