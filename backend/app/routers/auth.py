@@ -4,25 +4,13 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 
 from .. import (accesslog, analytics, auth, cleanup, limits, models, schemas,
-                security, starter)
+                security)
 from ..database import get_db
 from .settings import get_settings
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-
-
-def _set_session_cookie(response: Response, user_id: int) -> None:
-    response.set_cookie(
-        auth.SESSION_COOKIE,
-        security.sign_session(user_id),
-        max_age=auth.COOKIE_MAX_AGE,
-        httponly=True,
-        samesite="lax",
-        secure=auth.COOKIE_SECURE,
-        path="/",
-    )
 
 
 def me_payload(user: models.User, db: Session) -> dict:
@@ -33,6 +21,8 @@ def me_payload(user: models.User, db: Session) -> dict:
         "id": user.id,
         "email": user.email,
         "is_guest": user.is_guest,
+        # They have an account, whether or not they have registered.
+        "visitor": False,
         # Trusted testers: unmetered demo turns, plus the AI Chat scratchpad.
         "power_user": auth.is_power_user(user),
         # Separate allowlist: shows the visit-analytics page and its nav link.
@@ -52,32 +42,66 @@ def me_payload(user: models.User, db: Session) -> dict:
     }
 
 
+def visitor_payload(visitor: auth.Visitor) -> dict:
+    """The same shape, for someone who has no account yet.
+
+    `is_guest` is true because that is what they are to the interface: the app
+    plays as a guest plays, and the nudge to sign up belongs on this screen as
+    much as on a guest's. `visitor` is what says no row exists yet, and `id` is
+    null because there is nothing to name.
+
+    The demo figures are the defaults rather than a reading of their settings,
+    which is honest: someone with no account has no stored key, so the shared
+    demo key is what their first turn would use, and they have spent none of it.
+    """
+    return {
+        "multi_user": True,
+        "id": None,
+        "email": None,
+        "is_guest": True,
+        "visitor": True,
+        "power_user": False,
+        "analytics": False,
+        "guest_retention_days": cleanup.RETENTION_DAYS if cleanup.enabled() else None,
+        "demo": {
+            "enabled": auth.demo_enabled(),
+            "using_demo": auth.demo_enabled(),
+            "model": auth.DEMO_MODELS[0] if auth.demo_enabled() else None,
+            "turns_per_day": auth.DEMO_TURNS_PER_DAY,
+            "turns_left": auth.DEMO_TURNS_PER_DAY if auth.demo_enabled() else None,
+            "models": auth.DEMO_MODELS if auth.demo_enabled() else [],
+        },
+    }
+
+
 @router.get("/me")
 def me(request: Request, response: Response, db: Session = Depends(get_db)):
-    """Returns the current user.
+    """Returns the current user, or the visitor standing in for one.
 
-    In multi-user mode this also establishes the session. If the cookie is
-    missing or invalid, the endpoint creates a guest user and sets a cookie. The
-    frontend calls it on load and after any 401.
+    In multi-user mode this is also where a browser is first recognized. A
+    caller with no usable cookie is given a signed visitor cookie, which names
+    them and writes nothing down; the account comes later, from `guests.adopt`,
+    the first time they do something that needs one. The frontend calls this on
+    load and after any 401.
+
+    Nothing here is rate limited any more, because nothing here costs a row.
+    The limiter moved to the call that does.
     """
     if not auth.MULTI_USER:
         user = auth.local_user(db)
     else:
         user = auth.resolve_session_user(request, db)
         if user is None:
-            # Each new guest is a database row, so cap how fast one IP can
-            # create them.
-            limits.rate_limit("guest", request)
-            user = models.User(is_guest=True)
-            db.add(user)
-            db.commit()
-            # The guest is committed first, so a failure while copying the
-            # starter adventure still leaves them with an account.
-            starter.give(db, user)
-            db.commit()
-            _set_session_cookie(response, user.id)
-    # This endpoint is the SPA's bootstrap call, so it is where a session first
-    # shows itself; accesslog thins the rows down to one per day per address.
+            visitor = auth.resolve_visitor(request)
+            if visitor is None:
+                visitor = auth.new_visitor()
+                auth.set_visitor_cookie(response, visitor)
+            # This endpoint is the SPA's bootstrap call, so it is where an
+            # arrival first shows itself, account or not; accesslog thins the
+            # rows down to one per day per address.
+            accesslog.note_visit(db, visitor, request)
+            analytics.record_visit(visitor)
+            return visitor_payload(visitor)
     accesslog.note_session(db, user, request)
     return me_payload(user, db)
 
@@ -144,7 +168,7 @@ def login(
         accesslog.record(db, accesslog.LOGIN_FAILED, request, who=email)
         raise HTTPException(401, "Incorrect email or password.")
     limits.note_login_success(email)
-    _set_session_cookie(response, user.id)
+    auth.set_session_cookie(response, user.id)
     analytics.record_event(analytics.EV_LOGIN, user)
     accesslog.record(db, accesslog.LOGIN, request, user=user)
     return me_payload(user, db)

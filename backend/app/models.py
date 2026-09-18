@@ -23,8 +23,9 @@ class User(Base):
       mode creates this row automatically. It owns everything that a database
       from before Phase 8 contained.
     - Guests have a NULL email and `is_guest` set to True. Multi-user mode
-      creates one on a visitor's first visit and identifies it only by the
-      session cookie.
+      creates one the first time a visitor does something that needs an
+      account, and identifies it only by the session cookie. Arriving and
+      reading are not enough: see `guests.adopt`.
     - Registered users have an email. Registration upgrades a guest row in
       place, so the guest's data survives without being reassigned.
     """
@@ -40,6 +41,22 @@ class User(Base):
     # Shared demo key usage (resets when the UTC date changes).
     demo_turns_used: Mapped[int] = mapped_column(Integer, default=0)
     demo_turns_date: Mapped[str] = mapped_column(String(10), default="")
+    # The visitor this account was written down for, when it began as one. It is
+    # unique, which is what makes `guests.adopt` safe against two of a visitor's
+    # requests racing: the second insert loses to the index rather than creating
+    # a second account. It is also what lets the anonymous visit counters carry
+    # one person's handle across the moment they got an account. NULL for the
+    # local user and for any guest created before this column existed, and NULL
+    # repeats freely under a unique index on both dialects.
+    #
+    # The uniqueness is an explicit named index rather than `unique=True` on the
+    # column, so that a fresh database and a migrated one end up with the same
+    # object under the same name. A column constraint becomes an unnamed
+    # `sqlite_autoindex`, which nothing can drop by name and which then blocks
+    # dropping the column itself.
+    visitor_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    __table_args__ = (Index("ix_users_visitor_key", "visitor_key", unique=True),)
 
 
 scenario_scripts = Table(

@@ -11,11 +11,12 @@ Three rules shape the design:
 
 1. It stores nothing personal. It records no IP addresses, no user agents, no
    user ids, and no title of anything a player wrote. A visitor appears only as
-   an HMAC of their user id, which is one-way and salted with the app's secret
-   key, so these tables cannot be joined back to an account even by someone
-   holding the database. Story content never reaches this module. What one
-   specific person did is unanswerable by design, and only totals are
-   available.
+   an HMAC of the id they are known by, whether that is an account or the
+   signed cookie of someone who has not got one. It is one-way and salted with
+   the app's secret key, so these tables cannot be joined back to an account
+   even by someone holding the database. Story content never reaches this
+   module. What one specific person did is unanswerable by design, and only
+   totals are available.
 2. Egress is the budget. Neon bills for bytes leaving the database, and this
    project has already paid for forgetting that once. Counts are therefore
    aggregated in memory and flushed as UPSERTs, so a visit is a write and never
@@ -163,42 +164,52 @@ def record(metric: str, label: str = "", *, n: int = 1) -> None:
         flush()
 
 
-def visitor_id(user: models.User) -> str:
+def visitor_id(who) -> str:
     """Returns a stable, one-way handle for one visitor.
 
-    The handle is an HMAC of the user id under the app's secret key. It is
-    stable, so a returning visitor can be distinguished from a new one. It is
-    one-way, so nothing in the analytics tables points back at an account. It is
-    keyed, so a client cannot compute one and claim to be someone else. One
-    consequence follows: rotating `AIDND_SECRET_KEY` makes every returning
-    visitor look new.
+    `who` is a `models.User` or an `auth.Visitor`, because a person is counted
+    from the moment they arrive and most of them never get an account. Both go
+    through the same HMAC under the app's secret key. The handle is stable, so a
+    returning visitor can be distinguished from a new one. It is one-way, so
+    nothing in the analytics tables points back at an account. It is keyed, so a
+    client cannot compute one and claim to be someone else. One consequence
+    follows: rotating `AIDND_SECRET_KEY` makes every returning visitor look new.
+
+    An account written down for a visitor is hashed under that visitor's id
+    rather than its own. Otherwise the day someone started playing would count
+    them twice, once before the account existed and once after, and the funnel
+    would show a step taken by somebody who had never arrived.
     """
-    digest = hmac.new(security.SECRET_KEY, f"visitor:{user.id}".encode(), sha256)
+    key = getattr(who, "visitor_key", None) or getattr(who, "id", None)
+    source = "anon" if isinstance(key, str) else "visitor"
+    digest = hmac.new(security.SECRET_KEY, f"{source}:{key}".encode(), sha256)
     return digest.hexdigest()[:32]
 
 
-def record_visit(user: models.User | None, *, flag: str | None = None) -> None:
+def record_visit(who, *, flag: str | None = None) -> None:
     """Records that this visitor was here today, and optionally sets one funnel
     flag.
 
-    Without a user the call does nothing. A page loaded before a session exists
-    still counts as a pageview, but not as a person.
+    `who` is a user, a visitor, or None. None does nothing: a pageview that
+    arrives before the SPA has been given either still counts as a view, but not
+    as a person.
     """
-    if user is None:
+    if who is None:
         return
     try:
         with _guard:
-            flags = _visits.setdefault((_today(), visitor_id(user)), set())
+            flags = _visits.setdefault((_today(), visitor_id(who)), set())
             if flag:
                 flags.add(flag)
     except Exception:  # pragma: no cover - defensive
         logger.exception("Analytics visit failed; continuing.")
 
 
-def record_event(name: str, user: models.User | None = None) -> None:
+def record_event(name: str, user=None) -> None:
     """Records one event, and credits the visitor's day if it is a funnel step.
 
-    This is the whole interface the call sites use.
+    This is the whole interface the call sites use. `user` is a user, a visitor,
+    or None, as `record_visit` takes it.
     """
     record(M_EVENT, name)
     record_visit(user, flag=FUNNEL_FLAGS.get(name))

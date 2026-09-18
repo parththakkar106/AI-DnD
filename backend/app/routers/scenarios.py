@@ -10,13 +10,22 @@ router = APIRouter(prefix="/api/scenarios", tags=["scenarios"])
 
 
 def get_scenario_or_404(
-    scenario_id: int, db: Session, user: models.User, *, edit: bool = False
+    scenario_id: int, db: Session, user: models.User | None, *, edit: bool = False
 ) -> models.Scenario:
-    """Visible = owned or public; editable = owned only."""
+    """Visible = owned or public; editable = owned only.
+
+    `user` is None for a visitor with no account yet, who owns nothing and so
+    sees the public scenarios only. Ownership is tested through `owned` rather
+    than by comparing ids, because a seeded scenario has a NULL `user_id` and a
+    visitor has no id: comparing the two directly would read as a match.
+    """
     scenario = db.get(models.Scenario, scenario_id)
-    if scenario is None or (scenario.user_id != user.id and not scenario.is_public):
+    owned = (
+        scenario is not None and user is not None and scenario.user_id == user.id
+    )
+    if scenario is None or not (owned or scenario.is_public):
         raise HTTPException(404, "Scenario not found")
-    if edit and scenario.user_id != user.id:
+    if edit and not owned:
         raise HTTPException(403, "This is a shared demo scenario — it can't be edited. Start an adventure from it, or duplicate it.")
     return scenario
 
@@ -24,11 +33,21 @@ def get_scenario_or_404(
 @router.get("", response_model=list[schemas.ScenarioListItem])
 def list_scenarios(
     db: Session = Depends(get_db),
-    user: models.User = Depends(auth.get_current_user),
+    user: models.User | None = Depends(auth.get_optional_user),
 ):
+    """The scenarios this caller can see: their own, plus the shared ones.
+
+    Browsing does not need an account. A visitor gets the shared ones, which is
+    the whole home screen, and nothing about answering them writes a row.
+    """
+    visible = (
+        models.Scenario.is_public
+        if user is None
+        else or_(models.Scenario.user_id == user.id, models.Scenario.is_public)
+    )
     return (
         db.query(models.Scenario)
-        .filter(or_(models.Scenario.user_id == user.id, models.Scenario.is_public))
+        .filter(visible)
         .order_by(models.Scenario.updated_at.desc())
         .all()
     )
@@ -51,7 +70,7 @@ def create_scenario(
 def get_scenario(
     scenario_id: int,
     db: Session = Depends(get_db),
-    user: models.User = Depends(auth.get_current_user),
+    user: models.User | None = Depends(auth.get_optional_user),
 ):
     scenario = get_scenario_or_404(scenario_id, db, user)
     # A funnel step, recorded for shared scenarios only. Opening one is the
@@ -67,7 +86,7 @@ def get_scenario(
 def get_scenario_image(
     scenario_id: int,
     db: Session = Depends(get_db),
-    user: models.User = Depends(auth.get_current_user),
+    user: models.User | None = Depends(auth.get_optional_user),
 ):
     """Serve an uploaded cover image as real bytes.
 

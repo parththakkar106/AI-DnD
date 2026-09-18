@@ -62,18 +62,27 @@ def collect(
     """Record one pageview. Always 204, even when nothing was counted: the
     browser has no business knowing whether it was."""
     limits.rate_limit("analytics", request)
-    # Resolved by hand rather than through get_current_user: a pageview that
-    # arrives before /auth/me has minted a session should still be counted as a
-    # view, not turned into a 401 the SPA has to handle.
+    # Resolved by hand rather than through get_current_user: a pageview must
+    # never be the thing that writes someone down, and a pageview that arrives
+    # before /auth/me has handed out any cookie should still be counted as a
+    # view rather than turned into a 401 the SPA has to handle. A visitor counts
+    # as a person here, which is most of them: an account is what someone gets
+    # for playing, not for reading the page.
     user = (
-        auth.resolve_session_user(request, db)
+        (auth.resolve_session_user(request, db) or auth.resolve_visitor(request))
         if auth.MULTI_USER
         else auth.local_user(db)
     )
     # The operator's own clicks are not traffic. This applies only in
     # multi-user mode. Locally every user is the owner, and excluding them would
     # leave the dashboard empty on the machine the app is developed on.
-    if auth.MULTI_USER and user is not None and auth.is_owner(user):
+    # `is_owner` reads an email, which a visitor has no way to have, so the
+    # allowlist test is confined to real accounts.
+    if (
+        auth.MULTI_USER
+        and isinstance(user, models.User)
+        and auth.is_owner(user)
+    ):
         return Response(status_code=204)
 
     analytics.record(analytics.M_PAGE, analytics.normalize_route(payload.path))

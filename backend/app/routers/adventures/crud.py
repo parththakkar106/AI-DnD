@@ -15,7 +15,7 @@ from ... import (
 )
 from ...database import get_db
 
-from .deps import CurrentUser, current_adventure, router
+from .deps import CurrentUser, OptionalUser, current_adventure, router
 from .paging import action_window, annotate_takes
 from .scenario_text import fill_placeholders, scenario_card_specs
 
@@ -90,7 +90,12 @@ def _latest_narration(db: Session, head_branches: dict[int, int | None]) -> dict
 
 
 @router.get("", response_model=list[schemas.AdventureListItem])
-def list_adventures(db: Session = Depends(get_db), user: models.User = CurrentUser):
+def list_adventures(db: Session = Depends(get_db), user: models.User | None = OptionalUser):
+    # Someone with no account yet has no adventures, and asking on their behalf
+    # is what used to write them a row. The empty list is the true answer and it
+    # costs no query at all.
+    if user is None:
+        return []
     # Select named columns rather than the whole Adventure entity. The entity is
     # sixteen columns wide and includes `script_state`, `world_state`,
     # `placeholders`, `memory`, `authors_note`, and `ai_instructions`. That is

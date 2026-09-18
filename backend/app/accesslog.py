@@ -9,19 +9,25 @@ someone has to remember.
 
 Owner-only, and never shown to the people it records.
 
-Four kinds of row:
+Five kinds of row:
 
-- `session`      A browser that has a session made a request. For a guest, this
-                 is their first visit.
+- `session`      A browser made a request. For someone who has never played,
+                 this is a visitor with no account behind it, named `Visitor #`
+                 and carrying a NULL `user_id`. For a guest or a registered
+                 user it names the account.
+- `guest`        A visitor did something that needed an account, so one was
+                 written down for them. This is the row that connects the two
+                 names, and `who` holds both.
 - `login`        An existing account signed in.
 - `register`     A guest upgraded to an account.
 - `login_failed` A password attempt that did not match, with the address tried.
 
 Session rows are the only ones that need thinning. `/auth/me` runs on every page
 load, and one row per load would be noise rather than a log. A row is written
-when the day or the address changes for that user. That is the granularity a log
-is read at, such as seen on the 3rd from 1.2.3.4, and it still records someone
-moving networks during a day.
+when the day or the address changes for that person. That is the granularity a
+log is read at, such as seen on the 3rd from 1.2.3.4, and it still records
+someone moving networks during a day. Visitors are thinned the same way and in
+the same map, keyed by the visitor id rather than a user id.
 
 A table of arrivals raises two questions it cannot answer. `person` answers the
 first, which is what one of these people came for: it gathers the rows about a
@@ -41,16 +47,19 @@ from . import analytics, models
 logger = logging.getLogger(__name__)
 
 SESSION = "session"
+ADOPTED = "guest"
 LOGIN = "login"
 REGISTER = "register"
 LOGIN_FAILED = "login_failed"
 
 MAX_UA = 200
 
-# user id -> (day, ip) of the last session row written for them. Process-local
-# like the rate limiter's windows, and for the same reason: this is a single
-# process, and the worst case after a restart is one redundant row per user.
-_last_session: dict[int, tuple[str, str]] = {}
+# Who -> (day, ip) of the last session row written for them. The key is a user
+# id for an account and the visitor id for someone who has none, which cannot
+# collide: one is an int and the other a random string. Process-local like the
+# rate limiter's windows, and for the same reason: this is a single process, and
+# the worst case after a restart is one redundant row per person.
+_last_session: dict[int | str, tuple[str, str]] = {}
 _guard = threading.Lock()
 _MAX_TRACKED = 10_000
 
@@ -123,22 +132,45 @@ def record(
 
 def note_session(db: Session, user: models.User, request) -> None:
     """Records that a session made a request, at most one row per day per address."""
+    if _seen_already(user.id, request):
+        return
+    record(db, SESSION, request, user=user)
+
+
+def note_visit(db: Session, visitor, request) -> None:
+    """The same row for someone who has no account yet.
+
+    They are the ordinary case rather than an edge one: most people who open the
+    app never play, and an access log that only recorded the ones who did would
+    answer "who came here" with "the people who stayed". The row carries a NULL
+    `user_id`, because there is no account to point at, and `Visitor #…` in
+    `who`, because a log needs a name.
+    """
+    if _seen_already(visitor.id, request):
+        return
+    record(db, SESSION, request, who=visitor.label)
+
+
+def _seen_already(key: int | str, request) -> bool:
+    """Whether a session row was already written today for this person and
+    address. Never raises: thinning is an optimization, and failing it should
+    cost a duplicate row rather than the request."""
     try:
         today = analytics._today()
         ip = _client_ip(request)
         with _guard:
-            if _last_session.get(user.id) == (today, ip):
-                return
-            _last_session[user.id] = (today, ip)
+            if _last_session.get(key) == (today, ip):
+                return True
+            _last_session[key] = (today, ip)
             if len(_last_session) > _MAX_TRACKED:
                 # Nothing here needs to persist. Clearing the map costs at most
-                # one extra row per active user.
+                # one extra row per active person.
                 _last_session.clear()
-                _last_session[user.id] = (today, ip)
+                _last_session[key] = (today, ip)
+            return False
     except Exception:  # pragma: no cover - defensive
         logger.exception("Access log session check failed; continuing.")
-        return
-    record(db, SESSION, request, user=user)
+        return True
 
 
 def recent(

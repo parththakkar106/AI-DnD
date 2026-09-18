@@ -203,6 +203,7 @@ function TopList({ title, rows, note, empty = 'Nothing yet', labelOf = (label) =
 const KINDS = [
   { key: '', label: 'Everything' },
   { key: 'session', label: 'Sessions' },
+  { key: 'guest', label: 'Became guests' },
   { key: 'login', label: 'Sign-ins' },
   { key: 'register', label: 'Registrations' },
   { key: 'login_failed', label: 'Failed' },
@@ -210,6 +211,9 @@ const KINDS = [
 
 const KIND_LABEL = {
   session: 'Session',
+  // A visitor did something that needed an account, so one was written down
+  // for them. Until then their session rows name them "Visitor #…".
+  guest: 'Became a guest',
   login: 'Signed in',
   register: 'Registered',
   login_failed: 'Failed sign-in',

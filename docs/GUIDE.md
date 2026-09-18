@@ -1038,17 +1038,18 @@ made. An adventure started from a demo that is later removed survives:
 of the cards and scripts, so it loses only the inherited cover art.
 
 **Guests start with a story already in progress.** `starter.py` copies a shipped export
-bundle into each new guest account at the same point the row is created. An empty account
+bundle into each new guest account at the same point the row is created, which is
+`guests.adopt`. An empty account
 gives a visitor nothing to read, and the daily demo turns are limited, so learning what
 the app does used to cost one of them. The copy is the guest's own from the first moment:
 they can edit, branch, delete, or export it, and nothing links it back to the file. The
 guest row is committed before the copy is attempted, so a failure there still leaves them
 with an account, and the copy itself runs inside a savepoint.
 
-**Guests expire; accounts don't.** One row per curious visitor adds up, so `cleanup.py`
+**Guests expire; accounts don't.** One row per person who played adds up, so `cleanup.py`
 deletes guests idle for `AIDND_GUEST_RETENTION_DAYS` (default 5), measured as
 `COALESCE(last_seen_at, created_at)`, because `_touch` only writes `last_seen_at` hourly
-and a guest minted by `/auth/me` has NULL until its second request. The filter requires
+and a newly adopted guest has NULL until its second request. The filter requires
 both `is_guest` *and* `email IS NULL`, so upgrading in place is also how you opt out of
 expiry. It runs once at startup (the reliable trigger on a host that sleeps) and then
 every few hours.
@@ -1203,13 +1204,26 @@ and read the URL itself. API routes are matched before the static mount, so they
 unaffected.
 
 **Sessions.** A cookie is a small value the browser stores and automatically attaches to
-every request to that site. Here it holds `v1.<user_id>.<signature>`. The server doesn't
-store sessions anywhere; it re-verifies the signature on each request, which is why there's
-no session table.
+every request to that site. Here it holds one of two signed values: `v1.<user_id>` names an
+account, and `n1.<visitor_id>` names a browser that has been seen and not written down. The
+server doesn't store sessions anywhere; it re-verifies the signature on each request, which
+is why there's no session table.
 
-**The 401 retry.** If the cookie is missing or stale, any API call returns 401. The frontend
-catches that once, calls `/api/auth/me` (which mints a fresh guest session), and retries the
-original request. So a returning visitor with an expired cookie never sees an error.
+**Arriving is not an account.** A new browser gets the `n1` cookie, and nothing is written
+for it. Reading the app — the adventure list, the shared scenarios, the default settings —
+is answered for a visitor without creating anything. The `users` row appears the first time
+they do something that needs one, in `guests.adopt`, which also swaps their cookie for a
+`v1` one. That is why a crawler walking the API leaves nothing behind, and why the access
+log has rows that name a `Visitor #` rather than a guest.
+
+**One visitor, one account.** `adopt` looks for an existing account first, and
+`users.visitor_key` carries a unique index so that two requests racing from one browser
+cannot both insert. The loser reads back the winner instead of failing.
+
+**The 401 retry.** If the cookie is missing or stale, any API call that needs an account
+returns 401. The frontend catches that once, calls `/api/auth/me` (which establishes a
+session), and retries the original request. All of its bootstraps share one in-flight
+`/auth/me`, so a cold first paint asks once rather than once per call.
 
 **React, in one paragraph.** A component is a function that returns a description of some
 UI. `useState` holds a value; changing it re-renders the component. The streaming turn is

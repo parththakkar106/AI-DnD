@@ -9,6 +9,12 @@ accounts on a schedule, and a log that deletes itself is not a log. The
 person page adds a second limit to hold: it reports what someone played,
 and never what they wrote.
 
+Most arrivals have no account behind them, because one is written down only
+when a visitor does something that needs it. Those rows name a visitor and
+carry a NULL user id, and they are the ordinary case rather than an edge one:
+a log that recorded only the people who stayed would answer "who came here"
+with the wrong list.
+
     python -m pytest tests/test_accesslog.py -v
 """
 import pytest
@@ -78,6 +84,26 @@ def visit(client, ip=EDGE, ua="Mozilla/5.0 (Windows NT 10.0; Win64; x64)"):
     )
 
 
+def guest_session(client, visitor_key="visitor-key-1"):
+    """Returns a guest account, with this browser's cookie pointing at it.
+
+    Arriving does not create one any more: `guests.adopt` does, the first time
+    the visitor needs somewhere to put something. A test about what a guest's
+    rows look like therefore makes the guest first and then arrives as them,
+    which is the same cookie flow the app runs after an adoption.
+    """
+    db = SessionLocal()
+    try:
+        user = models.User(is_guest=True, visitor_key=visitor_key)
+        db.add(user)
+        db.commit()
+        user_id = user.id
+    finally:
+        db.close()
+    client.cookies.set(auth.SESSION_COOKIE, security.sign_session(user_id))
+    return user_id
+
+
 def rows(kind=None):
     db = SessionLocal()
     try:
@@ -95,14 +121,36 @@ def read_log(client, **params):
 
 # ---------- Writing ----------
 
-def test_a_new_session_is_logged(client):
+def test_an_arrival_with_no_account_is_logged_as_a_visitor(client):
     visit(client)
     logged = rows()
     assert len(logged) == 1
     entry = logged[0]
     assert entry.kind == accesslog.SESSION
-    assert entry.is_guest and entry.who.startswith("Guest #")
+    # Named, so the row can be read, and pointing at nothing, because nothing
+    # was written down. The account comes when they play.
+    assert entry.who.startswith("Visitor #")
+    assert entry.user_id is None and not entry.is_guest
     assert entry.device == "desktop"
+
+
+def test_arriving_writes_no_account(client):
+    """The reason the row above names a visitor: a visit costs no rows."""
+    visit(client)
+    visit(client, ip="203.0.113.9")
+    db = SessionLocal()
+    try:
+        assert db.query(models.User).filter_by(is_guest=True).count() == 0
+    finally:
+        db.close()
+
+
+def test_a_guests_session_is_logged_against_their_account(client):
+    guest = guest_session(client)
+    visit(client)
+    entry = rows()[0]
+    assert entry.is_guest and entry.who == f"Guest #{guest}"
+    assert entry.user_id == guest
 
 
 def test_the_address_is_the_hardened_one_not_the_clients(client):
@@ -146,14 +194,14 @@ def test_sign_in_and_failure_are_both_logged(client):
 
 
 def test_registering_is_logged_against_the_upgraded_account(client):
-    visit(client)  # creates the guest whose session then registers
-    client.act_as(rows()[0].user_id)
+    client.act_as(guest_session(client))
     client.post("/api/auth/register", json={"email": "new@example.com", "password": "hunter2long"})
     entry = rows(accesslog.REGISTER)[0]
     assert entry.who == "new@example.com" and not entry.is_guest
 
 
 def test_a_row_outlives_the_account_it_describes(client):
+    guest_session(client)
     visit(client)
     entry = rows()[0]
     db = SessionLocal()
@@ -265,8 +313,8 @@ def test_a_person_page_says_what_they_played(client):
 
 
 def test_a_person_page_dates_the_registration_from_the_log(client):
-    visit(client)               # creates the guest whose session then registers
-    guest = rows()[0].user_id
+    guest = guest_session(client)   # the guest whose session then registers
+    visit(client)
     client.act_as(guest)
     client.post("/api/auth/register", json={"email": "new@example.com", "password": "hunter2long"})
     client.act_as(client.ids["owner"])
@@ -291,8 +339,8 @@ def test_a_person_page_names_shared_scenarios_but_not_their_own(client):
 
 
 def test_a_person_page_lists_the_addresses_they_arrived_from(client):
+    guest = guest_session(client)
     visit(client)
-    guest = rows()[0].user_id
     visit(client, ip="203.0.113.9", ua=IPHONE)
 
     detail = read_person(client, guest).json()
@@ -301,8 +349,8 @@ def test_a_person_page_lists_the_addresses_they_arrived_from(client):
 
 
 def test_a_person_page_names_the_browsers_they_arrive_in(client):
+    guest = guest_session(client)
     visit(client)                                   # the desktop default
-    guest = rows()[0].user_id
     visit(client, ip="203.0.113.9", ua=IPHONE)
 
     devices = read_person(client, guest).json()["devices"]
@@ -317,6 +365,7 @@ def test_a_person_page_names_the_browsers_they_arrive_in(client):
 
 
 def test_a_person_page_outlives_the_account(client):
+    guest_session(client)
     visit(client)
     entry = rows()[0]
     played(entry.user_id, turns=2)
@@ -346,8 +395,8 @@ def test_a_failed_sign_in_has_no_person_page(client):
 
 
 def test_the_person_page_is_owner_only(client):
+    guest = guest_session(client)
     visit(client)
-    guest = rows()[0].user_id
     assert read_person(client, guest).status_code == 200
     client.act_as(client.ids["member"])
     assert read_person(client, guest).status_code == 404
@@ -360,6 +409,7 @@ def read_devices(client):
 
 
 def test_the_device_list_groups_people_by_what_they_browse_in(client):
+    guest_session(client)
     visit(client)                                   # one guest, desktop
     visit(client, ip="203.0.113.9", ua=IPHONE)      # the same guest, on a phone
     client.post("/api/auth/login", json={"email": "player@example.com", "password": "hunter2long"},

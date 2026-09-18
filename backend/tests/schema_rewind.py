@@ -35,6 +35,11 @@ from sqlalchemy.engine import Engine
 # `ADD COLUMN` migration that is a drop, and for a `DROP COLUMN` migration it is
 # an add.
 _UNDO: list[tuple[int, tuple[str, ...]]] = [
+    # A guest account is written down when the visitor needs one, and
+    # `visitor_key` is which visitor it was written down for. The index goes
+    # first: SQLite will not drop a column an index still names.
+    (80, ("DROP INDEX IF EXISTS ix_users_visitor_key",)),
+    (79, ("ALTER TABLE users DROP COLUMN visitor_key",)),
     # The story summary moved into the `summaries` table. `create_all` makes
     # that table on a current database, which is what migration 77 expects. Only
     # the column that 78 drops has to come back.

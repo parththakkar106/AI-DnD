@@ -82,8 +82,55 @@ def verify_password(password: str, stored: str) -> bool:
 
 
 # ---------- Session tokens ----------
-# The token is "v1.<user_id>.<hmac>". It does not expire, because a long-lived
-# guest session is what this is for.
+# Two token shapes share the session cookie, and both are "<version>.<id>.<hmac>".
+# Neither expires, because a long-lived guest session is what this is for.
+#
+# "v1.<user_id>" names an account: a guest, a registered user, or the local
+# user. "n1.<visitor_id>" names a browser that has been seen and not yet written
+# down, which has no row anywhere and whose id is random rather than a primary
+# key. A visitor who starts playing trades their token for a v1 one, and
+# `verify_session` and `verify_visitor` each reject the other's shape, so a
+# caller cannot present a visitor token where an account is required.
+
+VISITOR_VERSION = "n1"
+
+
+def new_visitor_id() -> str:
+    """Returns the random id that names one browser we have not written down.
+
+    It carries no meaning and indexes nothing. It exists so that repeat requests
+    from one browser can be recognized as one visitor before there is an account
+    to recognize them by.
+    """
+    return secrets.token_urlsafe(12)
+
+
+def sign_visitor(visitor_id: str) -> str:
+    payload = f"{VISITOR_VERSION}.{visitor_id}"
+    sig = hmac.new(SECRET_KEY, payload.encode(), hashlib.sha256).hexdigest()
+    return f"{payload}.{sig}"
+
+
+def verify_visitor(token: str) -> str | None:
+    """Returns the visitor id in a visitor token, or None.
+
+    A token naming an account returns None here, the same way a visitor token
+    returns None from `verify_session`. The signature is what makes the id
+    trustworthy: without it a client could invent a visitor id per request and
+    spend the visitor half of the access log.
+    """
+    try:
+        version, visitor_id, sig = token.split(".")
+        if version != VISITOR_VERSION or not visitor_id:
+            return None
+        payload = f"{version}.{visitor_id}"
+        expected = hmac.new(SECRET_KEY, payload.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(sig, expected):
+            return None
+        return visitor_id
+    except (ValueError, AttributeError):
+        return None
+
 
 def sign_session(user_id: int) -> str:
     payload = f"v1.{user_id}"
