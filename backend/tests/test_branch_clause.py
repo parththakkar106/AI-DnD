@@ -247,11 +247,7 @@ def client(forked, monkeypatch):
     def _current_user(session=Depends(get_db)):
         return session.get(models.User, ids["user"])
 
-    # Two ways to ask who is calling: the endpoints that need an account, and
-    # the read-only ones that can answer someone who has none. A test that
-    # pins the caller has to pin both, or the read-only ones see a visitor.
     app.dependency_overrides[auth.get_current_user] = _current_user
-    app.dependency_overrides[auth.get_optional_user] = _current_user
     c = TestClient(app)
     try:
         yield c, db, adventure, ids
