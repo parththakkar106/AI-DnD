@@ -1,11 +1,16 @@
 """Retention policy for throwaway guest accounts.
 
-In multi-user mode every first visit creates a `users` row through
-`GET /api/auth/me`, so a public demo accumulates one account per visitor. Most
-of those visitors never return, and each one leaves behind whatever scenarios,
-adventures, actions, and memories they generated. This module deletes guests
-that have been inactive for `AIDND_GUEST_RETENTION_DAYS`, which defaults to 5,
-along with everything they made.
+In multi-user mode a visitor who starts playing gets a `users` row, through
+`guests.adopt`, so a public demo accumulates one account per person who did
+something with it. Most of them never return, and each one leaves behind
+whatever scenarios, adventures, actions, and memories they generated. This
+module deletes guests that have been inactive for
+`AIDND_GUEST_RETENTION_DAYS`, which defaults to 5, along with everything they
+made.
+
+It used to carry more than that. Every arrival created an account, so most of
+what this swept had never been used at all; those visitors are not written down
+any more, and the sweep is left with the accounts of people who really played.
 
 Why this is safe to run unattended:
 
@@ -14,9 +19,9 @@ Why this is safe to run unattended:
   in place (is_guest -> False), so a guest who signs up keeps everything;
   local mode's implicit single user is also is_guest=False.
 - Idle time is `COALESCE(last_seen_at, created_at)`. `auth._touch` writes
-  `last_seen_at` at most once an hour, and a guest created by `/auth/me` has
-  NULL there until its second request, so `created_at` is the correct floor for
-  a new visitor. Without the coalesce, those rows look arbitrarily old.
+  `last_seen_at` at most once an hour, and a newly adopted guest has NULL there
+  until its second request, so `created_at` is the correct floor for a new
+  account. Without the coalesce, those rows look arbitrarily old.
 - Nothing a guest owns is reachable by anyone else. `is_public` is an
   output-only field, as `schemas.ScenarioBase` shows, so the only shared
   scenarios are the seeded ones, which have a NULL `user_id` and are outside

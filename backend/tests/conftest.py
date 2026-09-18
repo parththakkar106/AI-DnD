@@ -32,6 +32,33 @@ import pytest  # noqa: E402  Import order is load-bearing; see above.
 from fakes import ScriptedProvider  # noqa: E402
 
 
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_call(item):
+    """A test that pins who the caller is pins both ways of asking.
+
+    There are two: `auth.get_current_user`, which every endpoint that needs an
+    account declares, and `auth.get_optional_user`, which the read-only ones
+    declare so that someone with no account yet can be answered without writing
+    them down. A fixture that overrides only the first leaves the second to
+    resolve for real, and the endpoints using it then see a visitor and answer
+    with an empty list. That is a confusing failure a long way from its cause,
+    and it lands on whichever test happens to read a list.
+
+    So the override is mirrored here, once, rather than in the twenty-odd
+    fixtures that set one. `setdefault` means a test that pins the two
+    separately, as the lazy-guest tests do by pinning neither, still gets what
+    it asked for. This runs after fixtures and before the test body, which is
+    the only point where the override is known to exist.
+    """
+    from app import auth
+    from app.main import app
+
+    override = app.dependency_overrides.get(auth.get_current_user)
+    if override is not None:
+        app.dependency_overrides.setdefault(auth.get_optional_user, override)
+    yield
+
+
 @pytest.fixture(autouse=True)
 def reset_scripted_provider():
     """Clears the fake provider's state between tests.

@@ -347,6 +347,15 @@ MIGRATIONS: list[tuple[int, str | dict[str, str]]] = [
     (77, "CREATE INDEX IF NOT EXISTS ix_summaries_adventure_branch_depth "
          "ON summaries (adventure_id, branch_id, depth)"),
     (78, "ALTER TABLE adventures DROP COLUMN story_summary"),
+    # Phase 19: a guest account is written down when the visitor first needs one
+    # rather than when they arrive. `visitor_key` records which visitor an
+    # account was written down for, and the unique index is load-bearing: it is
+    # what stops two concurrent requests from one browser creating two accounts.
+    # NULL repeats freely under a unique index on both dialects, which is what
+    # every row that predates this leaves behind.
+    (79, "ALTER TABLE users ADD COLUMN visitor_key VARCHAR(64)"),
+    (80, "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_visitor_key "
+         "ON users (visitor_key)"),
 ]
 
 LATEST_VERSION = max((v for v, _ in MIGRATIONS), default=1)

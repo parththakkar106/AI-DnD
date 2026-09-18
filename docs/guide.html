@@ -1502,14 +1502,26 @@ without a round trip. But if you <em>reload</em> that URL, the browser asks the 
 before the static mount, so they’re unaffected.</p>
 
 <p><strong>Sessions.</strong> A cookie is a small value the browser stores and automatically
-attaches to every request to that site. Here it holds <code>v1.&lt;user_id&gt;.&lt;signature&gt;</code>.
-The server doesn’t store sessions anywhere — it re-verifies the signature on each request, which is
-why there’s no session table.</p>
+attaches to every request to that site. Here it holds one of two signed values:
+<code>v1.&lt;user_id&gt;</code> names an account, and <code>n1.&lt;visitor_id&gt;</code> names a
+browser that has been seen and not written down. The server doesn’t store sessions anywhere — it
+re-verifies the signature on each request, which is why there’s no session table.</p>
 
-<p><strong>The 401 retry.</strong> If the cookie is missing or stale, any API call returns 401. The
-frontend catches that once, calls <code>/api/auth/me</code> — which mints a fresh guest session —
-and retries the original request. So a returning visitor with an expired cookie never sees an
-error.</p>
+<p><strong>Arriving is not an account.</strong> A new browser gets the <code>n1</code> cookie, and
+nothing is written for it. Reading the app — the adventure list, the shared scenarios, the default
+settings — is answered for a visitor without creating anything. The <code>users</code> row appears
+the first time they do something that needs one, in <code>guests.adopt</code>, which also swaps
+their cookie for a <code>v1</code> one. That is why a crawler walking the API leaves nothing
+behind, and why the access log has rows that name a <code>Visitor #</code> rather than a guest.</p>
+
+<p><strong>One visitor, one account.</strong> <code>adopt</code> looks for an existing account
+first, and <code>users.visitor_key</code> carries a unique index so that two requests racing from
+one browser cannot both insert. The loser reads back the winner instead of failing.</p>
+
+<p><strong>The 401 retry.</strong> If the cookie is missing or stale, any API call that needs an
+account returns 401. The frontend catches that once, calls <code>/api/auth/me</code> — which
+establishes a session — and retries the original request. All of its bootstraps share one in-flight
+<code>/auth/me</code>, so a cold first paint asks once rather than once per call.</p>
 
 <p><strong>React, in one paragraph.</strong> A component is a function that returns a description
 of some UI. <code>useState</code> holds a value; changing it re-renders the component. The

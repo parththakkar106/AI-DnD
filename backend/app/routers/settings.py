@@ -25,11 +25,30 @@ def get_settings(db: Session, user: models.User) -> models.Settings:
     return settings
 
 
+def default_settings() -> models.Settings:
+    """The settings of someone who has no account yet, as an unsaved row.
+
+    Reading the settings screen is not a reason to write anyone down, and the
+    answer for a visitor is simply the defaults. The values are read off the
+    model's own columns rather than repeated here, so a default changed in
+    `models.py` is changed in one place. Nothing adds this object to the
+    session, so nothing persists it.
+    """
+    settings = models.Settings()
+    for column in models.Settings.__table__.columns:
+        default = column.default
+        if default is not None and not default.is_callable:
+            setattr(settings, column.key, default.arg)
+    return settings
+
+
 @router.get("", response_model=schemas.SettingsOut)
 def read_settings(
     db: Session = Depends(get_db),
-    user: models.User = Depends(auth.get_current_user),
+    user: models.User | None = Depends(auth.get_optional_user),
 ):
+    if user is None:
+        return default_settings()
     return get_settings(db, user)
 
 

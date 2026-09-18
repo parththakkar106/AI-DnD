@@ -15,6 +15,9 @@ from ...database import get_db
 router = APIRouter(prefix="/api/adventures", tags=["adventures"])
 
 CurrentUser = Depends(auth.get_current_user)
+# For the read-only endpoints that can answer someone who has no account yet.
+# The handler gets None and has to scope its own query; see `list_adventures`.
+OptionalUser = Depends(auth.get_optional_user)
 
 
 def get_adventure_or_404(

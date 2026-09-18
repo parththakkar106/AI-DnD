@@ -6,10 +6,17 @@ The `AIDND_MULTI_USER` environment variable selects one of two modes:
   local user. There are no cookies and no login UI, so a clone or a
   docker-compose run behaves like the single-user app from before Phase 8.
 * Multi-user mode, used for hosted deployments. Requests carry a signed session
-  cookie. `GET /api/auth/me` creates a guest user on the first visit, and
-  registering upgrades that guest in place so their data survives. A request
-  without a valid session gets a 401, and the frontend re-establishes the
-  session through `/me`.
+  cookie. `GET /api/auth/me` hands a new browser a *visitor* cookie, which names
+  them without writing anything down. The account is created later, the first
+  time they do something that needs one, and registering upgrades that guest in
+  place so their data survives. A request without a valid session gets a 401,
+  and the frontend re-establishes the session through `/me`.
+
+Arriving is not an account. A visitor can load the app, list their (empty)
+adventures, browse the shared scenarios and read the default settings, and none
+of it writes a row. Reading never creates; `guests.adopt` does, and it is the
+only thing that does. This is why a crawler that walks the API leaves nothing
+behind, and why the access log has rows that name a visitor rather than a user.
 
 The shared demo key, which is the fallback when a user brings no key of their
 own, is also configured here. A user whose settings hold no API key is routed to
@@ -20,7 +27,7 @@ import os
 from dataclasses import dataclass
 from datetime import timezone
 
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 
 from . import models, security
@@ -247,17 +254,119 @@ def resolve_session_user(request: Request, db: Session) -> models.User | None:
     return db.get(models.User, user_id)
 
 
-def get_current_user(request: Request, db: Session = Depends(get_db)) -> models.User:
-    """The dependency every router uses to resolve the current user.
+# ---------- Visitors ----------
 
-    In multi-user mode a 401 means the frontend has to establish a session again
-    through `GET /api/auth/me`.
+@dataclass(frozen=True)
+class Visitor:
+    """A browser that has been seen and not written down.
+
+    It is deliberately not a `models.User`. Nothing here is stored, nothing here
+    can own an adventure, and the only thing it can do is be recognized again on
+    the next request. Anything that needs somewhere to put data needs an
+    account, and `guests.adopt` is where a visitor gets one.
+    """
+
+    id: str
+
+    @property
+    def label(self) -> str:
+        """How the access log names them.
+
+        Short, because the full id is a signed credential rather than a name,
+        and a log column is read by eye. Eight characters of a random 16 is
+        plenty to tell two of them apart in a table.
+        """
+        return f"Visitor #{self.id[:8]}"
+
+
+def new_visitor() -> Visitor:
+    return Visitor(security.new_visitor_id())
+
+
+def resolve_visitor(request: Request) -> Visitor | None:
+    """Returns the visitor named by the cookie, or None when it names an
+    account, names nothing, or was not signed by this server."""
+    token = request.cookies.get(SESSION_COOKIE)
+    if not token:
+        return None
+    visitor_id = security.verify_visitor(token)
+    return Visitor(visitor_id) if visitor_id else None
+
+
+def set_session_cookie(response: Response, user_id: int) -> None:
+    """Points this browser at an account."""
+    _set_cookie(response, security.sign_session(user_id))
+
+
+def set_visitor_cookie(response: Response, visitor: Visitor) -> None:
+    """Names this browser without writing anything down."""
+    _set_cookie(response, security.sign_visitor(visitor.id))
+
+
+def _set_cookie(response: Response, value: str) -> None:
+    response.set_cookie(
+        SESSION_COOKIE,
+        value,
+        max_age=COOKIE_MAX_AGE,
+        httponly=True,
+        samesite="lax",
+        secure=COOKIE_SECURE,
+        path="/",
+    )
+
+
+# ---------- The two dependencies ----------
+
+def get_optional_user(
+    request: Request, db: Session = Depends(get_db)
+) -> models.User | None:
+    """The current user, or None when the caller has no account yet.
+
+    Declare this instead of `get_current_user` on a read-only endpoint that can
+    answer a visitor honestly: an empty list of their adventures, the scenarios
+    everyone can see, the settings they have not changed. Those answers cost a
+    query and no rows, which is what makes it safe to serve them to anyone who
+    asks, however often they ask.
+
+    A handler taking this dependency has to mean it. `None` is a caller who owns
+    nothing, so every query it feeds needs to be scoped by hand, the way
+    `user.id` would have scoped it.
     """
     if not MULTI_USER:
         user = local_user(db)
     else:
         user = resolve_session_user(request, db)
         if user is None:
-            raise HTTPException(401, "No session. Call GET /api/auth/me first.")
+            return None
+    _touch(user, db)
+    return user
+
+
+def get_current_user(
+    request: Request, response: Response, db: Session = Depends(get_db)
+) -> models.User:
+    """The dependency every router uses to resolve the current user.
+
+    This is the line where a visitor becomes a guest. A request that reaches it
+    wants something only an account can give, so a recognized visitor is written
+    down here and the response carries their new session cookie. A caller with
+    neither an account nor a visitor cookie gets a 401, and the frontend
+    establishes a session through `GET /api/auth/me`.
+    """
+    if not MULTI_USER:
+        user = local_user(db)
+    else:
+        user = resolve_session_user(request, db)
+        if user is None:
+            visitor = resolve_visitor(request)
+            if visitor is None:
+                raise HTTPException(401, "No session. Call GET /api/auth/me first.")
+            # Deferred: `guests` imports the rate limiter, the access log and the
+            # starter adventure, and all three import this module. The cycle is
+            # real rather than stylistic, and this is the only edge that closes
+            # it.
+            from . import guests
+
+            user = guests.adopt(db, visitor, request, response)
     _touch(user, db)
     return user
