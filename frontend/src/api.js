@@ -1,8 +1,17 @@
-// Multi-user mode: a 401 means our session cookie is missing/stale. Hitting
-// /api/auth/me creates a fresh guest session, after which the original call
-// is retried once.
-async function ensureSession() {
-  await fetch('/api/auth/me')
+// Multi-user mode: /api/auth/me establishes the session, creating a guest
+// account when the browser arrives without a cookie. First paint fires several
+// calls at once — this bootstrap plus each page's own data — so every one of
+// them can leave cookie-less and every 401 comes back wanting a session. Asking
+// once per caller would mint one guest account per call, so `inflight` collapses
+// them: whoever asks while a /auth/me is in flight waits on that one and then
+// retries with the cookie it set.
+let inflight = null
+
+function ensureSession() {
+  if (!inflight) {
+    inflight = request('/auth/me').finally(() => { inflight = null })
+  }
+  return inflight
 }
 
 async function request(path, options = {}, isRetry = false) {
@@ -11,7 +20,9 @@ async function request(path, options = {}, isRetry = false) {
     ...options,
   })
   if (resp.status === 401 && !isRetry && path !== '/auth/me') {
-    await ensureSession()
+    // A failed bootstrap is not this call's error to raise: retry anyway and
+    // let the second 401 speak for itself.
+    await ensureSession().catch(() => {})
     return request(path, options, true)
   }
   if (!resp.ok) {
@@ -35,7 +46,7 @@ async function streamSSE(path, payload, onEvent, signal, isRetry = false) {
     signal,
   })
   if (resp.status === 401 && !isRetry) {
-    await ensureSession()
+    await ensureSession().catch(() => {})
     return streamSSE(path, payload, onEvent, signal, true)
   }
   if (!resp.ok) {
@@ -88,7 +99,9 @@ export const api = {
   getAccessDevices: (limit = 12) => request(`/analytics/access/devices?limit=${limit}`),
 
   // Auth (Phase 8 — no-ops in local mode beyond getMe)
-  getMe: () => request('/auth/me'),
+  // Shares the bootstrap above, so a getMe racing a page's own 401 is one
+  // /auth/me and one guest account, not two.
+  getMe: () => ensureSession(),
   register: (email, password) =>
     request('/auth/register', { method: 'POST', body: JSON.stringify({ email, password }) }),
   login: (email, password) =>
