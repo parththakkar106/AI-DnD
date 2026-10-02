@@ -174,6 +174,5 @@ Out of scope:
 - The `backend/tools` fixture scripts keep their shared setup.
 - Each test module keeps its own `client` fixture, because the seed data
   differs.
-- The test suite needs a reachable tiktoken download host. Without one, any test
-  that counts tokens fails. A cached `cl100k_base` file, or a
-  `TIKTOKEN_CACHE_DIR` set in CI, would make the suite run offline.
+- The sweep sandbox blocks tiktoken's download host. GitHub Actions can reach
+  it, so CI needs no change.
