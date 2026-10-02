@@ -43,7 +43,7 @@ against its published SHA-256. Nothing in the repository changes for this.
 | 2 | Router duplication | 15 handlers repeat "load a row, 404 if it is not this adventure's" | done |
 | 2 | Router duplication | `undo_turn` and `list_actions` copy the body of `paging.current_window` | done |
 | 2 | Dead code | `pyflakes` reports six unused imports in `bundle.py`, two routers, and three tests | done |
-| 3 | World state | `apply.py` repeats the cooldown check, the text truncation, and the min and max clamp | pending |
+| 3 | World state | `apply.py` repeats the cooldown check, the text truncation, and the min and max clamp | done |
 | 4 | Streaming | `turns.py` and `chat.py` repeat the reasoning and text stream loop | pending |
 | 5 | Dead routes | `POST /actions/{id}/variant` and `POST /actions/{id}/fork` have no frontend caller | pending |
 | 6 | Frontend duplication | `splitTags` and the scenario card markup are copied in `Home.jsx` and `Scenarios.jsx` | pending |
@@ -72,5 +72,15 @@ Check: 706 backend tests pass. Lint and build pass.
 remain on purpose. `memorybank` re-exports `story_actions` for
 `test_memory_settling.py`. The f-string warning in `tools/stress_session.py` is
 in the out-of-scope tools.
+
+Check: 706 backend tests pass.
+
+### Batch 3: world state
+
+`apply.py` now has `_cooldown_rejection`, `_within_limits`, `_truncated`, and
+`_not_a_boolean`. `apply_delta`, `apply_override`, `_apply_stat`, and
+`_apply_text_stat` call them instead of carrying their own copies.
+`_within_limits` keeps the original comparison order, so a `NaN` change still
+reports as not clamped.
 
 Check: 706 backend tests pass.

@@ -148,6 +148,50 @@ def _limits_phrase(stat_def: dict) -> str:
     return "; ".join(bits)
 
 
+def _not_a_boolean(path: str) -> dict:
+    return {"path": path, "reason": "not a boolean", "fix": f"`{path}` takes true or false."}
+
+
+def _cooldown_rejection(path: str, stat_def: dict, meta: dict, action_index: int) -> dict | None:
+    """Returns the rejection for a stat changed again inside its cooldown, or `None`."""
+    cooldown = stat_def.get("cooldown") or 0
+    last = meta["last_changed"].get(path)
+    if cooldown and last is not None and action_index - last < cooldown:
+        waited = action_index - last
+        return {
+            "path": path, "reason": "cooldown",
+            "fix": f"`{path}` changed {waited} turn(s) ago and cannot change again "
+                   f"until {cooldown} turns have passed.",
+        }
+    return None
+
+
+def _within_limits(old, new, stat_def: dict) -> tuple:
+    """Returns `new` clamped to the stat's min and max, and whether it was clamped.
+
+    If `old` is an int and the result is whole, the result is an int too, so the
+    value keeps displaying without a decimal point.
+    """
+    clamped = False
+    lo, hi = stat_def.get("min"), stat_def.get("max")
+    if lo is not None and new < lo:
+        new, clamped = lo, True
+    if hi is not None and new > hi:
+        new, clamped = hi, True
+    if isinstance(old, int) and float(new).is_integer():
+        new = int(new)
+    return new, clamped
+
+
+def _truncated(text: str, stat_def: dict) -> str:
+    """Returns `text` stripped and cut to the stat's `max_length`, if it has one."""
+    text = text.strip()
+    max_len = stat_def.get("max_length")
+    if isinstance(max_len, int) and max_len > 0 and len(text) > max_len:
+        text = text[:max_len]
+    return text
+
+
 def _apply_stat(container: dict, key: str, stat_def: dict, change,
                 path: str, action_index: int, meta: dict, report: dict) -> None:
     delta = _coerce_number(change)
@@ -158,15 +202,9 @@ def _apply_stat(container: dict, key: str, stat_def: dict, change,
         })
         return
 
-    cooldown = stat_def.get("cooldown") or 0
-    last = meta["last_changed"].get(path)
-    if cooldown and last is not None and action_index - last < cooldown:
-        waited = action_index - last
-        report["rejected"].append({
-            "path": path, "reason": "cooldown",
-            "fix": f"`{path}` changed {waited} turn(s) ago and cannot change again "
-                   f"until {cooldown} turns have passed.",
-        })
+    rejection = _cooldown_rejection(path, stat_def, meta, action_index)
+    if rejection is not None:
+        report["rejected"].append(rejection)
         return
 
     if stat_def.get("type") == "counter" and delta < 0:
@@ -184,15 +222,9 @@ def _apply_stat(container: dict, key: str, stat_def: dict, change,
         clamped = True
 
     old = container.get(key, stat_def.get("initial", 0))
-    new = old + delta
-    lo, hi = stat_def.get("min"), stat_def.get("max")
-    if lo is not None and new < lo:
-        new, clamped = lo, True
-    if hi is not None and new > hi:
-        new, clamped = hi, True
-    # Keep ints integral for display.
-    if isinstance(old, int) and float(new).is_integer():
-        new = int(new)
+    new, hit_limit = _within_limits(old, old + delta, stat_def)
+    clamped = clamped or hit_limit
+    hi = stat_def.get("max")
 
     container[key] = new
     meta["last_changed"][path] = action_index
@@ -227,21 +259,12 @@ def _apply_text_stat(container: dict, key: str, stat_def: dict, change,
         })
         return
 
-    cooldown = stat_def.get("cooldown") or 0
-    last = meta["last_changed"].get(path)
-    if cooldown and last is not None and action_index - last < cooldown:
-        waited = action_index - last
-        report["rejected"].append({
-            "path": path, "reason": "cooldown",
-            "fix": f"`{path}` changed {waited} turn(s) ago and cannot change again "
-                   f"until {cooldown} turns have passed.",
-        })
+    rejection = _cooldown_rejection(path, stat_def, meta, action_index)
+    if rejection is not None:
+        report["rejected"].append(rejection)
         return
 
-    new = change.strip()
-    max_len = stat_def.get("max_length")
-    if isinstance(max_len, int) and max_len > 0 and len(new) > max_len:
-        new = new[:max_len]
+    new = _truncated(change, stat_def)
 
     old = container.get(key, stat_def.get("initial", ""))
     if new == old:
@@ -277,10 +300,7 @@ def apply_override(world_state: dict, stat_schema: dict, overrides: dict) -> tup
             if not isinstance(value, str):
                 report["rejected"].append({"path": path, "reason": "not a string"})
                 return
-            new = value.strip()
-            max_len = stat_def.get("max_length")
-            if isinstance(max_len, int) and max_len > 0 and len(new) > max_len:
-                new = new[:max_len]
+            new = _truncated(value, stat_def)
             old = container.get(key, stat_def.get("initial", ""))
             container[key] = new
             report["applied"].append({"path": path, "old": old, "new": new})
@@ -291,13 +311,7 @@ def apply_override(world_state: dict, stat_schema: dict, overrides: dict) -> tup
             report["rejected"].append({"path": path, "reason": "not a number"})
             return
         old = container.get(key, stat_def.get("initial", 0))
-        lo, hi = stat_def.get("min"), stat_def.get("max")
-        if lo is not None and num < lo:
-            num = lo
-        if hi is not None and num > hi:
-            num = hi
-        if isinstance(old, int) and float(num).is_integer():
-            num = int(num)
+        num, _ = _within_limits(old, num, stat_def)
         container[key] = num
         report["applied"].append({"path": path, "old": old, "new": num})
 
@@ -310,10 +324,7 @@ def apply_override(world_state: dict, stat_schema: dict, overrides: dict) -> tup
 
         if target.kind == "flag":
             if not isinstance(value, bool):
-                report["rejected"].append({
-                    "path": path, "reason": "not a boolean",
-                    "fix": f"`{path}` takes true or false.",
-                })
+                report["rejected"].append(_not_a_boolean(path))
                 continue
             flags = target.container(ws)
             old = bool(flags.get(target.key, False))
@@ -324,10 +335,7 @@ def apply_override(world_state: dict, stat_schema: dict, overrides: dict) -> tup
             # An override toggles a milestone in both directions, so unlike a
             # delta it takes false as well as true.
             if not isinstance(value, bool):
-                report["rejected"].append({
-                    "path": path, "reason": "not a boolean",
-                    "fix": f"`{path}` takes true or false.",
-                })
+                report["rejected"].append(_not_a_boolean(path))
                 continue
             reached = target.container(ws)
             old = bool(reached.get(target.key, {}).get("reached"))
@@ -370,10 +378,7 @@ def apply_delta(world_state: dict, stat_schema: dict, delta: dict,
         if target.kind == "flag":
             # A flag goes both ways, so either value is accepted.
             if not isinstance(change, bool):
-                report["rejected"].append({
-                    "path": path, "reason": "not a boolean",
-                    "fix": f"`{path}` takes true or false.",
-                })
+                report["rejected"].append(_not_a_boolean(path))
                 continue
             flags = target.container(ws)
             old = bool(flags.get(target.key, False))
