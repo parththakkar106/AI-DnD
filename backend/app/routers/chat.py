@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 from .. import auth, limits, models, schemas
 from ..database import get_db
 from ..providers import OpenAICompatibleProvider, ProviderError
-from ..sse import SSE_HEADERS, sse
+from ..sse import SSE_HEADERS, relay, sse
 from .settings import get_settings, list_endpoint_models
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
@@ -104,17 +104,13 @@ async def run_chat(cfg: auth.ProviderConfig, settings: models.Settings, payload:
     chunks: list[str] = []
     reasoning_chunks: list[str] = []
     try:
-        async for kind, chunk in provider.chat(
+        events = provider.chat(
             messages,
             temperature=payload.temperature if payload.temperature is not None else settings.temperature,
             max_tokens=payload.max_tokens or settings.max_output_tokens,
-        ):
-            if kind == "reasoning":
-                reasoning_chunks.append(chunk)
-                yield sse({"type": "reasoning", "text": chunk})
-            else:
-                chunks.append(chunk)
-                yield sse({"type": "chunk", "text": chunk})
+        )
+        async for frame in relay(events, chunks, reasoning_chunks):
+            yield frame
     except ProviderError as exc:
         yield sse({"type": "error", "detail": str(exc)})
         return

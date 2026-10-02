@@ -44,7 +44,7 @@ against its published SHA-256. Nothing in the repository changes for this.
 | 2 | Router duplication | `undo_turn` and `list_actions` copy the body of `paging.current_window` | done |
 | 2 | Dead code | `pyflakes` reports six unused imports in `bundle.py`, two routers, and three tests | done |
 | 3 | World state | `apply.py` repeats the cooldown check, the text truncation, and the min and max clamp | done |
-| 4 | Streaming | `turns.py` and `chat.py` repeat the reasoning and text stream loop | pending |
+| 4 | Streaming | `turns.py` and `chat.py` repeat the reasoning and text stream loop | done |
 | 5 | Dead routes | `POST /actions/{id}/variant` and `POST /actions/{id}/fork` have no frontend caller | pending |
 | 6 | Frontend duplication | `splitTags` and the scenario card markup are copied in `Home.jsx` and `Scenarios.jsx` | pending |
 | 6 | Frontend duplication | `ReasoningBlock` is copied in `Chat.jsx` and `Play/index.jsx` | pending |
@@ -82,5 +82,14 @@ Check: 706 backend tests pass.
 `_apply_text_stat` call them instead of carrying their own copies.
 `_within_limits` keeps the original comparison order, so a `NaN` change still
 reports as not clamped.
+
+Check: 706 backend tests pass.
+
+### Batch 4: streaming
+
+`sse.relay` turns a provider's `(kind, chunk)` stream into SSE frames and
+collects the text and reasoning. `turns.py` and `chat.py` call it. The two
+empty-reply messages stay separate, because each one names the settings
+on its own page.
 
 Check: 706 backend tests pass.

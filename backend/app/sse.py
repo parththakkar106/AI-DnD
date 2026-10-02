@@ -19,6 +19,21 @@ def sse(obj: dict) -> str:
     return f"data: {json.dumps(obj)}\n\n"
 
 
+async def relay(events, chunks: list[str], reasoning_chunks: list[str]):
+    """Yields one SSE frame per `(kind, chunk)` pair from a provider stream.
+
+    The text goes into `chunks` and the reasoning into `reasoning_chunks`, so the
+    caller can read the whole reply when the stream ends.
+    """
+    async for kind, chunk in events:
+        if kind == "reasoning":
+            reasoning_chunks.append(chunk)
+            yield sse({"type": "reasoning", "text": chunk})
+        else:
+            chunks.append(chunk)
+            yield sse({"type": "chunk", "text": chunk})
+
+
 def turn_error(detail: str, **extra) -> str:
     """Returns an SSE error for a turn that could not be produced, and counts it.
 
