@@ -23,7 +23,7 @@ from app import auth, limits, models
 from app.database import Base, SessionLocal, engine, get_db
 from app.main import app
 from app.routers import adventures
-from fakes import ScriptedProvider
+from fakes import ScriptedProvider, play_turn, saved_state
 
 # `mana` carries a cooldown, so a clock that was not rolled back shows up as
 # a refusal rather than as a number that is merely off.
@@ -96,12 +96,6 @@ def client(monkeypatch):
 
 # ------------------------------------------------------------------ helpers
 
-def _play(client, text="look around"):
-    r = client.post(f"/api/adventures/{client.adv_id}/actions",
-                    json={"type": "do", "text": text})
-    assert r.status_code == 200, r.text
-
-
 def _continue(client):
     r = client.post(f"/api/adventures/{client.adv_id}/actions",
                     json={"type": "continue", "text": ""})
@@ -110,15 +104,6 @@ def _continue(client):
 
 def _delete(client, action_id):
     return client.delete(f"/api/adventures/{client.adv_id}/actions/{action_id}")
-
-
-def _state(adv_id):
-    db = SessionLocal()
-    try:
-        adv = db.get(models.Adventure, adv_id)
-        return adv.script_state, adv.world_state
-    finally:
-        db.close()
 
 
 def _ai_rows(adv_id):
@@ -146,12 +131,12 @@ def _last_changes(adv_id):
 # ------------------------------------------------------- the reported bug
 
 def test_deleting_the_ai_turn_rewinds_the_world_state(client):
-    _play(client)
-    assert _state(client.adv_id)[1]["player"]["mana"] == 40
+    play_turn(client)
+    assert saved_state(client.adv_id)[1]["player"]["mana"] == 40
 
     _delete(client, _ai_rows(client.adv_id)[-1].id)
 
-    _, world = _state(client.adv_id)
+    _, world = saved_state(client.adv_id)
     assert world["player"]["mana"] == 50, "the drain went with the turn"
     assert not (world.get("_meta") or {}).get("last_changed"), "and so did its clock"
 
@@ -159,26 +144,26 @@ def test_deleting_the_ai_turn_rewinds_the_world_state(client):
 def test_the_next_turn_is_not_refused_for_a_deleted_turn_s_cooldown(client):
     """The bug as a player meets it: delete the reply, press Continue, and
     the change it proposes is refused as one that already happened."""
-    _play(client)
+    play_turn(client)
     _delete(client, _ai_rows(client.adv_id)[-1].id)
 
     _continue(client)
 
-    assert _state(client.adv_id)[1]["player"]["mana"] == 40, "the drain lands"
+    assert saved_state(client.adv_id)[1]["player"]["mana"] == 40, "the drain lands"
     assert [c for c in _last_changes(client.adv_id) if c["kind"] == "rejected"] == []
 
 
 def test_deleting_the_ai_turn_rewinds_the_script_state(client):
     """The same restore, on the other half of the shared state. Without it a
     replayed turn stacks its script run on top of the deleted one's."""
-    _play(client)
-    assert _state(client.adv_id)[0] == {"gold": 10}
+    play_turn(client)
+    assert saved_state(client.adv_id)[0] == {"gold": 10}
 
     _delete(client, _ai_rows(client.adv_id)[-1].id)
-    assert _state(client.adv_id)[0] == {}
+    assert saved_state(client.adv_id)[0] == {}
 
     _continue(client)
-    assert _state(client.adv_id)[0] == {"gold": 10}, "one turn of gold, not two"
+    assert saved_state(client.adv_id)[0] == {"gold": 10}, "one turn of gold, not two"
 
 
 # ------------------------------------------------- deleting further back
@@ -187,21 +172,21 @@ def test_deleting_a_turn_the_story_moved_past_leaves_the_tip_alone(client):
     """A restore reads the tip's own outcome, not the deleted node's
     neighbour, so removing a turn from the middle of the story does not roll
     the numbers back to that point. The text goes; the state stays."""
-    _play(client)
-    _play(client, "press on")
-    before = _state(client.adv_id)
+    play_turn(client)
+    play_turn(client, "press on")
+    before = saved_state(client.adv_id)
     assert before[0] == {"gold": 20}
 
     first_ai = _ai_rows(client.adv_id)[0]
     assert _delete(client, first_ai.id).status_code == 204
 
-    assert _state(client.adv_id) == before
+    assert saved_state(client.adv_id) == before
 
 
 def test_delete_is_blocked_while_a_turn_is_generating(client):
     """The endpoint writes the shared state now, so it takes the same lock
     undo takes rather than racing the turn that is about to write it."""
-    _play(client)
+    play_turn(client)
     action_id = _ai_rows(client.adv_id)[-1].id
 
     adventures.turns.acquire_turn_lock(client.adv_id)  # a turn is "generating"

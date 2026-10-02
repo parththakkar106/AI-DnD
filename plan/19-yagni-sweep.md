@@ -53,7 +53,7 @@ against its published SHA-256. Nothing in the repository changes for this.
 | 6 | Frontend duplication | `ReasoningBlock` is copied in `Chat.jsx` and `Play/index.jsx` | done |
 | 6 | Frontend duplication | The story card handlers are copied in `ScenarioEditor.jsx` and `PlotPanel.jsx` | done |
 | 6 | Frontend duplication | `App.jsx` repeats the same `NavLink` class function seven times | done |
-| 7 | Test duplication | `_play` is defined in 13 test files, `_retry` in 7, and `_texts`, `_rows`, and `_state` in 4 each | pending |
+| 7 | Test duplication | `_play` is defined in 13 test files, `_retry` in 7, and `_texts`, `_rows`, and `_state` in 4 each | done |
 
 ## Batch log
 
@@ -141,3 +141,39 @@ Home, the blank adventure from Scenarios, the active nav link, adding a card,
 saving an edit after the debounce, exporting, and adding a card from the Play
 page's Plot panel. The only console errors were certificate failures on
 external font requests through the sandbox proxy.
+
+### Batch 7: test duplication
+
+`tests/fakes.py` gains `play_turn`, `retry_turn`, `story_texts`,
+`list_branches`, and `saved_state`. Twelve test modules import them in place
+of their own copies. The names avoid `play`, `branches`, and `state` because
+tests already use those as local variables.
+
+Some copies differ on purpose and stay local:
+
+- `test_bundle_v2.py` passes an adventure id to every helper.
+- The `_rows` copies order their rows differently.
+- `test_turn_flow_integration.py` keeps its own `_state`, which returns only
+  the script state.
+
+Two copies used a different default turn text. Their calls now pass that text,
+so the tests send the same requests as before. The `_play_after` and
+`_take_id` helpers from batch 5 are replaced by `play_turn` and `take_id`.
+
+Check: 704 backend tests pass.
+
+## Result
+
+Across the seven batches, the code outside `plan/` lost 1,104 lines and gained
+760, for a net 344 fewer lines. The suite went from 706 to 704 tests. The two
+removed tests covered only the deleted `/variant` endpoint.
+
+Out of scope:
+
+- The `Provider` ABC stays, per the decision above.
+- The `backend/tools` fixture scripts keep their shared setup.
+- Each test module keeps its own `client` fixture, because the seed data
+  differs.
+- The test suite needs a reachable tiktoken download host. Without one, any test
+  that counts tokens fails. A cached `cl100k_base` file, or a
+  `TIKTOKEN_CACHE_DIR` set in CI, would make the suite run offline.

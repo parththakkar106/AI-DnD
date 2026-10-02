@@ -22,7 +22,7 @@ from app.database import Base, SessionLocal, engine, get_db
 from app.main import app
 from app.routers import adventures
 
-from fakes import ScriptedProvider, stand_on
+from fakes import ScriptedProvider, list_branches, play_turn, retry_turn, saved_state, stand_on, story_texts
 
 # `hp` moves freely. `mana` has a cooldown of 2 turns, so an incorrect
 # advance shows up as a change the referee should have rejected.
@@ -92,45 +92,9 @@ def client(monkeypatch):
 
 # ------------------------------------------------------------------ helpers
 
-def _play(client, text="look around", type="do"):
-    r = client.post(f"/api/adventures/{client.adv_id}/actions",
-                    json={"type": type, "text": text})
-    assert r.status_code == 200, r.text
-
-
-def _retry(client):
-    r = client.post(f"/api/adventures/{client.adv_id}/retry")
-    assert r.status_code == 200, r.text
-
-
-def _texts(client) -> list[str]:
-    return [a["text"] for a in client.get(f"/api/adventures/{client.adv_id}").json()["actions"]]
-
-
-def _branches(client) -> list[dict]:
-    r = client.get(f"/api/adventures/{client.adv_id}/branches")
-    assert r.status_code == 200, r.text
-    return r.json()
-
-
 def _fork(client, action_id):
     """Moves the story onto `action_id`, which is what a turn played below it does first."""
     stand_on(client.adv_id, action_id)
-
-
-def _play_after(client, after_id, text="look around"):
-    r = client.post(f"/api/adventures/{client.adv_id}/actions",
-                    json={"type": "do", "text": text, "after_id": after_id})
-    return r
-
-
-def _state(adv_id):
-    db = SessionLocal()
-    try:
-        adv = db.get(models.Adventure, adv_id)
-        return adv.script_state, adv.world_state
-    finally:
-        db.close()
 
 
 def _rows(adv_id) -> list[models.Action]:
@@ -155,9 +119,9 @@ def _divergent_story(client):
     Returns the id of the discarded attempt.
     """
     ScriptedProvider.replies = ["Attempt one.", "Attempt two.", "Next turn."]
-    _play(client)
-    _retry(client)
-    _play(client, "go deeper")
+    play_turn(client)
+    retry_turn(client)
+    play_turn(client, "go deeper")
     return [a.id for a in _rows(client.adv_id) if a.type == "ai" and not a.live][0]
 
 
@@ -166,11 +130,11 @@ def _divergent_story(client):
 def test_a_fork_inserts_one_branch_row_and_copies_no_actions(client):
     discarded = _divergent_story(client)
     rows_before = [a.id for a in _rows(client.adv_id)]
-    assert len(_branches(client)) == 1
+    assert len(list_branches(client)) == 1
 
     _fork(client, discarded)
 
-    branches = _branches(client)
+    branches = list_branches(client)
     assert len(branches) == 2, "exactly one branch row per divergence built on"
     assert [a.id for a in _rows(client.adv_id)] == rows_before, "a fork copies nothing"
     forked = [b for b in branches if b["parent_branch_id"] is not None][0]
@@ -201,17 +165,17 @@ def test_the_lineage_is_capped_at_the_fork_depth(client):
 
 def test_both_branches_read_independently(client):
     discarded = _divergent_story(client)
-    parent = _branches(client)[0]["id"]
+    parent = list_branches(client)[0]["id"]
     _fork(client, discarded)
 
     # The fork's story: everything up to the divergence, then the other take.
-    assert _texts(client) == [
+    assert story_texts(client) == [
         "You enter a cave.", "> You look around.", "Attempt one.",
     ]
     # The branch it left behind is unchanged, including turns after the fork.
     r = client.post(f"/api/adventures/{client.adv_id}/branches/{parent}/switch")
     assert r.status_code == 200, r.text
-    assert _texts(client) == [
+    assert story_texts(client) == [
         "You enter a cave.", "> You look around.", "Attempt two.",
         "> You go deeper.", "Next turn.",
     ]
@@ -251,7 +215,7 @@ def test_playing_on_a_fork_continues_that_branchs_depths(client):
     discarded = _divergent_story(client)
     _fork(client, discarded)
     ScriptedProvider.replies = ["Onward."]
-    _play(client, "turn back")
+    play_turn(client, "turn back")
 
     db = SessionLocal()
     try:
@@ -261,7 +225,7 @@ def test_playing_on_a_fork_continues_that_branchs_depths(client):
         assert [a.depth for a in sorted(rows, key=lambda a: a.depth)] == [0, 1, 2, 3, 4]
     finally:
         db.close()
-    assert _texts(client)[-1] == "Onward."
+    assert story_texts(client)[-1] == "Onward."
 
 
 # ------------------------------------------------------------- not a fork
@@ -270,13 +234,13 @@ def test_forking_at_the_tip_switches_without_making_a_branch(client):
     """Attempts nobody has built on stay leaves. This is what keeps the
     lineage a list of divergences instead of a list of every retry."""
     ScriptedProvider.replies = ["Attempt one.", "Attempt two."]
-    _play(client)
-    _retry(client)
+    play_turn(client)
+    retry_turn(client)
     discarded = [a.id for a in _rows(client.adv_id) if a.type == "ai" and not a.live][0]
 
     _fork(client, discarded)
-    assert len(_branches(client)) == 1, "no branch for an attempt at the tip"
-    assert _texts(client)[-1] == "Attempt one."
+    assert len(list_branches(client)) == 1, "no branch for an attempt at the tip"
+    assert story_texts(client)[-1] == "Attempt one."
 
 
 def test_playing_after_the_attempt_already_in_the_story_does_not_fork(client):
@@ -285,25 +249,23 @@ def test_playing_after_the_attempt_already_in_the_story_does_not_fork(client):
     discarded = _divergent_story(client)
     _fork(client, discarded)
     promoted = [a.id for a in _rows(client.adv_id) if a.type == "ai" and a.live
-                and a.branch_id != _branches(client)[0]["id"]][0]
-    before = _texts(client)
+                and a.branch_id != list_branches(client)[0]["id"]][0]
+    before = story_texts(client)
 
     ScriptedProvider.replies = ["Onward."]
     for _ in range(3):
-        r = _play_after(client, promoted)
-        assert r.status_code == 200, r.text
-    assert len(_branches(client)) == 2
-    assert _texts(client)[:len(before)] == before
+        play_turn(client, after_id=promoted)
+    assert len(list_branches(client)) == 2
+    assert story_texts(client)[:len(before)] == before
 
 
 def test_playing_after_a_turn_that_is_already_the_story_does_not_fork(client):
     ScriptedProvider.replies = ["Only take."]
-    _play(client)
+    play_turn(client)
     only = [a.id for a in _rows(client.adv_id) if a.type == "ai"][0]
 
-    r = _play_after(client, only)
-    assert r.status_code == 200, r.text
-    assert len(_branches(client)) == 1
+    play_turn(client, after_id=only)
+    assert len(list_branches(client)) == 1
 
 
 def test_playing_after_a_live_node_on_another_branch_is_refused(client):
@@ -313,17 +275,18 @@ def test_playing_after_a_live_node_on_another_branch_is_refused(client):
     branches."""
     discarded = _divergent_story(client)
     _fork(client, discarded)
-    parent_id = [b for b in _branches(client) if b["parent_branch_id"] is None][0]["id"]
+    parent_id = [b for b in list_branches(client) if b["parent_branch_id"] is None][0]["id"]
     stranded = [a.id for a in _rows(client.adv_id)
                 if a.branch_id == parent_id and a.depth == 2][0]
     rows_before = [(a.id, a.branch_id, a.live) for a in _rows(client.adv_id)]
 
-    r = _play_after(client, stranded)
+    r = client.post(f"/api/adventures/{client.adv_id}/actions",
+                    json={"type": "do", "text": "look around", "after_id": stranded})
     assert r.status_code == 400
     assert "another branch" in r.json()["detail"]
     # Refusing must leave the tree alone. Without the check, the turn moved
     # the live row off the parent, and the parent's story lost that turn.
-    assert len(_branches(client)) == 2
+    assert len(list_branches(client)) == 2
     assert [(a.id, a.branch_id, a.live) for a in _rows(client.adv_id)] == rows_before
 
 
@@ -335,20 +298,20 @@ def test_switching_restores_the_script_and_world_state(client):
         "A beating.\n```state\n{\"player.hp\": -40}\n```",
         "Onward.",
     ]
-    _play(client)
-    _retry(client)
-    _play(client, "go deeper")
-    parent = _branches(client)[0]["id"]
-    on_parent = _state(client.adv_id)
+    play_turn(client)
+    retry_turn(client)
+    play_turn(client, "go deeper")
+    parent = list_branches(client)[0]["id"]
+    on_parent = saved_state(client.adv_id)
 
     discarded = [a.id for a in _rows(client.adv_id) if a.type == "ai" and not a.live][0]
     _fork(client, discarded)
-    script_state, world_state = _state(client.adv_id)
+    script_state, world_state = saved_state(client.adv_id)
     assert world_state["player"]["hp"] == 95, "the attempt this branch tells"
     assert script_state == {"gold": 10}, "one turn of gold, not three"
 
     client.post(f"/api/adventures/{client.adv_id}/branches/{parent}/switch")
-    assert _state(client.adv_id) == on_parent
+    assert saved_state(client.adv_id) == on_parent
 
 
 def test_the_cooldown_clock_travels_with_the_branch(client):
@@ -361,21 +324,21 @@ def test_the_cooldown_clock_travels_with_the_branch(client):
         "Untouched.",
         "Onward.",
     ]
-    _play(client)
-    _retry(client)
-    _play(client, "go deeper")
+    play_turn(client)
+    retry_turn(client)
+    play_turn(client, "go deeper")
     discarded = [a.id for a in _rows(client.adv_id) if a.type == "ai" and not a.live][0]
-    on_parent = _state(client.adv_id)[1]
+    on_parent = saved_state(client.adv_id)[1]
     assert on_parent["_meta"]["last_changed"].get("player.mana") is None
 
     _fork(client, discarded)
-    forked = _state(client.adv_id)[1]
+    forked = saved_state(client.adv_id)[1]
     assert forked["player"]["mana"] == 40
     assert forked["_meta"]["last_changed"]["player.mana"] == 2
 
-    parent = [b for b in _branches(client) if b["parent_branch_id"] is None][0]["id"]
+    parent = [b for b in list_branches(client) if b["parent_branch_id"] is None][0]["id"]
     client.post(f"/api/adventures/{client.adv_id}/branches/{parent}/switch")
-    assert _state(client.adv_id)[1] == on_parent
+    assert saved_state(client.adv_id)[1] == on_parent
 
 
 def test_a_retry_does_not_advance_the_cooldown_clock(client):
@@ -386,13 +349,13 @@ def test_a_retry_does_not_advance_the_cooldown_clock(client):
         "Drained.\n```state\n{\"player.mana\": -10}\n```",
         "Drained again.\n```state\n{\"player.mana\": -10}\n```",
     ]
-    _play(client)
-    first = _state(client.adv_id)[1]["_meta"]["last_changed"]["player.mana"]
-    _retry(client)
-    assert _state(client.adv_id)[1]["_meta"]["last_changed"]["player.mana"] == first
+    play_turn(client)
+    first = saved_state(client.adv_id)[1]["_meta"]["last_changed"]["player.mana"]
+    retry_turn(client)
+    assert saved_state(client.adv_id)[1]["_meta"]["last_changed"]["player.mana"] == first
     # The second attempt's drain must land, instead of being rejected for a
     # cooldown it was never actually subject to.
-    assert _state(client.adv_id)[1]["player"]["mana"] == 40
+    assert saved_state(client.adv_id)[1]["player"]["mana"] == 40
 
 
 # --------------------------------------------------------- derived work
@@ -459,7 +422,7 @@ def test_undo_stops_at_the_fork(client):
     # stays, because that action belongs to the parent and the parent
     # still has it.
     assert len(_rows(client.adv_id)) == rows_before - 1
-    assert _texts(client) == ["You enter a cave.", "> You look around."]
+    assert story_texts(client) == ["You enter a cave.", "> You look around."]
 
     # Nothing is left of this branch's own turns, so undo must refuse
     # instead of removing the parent's turns.
@@ -474,9 +437,9 @@ def test_the_branch_list_is_the_tree(client):
     discarded = _divergent_story(client)
     _fork(client, discarded)
     ScriptedProvider.replies = ["Onward."]
-    _play(client, "turn back")
+    play_turn(client, "turn back")
 
-    branches = _branches(client)
+    branches = list_branches(client)
     root = [b for b in branches if b["parent_branch_id"] is None][0]
     forked = [b for b in branches if b["parent_branch_id"] == root["id"]][0]
     assert root["fork_depth"] is None and root["depth"] == 4
@@ -517,18 +480,18 @@ def test_a_deep_fork_chain_reads_for_what_one_branch_costs(client):
     from tools import dbmeter
 
     ScriptedProvider.replies = ["First take.", "Second take.", "Onward."]
-    _play(client)
+    play_turn(client)
     for _ in range(8):
-        _retry(client)
-        _play(client, "onward")
+        retry_turn(client)
+        play_turn(client, "onward")
         discarded = [
             a.id for a in _rows(client.adv_id)
             if a.type == "ai" and not a.live
         ]
         if discarded:
             _fork(client, discarded[-1])
-            _play(client, "onward")
-    branches = _branches(client)
+            play_turn(client, "onward")
+    branches = list_branches(client)
     assert len(branches) > 4, "the fixture did not actually fork"
 
     meter = dbmeter.Meter()

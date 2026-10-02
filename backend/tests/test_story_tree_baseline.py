@@ -26,7 +26,7 @@ from app.database import Base, SessionLocal, engine, get_db
 from app.main import app
 from app.routers import adventures
 
-from fakes import ScriptedProvider, stand_on, take_id
+from fakes import ScriptedProvider, play_turn, saved_state, stand_on, take_id
 
 # A world-state schema, so the RPG layer is exercised rather than skipped.
 SCHEMA = {"player": {"hp": {"min": 0, "max": 100, "initial": 100}}}
@@ -134,22 +134,6 @@ def _texts(client):
     return [a["text"] for a in _actions(client)]
 
 
-def _play(client, text="look around", type="do"):
-    r = client.post(f"/api/adventures/{client.adv_id}/actions",
-                    json={"type": type, "text": text})
-    assert r.status_code == 200, r.text
-    return r
-
-
-def _state(adv_id):
-    db = SessionLocal()
-    try:
-        adv = db.get(models.Adventure, adv_id)
-        return adv.script_state, adv.world_state
-    finally:
-        db.close()
-
-
 # ------------------------------------------------------- opening the story
 
 def test_adventure_opens_on_a_window_with_a_total(long_client):
@@ -173,7 +157,7 @@ def test_short_adventure_returns_everything(client):
 
 def test_a_turn_appends_the_player_action_then_the_ai_action(client):
     ScriptedProvider.replies = ["The dark presses in."]
-    _play(client, "light a torch")
+    play_turn(client, "light a torch")
     actions = _actions(client)
     assert [a["type"] for a in actions] == ["start", "do", "ai"]
     assert actions[1]["text"] == "> You light a torch."
@@ -182,17 +166,17 @@ def test_a_turn_appends_the_player_action_then_the_ai_action(client):
 
 def test_say_and_story_and_continue_all_work(client):
     ScriptedProvider.replies = ["One.", "Two.", "Three."]
-    _play(client, "hello", type="say")
-    _play(client, "The wind rises.", type="story")
-    _play(client, "", type="continue")
+    play_turn(client, "hello", type="say")
+    play_turn(client, "The wind rises.", type="story")
+    play_turn(client, "", type="continue")
     types = [a["type"] for a in _actions(client)]
     assert types == ["start", "say", "ai", "story", "ai", "ai"]
 
 
 def test_the_story_so_far_is_replayed_into_the_prompt(client):
     ScriptedProvider.replies = ["First.", "Second."]
-    _play(client, "go north")
-    _play(client, "go south")
+    play_turn(client, "go north")
+    play_turn(client, "go south")
     story = ScriptedProvider.prompts[-1][1]
     assert OPENING in story
     assert "First." in story
@@ -202,9 +186,9 @@ def test_the_story_so_far_is_replayed_into_the_prompt(client):
 def test_scripts_run_once_per_turn(client):
     """The gold script adds ten a turn. Two turns is twenty — not forty."""
     ScriptedProvider.replies = ["One.", "Two."]
-    _play(client)
-    _play(client)
-    script_state, _ = _state(client.adv_id)
+    play_turn(client)
+    play_turn(client)
+    script_state, _ = saved_state(client.adv_id)
     assert script_state["gold"] == 20
 
 
@@ -212,7 +196,7 @@ def test_scripts_run_once_per_turn(client):
 
 def test_retry_replaces_the_text_and_keeps_the_attempt(client):
     ScriptedProvider.replies = ["Attempt one.", "Attempt two."]
-    _play(client)
+    play_turn(client)
     assert _texts(client)[-1] == "Attempt one."
 
     r = client.post(f"/api/adventures/{client.adv_id}/retry")
@@ -234,22 +218,22 @@ def test_retry_does_not_stack_script_effects(client):
     """The discarded attempt's ten gold is rolled back, so one turn plus one
     retry is still ten, not twenty."""
     ScriptedProvider.replies = ["Attempt one.", "Attempt two."]
-    _play(client)
+    play_turn(client)
     client.post(f"/api/adventures/{client.adv_id}/retry")
-    script_state, _ = _state(client.adv_id)
+    script_state, _ = saved_state(client.adv_id)
     assert script_state["gold"] == 10
 
 
 def test_standing_on_an_earlier_attempt_restores_it(client):
     ScriptedProvider.replies = ["Attempt one.", "Attempt two."]
-    _play(client)
+    play_turn(client)
     client.post(f"/api/adventures/{client.adv_id}/retry")
     action_id = _actions(client)[-1]["id"]
 
     stand_on(client.adv_id, take_id(client, action_id, 0))
     assert _texts(client)[-1] == "Attempt one."
     # The script state that attempt produced comes back with it.
-    script_state, _ = _state(client.adv_id)
+    script_state, _ = saved_state(client.adv_id)
     assert script_state["gold"] == 10
 
 
@@ -257,8 +241,8 @@ def test_standing_on_an_earlier_attempt_restores_it(client):
 
 def test_undo_removes_the_whole_turn_and_rolls_state_back(client):
     ScriptedProvider.replies = ["One.", "Two."]
-    _play(client, "go north")
-    _play(client, "go south")
+    play_turn(client, "go north")
+    play_turn(client, "go south")
     assert len(_actions(client)) == 5
 
     r = client.post(f"/api/adventures/{client.adv_id}/undo")
@@ -268,7 +252,7 @@ def test_undo_removes_the_whole_turn_and_rolls_state_back(client):
     assert [a["type"] for a in page["actions"]] == ["start", "do", "ai"]
     assert page["total"] == 3
     # The second turn's ten gold is also gone.
-    script_state, _ = _state(client.adv_id)
+    script_state, _ = saved_state(client.adv_id)
     assert script_state["gold"] == 10
 
 
@@ -348,7 +332,7 @@ def test_paging_past_the_start_reports_the_end(long_client):
 
 def test_editing_an_action_sticks(client):
     ScriptedProvider.replies = ["Original."]
-    _play(client)
+    play_turn(client)
     action_id = _actions(client)[-1]["id"]
     r = client.patch(f"/api/adventures/{client.adv_id}/actions/{action_id}",
                      json={"text": "Edited."})
@@ -363,7 +347,7 @@ def test_editing_a_retried_action_survives_a_reload(client):
     """The edit has to reach the live attempt too, or paging away and back
     reverts it."""
     ScriptedProvider.replies = ["One.", "Two."]
-    _play(client)
+    play_turn(client)
     client.post(f"/api/adventures/{client.adv_id}/retry")
     action_id = _actions(client)[-1]["id"]
     client.patch(f"/api/adventures/{client.adv_id}/actions/{action_id}",
@@ -373,7 +357,7 @@ def test_editing_a_retried_action_survives_a_reload(client):
 
 def test_deleting_an_action_removes_it(client):
     ScriptedProvider.replies = ["One."]
-    _play(client)
+    play_turn(client)
     action_id = _actions(client)[-1]["id"]
     r = client.delete(f"/api/adventures/{client.adv_id}/actions/{action_id}")
     assert r.status_code == 204, r.text
@@ -414,8 +398,8 @@ def test_export_carries_the_whole_story(client):
     group. Everything else here still passes unmodified.
     """
     ScriptedProvider.replies = ["One.", "Two."]
-    _play(client, "go north")
-    _play(client, "go south")
+    play_turn(client, "go north")
+    play_turn(client, "go south")
 
     r = client.get(f"/api/adventures/{client.adv_id}/export")
     assert r.status_code == 200, r.text
@@ -429,7 +413,7 @@ def test_export_carries_the_whole_story(client):
 
 def test_export_round_trips_through_import(client):
     ScriptedProvider.replies = ["One."]
-    _play(client, "go north")
+    play_turn(client, "go north")
     bundle = client.get(f"/api/adventures/{client.adv_id}/export").json()
 
     r = client.post("/api/adventures/import", json=bundle)
@@ -444,7 +428,7 @@ def test_export_round_trips_through_import(client):
 
 def test_export_keeps_retry_attempts(client):
     ScriptedProvider.replies = ["Attempt one.", "Attempt two."]
-    _play(client)
+    play_turn(client)
     client.post(f"/api/adventures/{client.adv_id}/retry")
 
     bundle = client.get(f"/api/adventures/{client.adv_id}/export").json()
@@ -457,7 +441,7 @@ def test_export_keeps_retry_attempts(client):
 
 def test_world_state_is_readable_and_survives_a_turn(client):
     ScriptedProvider.replies = ["Nothing changes."]
-    _play(client)
+    play_turn(client)
     r = client.get(f"/api/adventures/{client.adv_id}/world-state")
     assert r.status_code == 200, r.text
     assert r.json()["state"]["player"]["hp"] == 100

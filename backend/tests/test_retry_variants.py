@@ -14,7 +14,7 @@ from app.main import app
 from app.providers import ProviderError
 from app.routers import adventures
 
-from fakes import ScriptedProvider
+from fakes import ScriptedProvider, play_turn, retry_turn, take_id
 
 SCHEMA = {"player": {"hp": {"min": 0, "max": 100, "initial": 100}}}
 
@@ -89,26 +89,14 @@ def _actions(client):
     return client.get(f"/api/adventures/{client.adv_id}").json()["actions"]
 
 
-def _play(client, text="look around"):
-    r = client.post(f"/api/adventures/{client.adv_id}/actions",
-                    json={"type": "do", "text": text})
-    assert r.status_code == 200, r.text
-
-
-def _retry(client):
-    r = client.post(f"/api/adventures/{client.adv_id}/retry")
-    assert r.status_code == 200, r.text
-    return r
-
-
 # ---------------------------------------------------------------- keeping them
 
 def test_retry_keeps_the_discarded_attempt(client):
     ScriptedProvider.replies = ["Attempt one.", "Attempt two."]
-    _play(client)
+    play_turn(client)
     assert _actions(client)[-1]["text"] == "Attempt one."
 
-    _retry(client)
+    retry_turn(client)
     actions = _actions(client)
     # One AI action still, not two. The retry replaced the live text in place.
     assert [a["type"] for a in actions] == ["start", "do", "ai"]
@@ -130,8 +118,8 @@ def test_retry_context_excludes_the_attempt_being_replaced(client):
     context builder must filter it out, or the model continues past the
     attempt it is replacing and writes a sequel that blends both."""
     ScriptedProvider.replies = ["Attempt one.", "Attempt two."]
-    _play(client)
-    _retry(client)
+    play_turn(client)
+    retry_turn(client)
 
     retry_story = ScriptedProvider.prompts[-1][1]
     assert "Attempt one." not in retry_story
@@ -143,9 +131,9 @@ def test_retry_context_excludes_the_attempt_being_replaced(client):
 def test_retry_context_keeps_earlier_ai_turns(client):
     """Only the action being retried is dropped, not AI history in general."""
     ScriptedProvider.replies = ["First turn.", "Second turn.", "Second, again."]
-    _play(client, "go north")
-    _play(client, "go south")
-    _retry(client)
+    play_turn(client, "go north")
+    play_turn(client, "go south")
+    retry_turn(client)
 
     retry_story = ScriptedProvider.prompts[-1][1]
     assert "First turn." in retry_story
@@ -153,7 +141,7 @@ def test_retry_context_keeps_earlier_ai_turns(client):
 
 
 def test_never_retried_action_has_no_variants(client):
-    _play(client)
+    play_turn(client)
     last = _actions(client)[-1]
     assert last["take_count"] == 1  # itself, and nothing to page to
     assert client.get(
@@ -162,9 +150,9 @@ def test_never_retried_action_has_no_variants(client):
 
 def test_three_attempts_all_kept_in_order(client):
     ScriptedProvider.replies = ["One.", "Two.", "Three."]
-    _play(client)
-    _retry(client)
-    _retry(client)
+    play_turn(client)
+    retry_turn(client)
+    retry_turn(client)
     last = _actions(client)[-1]
     assert last["take_count"] == 3
     assert last["take_index"] == 2
@@ -175,35 +163,21 @@ def test_three_attempts_all_kept_in_order(client):
 
 # ---------------------------------------------------------------- switching
 
-def _take_id(client, action_id, index):
-    """Returns the id of attempt `index` of the turn that `action_id` belongs to."""
-    takes = client.get(
-        f"/api/adventures/{client.adv_id}/actions/{action_id}/variants").json()
-    return takes[index]["id"]
-
-
-def _play_after(client, after_id, text="look around"):
-    """Plays a turn below `after_id`, which is how the pager picks a take."""
-    r = client.post(f"/api/adventures/{client.adv_id}/actions",
-                    json={"type": "do", "text": text, "after_id": after_id})
-    assert r.status_code == 200, r.text
-
-
 def test_playing_after_an_earlier_attempt_restores_its_state(client):
     ScriptedProvider.replies = [
         "You take a scratch.\n```state\n{\"player.hp\": -5}\n```",
         "You take a beating.\n```state\n{\"player.hp\": -40}\n```",
         "Onward.",
     ]
-    _play(client)
+    play_turn(client)
     assert _adv(client.adv_id)[1]["player"]["hp"] == 95
-    _retry(client)
+    retry_turn(client)
     script_state, world_state = _adv(client.adv_id)
     assert world_state["player"]["hp"] == 60
     assert script_state == {"gold": 10}  # rolled back, not stacked to 20
 
     last = _actions(client)[-1]
-    _play_after(client, _take_id(client, last["id"], 0))
+    play_turn(client, after_id=take_id(client, last["id"], 0))
     assert _actions(client)[-3]["text"].startswith("You take a scratch")
     # The stats follow the narration back. The new turn adds its own gold.
     script_state, world_state = _adv(client.adv_id)
@@ -212,7 +186,7 @@ def test_playing_after_an_earlier_attempt_restores_its_state(client):
 
     # And forward again. The story moved past the turn, so this forks.
     ScriptedProvider.replies = ["Onward again."]
-    _play_after(client, _take_id(client, last["id"], 1))
+    play_turn(client, after_id=take_id(client, last["id"], 1))
     assert _adv(client.adv_id)[1]["player"]["hp"] == 60
 
 
@@ -222,21 +196,21 @@ def test_playing_after_an_attempt_updates_the_world_change_chips(client):
         "A beating.\n```state\n{\"player.hp\": -40}\n```",
         "Onward.",
     ]
-    _play(client)
-    _retry(client)
+    play_turn(client)
+    retry_turn(client)
     last = _actions(client)[-1]
     assert last["world_changes"][0]["delta"] == -40
 
-    _play_after(client, _take_id(client, last["id"], 0))
+    play_turn(client, after_id=take_id(client, last["id"], 0))
     assert _actions(client)[-3]["world_changes"][0]["delta"] == -5
 
 
 def test_a_turn_the_story_moved_past_keeps_its_attempts_readable(client):
     ScriptedProvider.replies = ["One.", "Two.", "Three."]
-    _play(client)
-    _retry(client)
+    play_turn(client)
+    retry_turn(client)
     retried = _actions(client)[-1]
-    _play(client)  # story continues from "Two."
+    play_turn(client)  # story continues from "Two."
 
     variants = client.get(
         f"/api/adventures/{client.adv_id}/actions/{retried['id']}/variants").json()
@@ -249,7 +223,7 @@ def test_failed_retry_leaves_the_previous_attempt_in_charge(client):
     """A provider error mid-retry must undo the rollback, or the stats on
     screen would silently disagree with the text still shown."""
     ScriptedProvider.replies = ["Attempt one.", ProviderError("upstream is down")]
-    _play(client)
+    play_turn(client)
     assert _adv(client.adv_id)[0] == {"gold": 10}
 
     client.post(f"/api/adventures/{client.adv_id}/retry")
@@ -261,8 +235,8 @@ def test_failed_retry_leaves_the_previous_attempt_in_charge(client):
 
 def test_undo_removes_the_action_and_its_history(client):
     ScriptedProvider.replies = ["One.", "Two."]
-    _play(client)
-    _retry(client)
+    play_turn(client)
+    retry_turn(client)
     r = client.post(f"/api/adventures/{client.adv_id}/undo")
     assert r.status_code == 200, r.text
     # Undo returns the newest window now, not the whole story.
@@ -272,8 +246,8 @@ def test_undo_removes_the_action_and_its_history(client):
 
 def test_editing_the_text_updates_the_live_variant(client):
     ScriptedProvider.replies = ["One.", "Two."]
-    _play(client)
-    _retry(client)
+    play_turn(client)
+    retry_turn(client)
     last = _actions(client)[-1]
     client.patch(f"/api/adventures/{client.adv_id}/actions/{last['id']}",
                  json={"text": "Two, but better."})
@@ -308,16 +282,16 @@ def test_retry_keeps_the_turn_depth(client):
     on one branch, and the client pages by id, so it is not exposed.
     """
     ScriptedProvider.replies = ["One.", "Two."]
-    _play(client)
+    play_turn(client)
     before = _live_depth(client)
-    _retry(client)
+    retry_turn(client)
     assert _live_depth(client) == before
 
 
 def test_export_and_import_round_trips_variants(client):
     ScriptedProvider.replies = ["One.", "Two."]
-    _play(client)
-    _retry(client)
+    play_turn(client)
+    retry_turn(client)
     bundle = client.get(f"/api/adventures/{client.adv_id}/export").json()
     # SP6: the attempts are nodes in the bundle too, sharing one coordinate,
     # and `live` says which of them the story tells. The `variants` array

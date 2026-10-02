@@ -24,7 +24,7 @@ from app.database import Base, SessionLocal, engine, get_db
 from app.main import app
 from app.routers import adventures
 
-from fakes import ScriptedProvider
+from fakes import ScriptedProvider, play_turn
 
 SCHEMA = {"player": {"hp": {"min": 0, "max": 100, "initial": 100}}}
 
@@ -87,14 +87,6 @@ def client(monkeypatch):
         Base.metadata.drop_all(bind=engine)
 
 
-def _play(client, text="look around", after_id=None):
-    body = {"type": "do", "text": text}
-    if after_id is not None:
-        body["after_id"] = after_id
-    r = client.post(f"/api/adventures/{client.adv_id}/actions", json=body)
-    assert r.status_code == 200, r.text
-
-
 def _take(client, action_id, text=""):
     r = client.post(
         f"/api/adventures/{client.adv_id}/actions/{action_id}/takes",
@@ -127,9 +119,9 @@ def _rows(adv_id, type_):
 
 def test_the_script_runs_once_a_turn(client):
     """This test establishes the baseline the rest of the file depends on."""
-    _play(client)
+    play_turn(client)
     assert _gold(client.adv_id) == 10
-    _play(client, "press on")
+    play_turn(client, "press on")
     assert _gold(client.adv_id) == 20
 
 
@@ -140,8 +132,8 @@ def test_a_take_of_a_past_ai_turn_does_not_stack_its_script(client):
     is the state turn one started from: zero gold, not the twenty that two
     turns accumulated. The take's own run then adds ten.
     """
-    _play(client)
-    _play(client, "press on")
+    play_turn(client)
+    play_turn(client, "press on")
     assert _gold(client.adv_id) == 20
 
     first_ai = _rows(client.adv_id, "ai")[0]
@@ -151,8 +143,8 @@ def test_a_take_of_a_past_ai_turn_does_not_stack_its_script(client):
 
 
 def test_a_take_of_a_player_turn_does_not_stack_its_script(client):
-    _play(client)
-    _play(client, "press on")
+    play_turn(client)
+    play_turn(client, "press on")
     assert _gold(client.adv_id) == 20
 
     first_player = _rows(client.adv_id, "do")[0]
@@ -168,22 +160,22 @@ def test_writing_below_a_passed_take_starts_from_that_take_s_state(client):
     turn. The turn played on top of it adds another ten. The twenty gold
     that the abandoned line reached has no effect on this branch.
     """
-    _play(client)
+    play_turn(client)
     r = client.post(f"/api/adventures/{client.adv_id}/retry")
     assert r.status_code == 200, r.text
-    _play(client, "press on")
+    play_turn(client, "press on")
     assert _gold(client.adv_id) == 20
 
     discarded = [a for a in _rows(client.adv_id, "ai") if not a.live][0]
-    _play(client, "a different way", after_id=discarded.id)
+    play_turn(client, "a different way", after_id=discarded.id)
 
     assert _gold(client.adv_id) == 20, "that take's ten, plus this turn's ten"
 
 
 def test_the_line_left_behind_keeps_the_state_it_reached(client):
     """Switching back finds the abandoned line's numbers where it left them."""
-    _play(client)
-    _play(client, "press on")
+    play_turn(client)
+    play_turn(client, "press on")
     first_ai = _rows(client.adv_id, "ai")[0]
     _take(client, first_ai.id)
     assert _gold(client.adv_id) == 10
