@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session, undefer
 from ... import attempts, memorybank, models, tree
 from ...context import cursors
 from ...context import lineage
+from .deps import get_row_or_404
 
 
 def next_depth(adventure: models.Adventure) -> int:
@@ -55,9 +56,7 @@ def _move_to_after(
     """
     if after_id is None:
         return
-    node = db.get(models.Action, after_id)
-    if node is None or node.adventure_id != adventure.id:
-        raise HTTPException(404, "Action not found")
+    node = get_row_or_404(db, models.Action, after_id, adventure, "Action")
     if node.live and lineage.path_of(db, adventure).contains(node):
         return
     if not node.live and len(attempts.group(db, node)) < 2:

@@ -19,7 +19,7 @@ Two things must hold, and both are easy to break by accident:
 import pytest
 from sqlalchemy import event
 
-from app import memorybank, models
+from app import models
 from app.context import builder, history
 from app.database import Base, SessionLocal, engine
 

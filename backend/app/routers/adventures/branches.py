@@ -18,7 +18,7 @@ from ...context import lineage
 from ...database import get_db
 
 from . import turns
-from .deps import CurrentUser, current_adventure, router
+from .deps import current_adventure, get_row_or_404, router
 from .nodes import db_tip
 from .paging import current_window
 
@@ -77,20 +77,6 @@ def list_branches(
     return out
 
 
-def get_branch_or_404(
-    adventure: models.Adventure, branch_id: int, db: Session
-) -> models.Branch:
-    """Returns one branch of this adventure.
-
-    If the branch belongs to another adventure, the 404 does not confirm that the
-    branch exists.
-    """
-    branch = db.get(models.Branch, branch_id)
-    if branch is None or branch.adventure_id != adventure.id:
-        raise HTTPException(404, "Branch not found")
-    return branch
-
-
 @router.patch(
     "/{adventure_id}/branches/{branch_id}", response_model=schemas.BranchOut
 )
@@ -106,7 +92,7 @@ def rename_branch(
     name anyone chose, and storing one gives the client an empty label to draw
     instead of the fork depth.
     """
-    branch = get_branch_or_404(adventure, branch_id, db)
+    branch = get_row_or_404(db, models.Branch, branch_id, adventure, "Branch")
     name = (payload.name or "").strip()
     branch.name = name or None
     adventure.updated_at = models.utcnow()
@@ -161,7 +147,7 @@ def delete_branch(
     cascade on `branches.parent_branch_id`, so the delete is a single statement
     however deep the subtree is.
     """
-    branch = get_branch_or_404(adventure, branch_id, db)
+    branch = get_row_or_404(db, models.Branch, branch_id, adventure, "Branch")
     if branch.parent_branch_id is None:
         raise HTTPException(
             400, "This is the story's first branch — deleting it would delete "
@@ -243,9 +229,7 @@ def switch_branch(
     another branch's numbers, including the world-state cooldown clock inside the
     snapshot.
     """
-    branch = db.get(models.Branch, branch_id)
-    if branch is None or branch.adventure_id != adventure.id:
-        raise HTTPException(404, "Branch not found")
+    branch = get_row_or_404(db, models.Branch, branch_id, adventure, "Branch")
     turns.acquire_turn_lock(adventure_id)
     try:
         adventure.head_branch_id = branch.id

@@ -29,6 +29,18 @@ def get_adventure_or_404(
     return adventure
 
 
+def get_row_or_404(db: Session, model, row_id: int, adventure: models.Adventure, label: str):
+    """Returns the `model` row with `row_id` if it belongs to `adventure`.
+
+    A row from another adventure gets the same 404 as a missing row, so the
+    response does not confirm that the id exists.
+    """
+    row = db.get(model, row_id)
+    if row is None or row.adventure_id != adventure.id:
+        raise HTTPException(404, f"{label} not found")
+    return row
+
+
 def current_adventure(
     adventure_id: int,
     db: Session = Depends(get_db),

@@ -19,9 +19,9 @@ from ...scripting import ScriptPipeline
 from ...sse import SSE_HEADERS
 
 from . import turns
-from .deps import CurrentUser, current_adventure, router
+from .deps import CurrentUser, current_adventure, get_row_or_404, router
 from .nodes import delete_turn, last_action, stand_on
-from .paging import action_window, annotate_takes, current_window
+from .paging import current_window
 
 
 @router.post("/{adventure_id}/retry")
@@ -90,9 +90,7 @@ def list_variants(
     Switching changes which row the story tells, and a client that holds an id it
     received a moment ago still has to be able to ask about the same turn.
     """
-    action = db.get(models.Action, action_id)
-    if action is None or action.adventure_id != adventure_id:
-        raise HTTPException(404, "Action not found")
+    action = get_row_or_404(db, models.Action, action_id, adventure, "Action")
     rows = attempts.group(db, action)
     if len(rows) < 2:
         return []  # Never retried, so the turn has one attempt.
@@ -129,9 +127,7 @@ def select_variant(
     would leave the story contradicting itself. The attempts of earlier turns
     stay readable through `list_variants`.
     """
-    action = db.get(models.Action, action_id)
-    if action is None or action.adventure_id != adventure_id:
-        raise HTTPException(404, "Action not found")
+    action = get_row_or_404(db, models.Action, action_id, adventure, "Action")
     rows = attempts.group(db, action)
     if not 0 <= payload.index < len(rows) or len(rows) < 2:
         raise HTTPException(400, "No such attempt for this action")
@@ -182,9 +178,7 @@ def fork_from_attempt(
     * The story has moved past its turn, so the endpoint forks. The attempt gets
       a branch of its own, and the line it leaves keeps every turn it has.
     """
-    action = db.get(models.Action, action_id)
-    if action is None or action.adventure_id != adventure_id:
-        raise HTTPException(404, "Action not found")
+    action = get_row_or_404(db, models.Action, action_id, adventure, "Action")
     # Check this before checking the shape of the turn, because a fork leaves
     # the promoted attempt alone on its branch. A client that repeats the call,
     # after a double click or a retried request, has to get the same answer
@@ -257,9 +251,7 @@ def add_take(
     limits.rate_limit("turn", request, user)
     limits.check_row_cap("actions", db, user, adventure=adventure)
     turns.check_demo_cap(db, user)
-    action = db.get(models.Action, action_id)
-    if action is None or action.adventure_id != adventure_id:
-        raise HTTPException(404, "Action not found")
+    action = get_row_or_404(db, models.Action, action_id, adventure, "Action")
     if action.type not in ("do", "say", "story", "continue", "ai"):
         # The opening is not a turn anyone played, so it has no second attempt.
         # Editing the scenario is what changes it.
@@ -375,14 +367,6 @@ def undo_turn(
         # replaces its transcript with this response, and the transcript is a
         # window. Returning everything would defeat the paging on the action a
         # player is most likely to repeat several times in a row.
-        actions, total, has_more = action_window(db, adventure)
-        return schemas.ActionPage(
-            actions=[
-            schemas.ActionOut.model_validate(a)
-            for a in annotate_takes(db, adventure.id, actions)
-        ],
-            total=total,
-            has_more=has_more,
-        )
+        return current_window(db, adventure)
     finally:
         turns._active_turns.discard(adventure_id)

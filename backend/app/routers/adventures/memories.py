@@ -11,7 +11,7 @@ from ... import limits, memorybank, models, schemas, tree
 from ...context import lineage
 from ...database import get_db
 
-from .deps import CurrentUser, current_adventure, router
+from .deps import CurrentUser, current_adventure, get_row_or_404, router
 
 
 # The columns `schemas.MemoryOut` renders. `embedded` is a real column and
@@ -90,9 +90,7 @@ def update_memory(
     db: Session = Depends(get_db),
     adventure: models.Adventure = Depends(current_adventure),
 ):
-    memory = db.get(models.Memory, memory_id)
-    if memory is None or memory.adventure_id != adventure_id:
-        raise HTTPException(404, "Memory not found")
+    memory = get_row_or_404(db, models.Memory, memory_id, adventure, "Memory")
     fields = {k: v for k, v in payload.model_dump(exclude_unset=True).items() if v is not None}
     if "text" in fields and fields["text"].strip() != memory.text:
         memorybank.set_vector(memory, None)  # Re-embed on the next post-turn pass.
@@ -109,8 +107,6 @@ def delete_memory(
     db: Session = Depends(get_db),
     adventure: models.Adventure = Depends(current_adventure),
 ):
-    memory = db.get(models.Memory, memory_id)
-    if memory is None or memory.adventure_id != adventure_id:
-        raise HTTPException(404, "Memory not found")
+    memory = get_row_or_404(db, models.Memory, memory_id, adventure, "Memory")
     db.delete(memory)
     db.commit()

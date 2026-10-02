@@ -47,7 +47,7 @@ from fastapi import HTTPException
 from sqlalchemy import insert, update
 from sqlalchemy.orm import Session, undefer
 
-from . import attempts, models, schemas
+from . import models, schemas
 from .context import cursors, lineage
 
 FORMAT = "ai-dnd-adventure-v2"

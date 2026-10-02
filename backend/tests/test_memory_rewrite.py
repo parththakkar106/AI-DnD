@@ -22,7 +22,6 @@ import asyncio
 import pytest
 
 from app import memorybank, models, tree
-from app.context import lineage
 from app.database import Base, SessionLocal, engine
 from tools import rewrite_memories
 
