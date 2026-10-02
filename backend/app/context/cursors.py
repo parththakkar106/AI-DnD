@@ -159,14 +159,3 @@ def anchor_at_position(
     covered = history.slice_(adventure, position - 1, 1) or history.tail(adventure, 1)
     if covered:
         cursor.anchor_at(adventure, covered[0])
-
-
-def position_of(adventure: models.Adventure, depth: int) -> int:
-    """Returns how many story actions lie at or before `depth`.
-
-    This reads an anchor back as a count. The v1 export bundle stores cursors as
-    counts, and builds that have never used depths read v1 bundles. This
-    function is the only remaining code that speaks that coordinate system. The
-    v2 format introduced in SP6 replaces it.
-    """
-    return max(history.count(adventure) - history.count_after(adventure, depth), 0)

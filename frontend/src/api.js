@@ -159,12 +159,7 @@ export const api = {
   deleteAction: (advId, actionId) =>
     request(`/adventures/${advId}/actions/${actionId}`, { method: 'DELETE' }),
   // Retry history. The adventure payload carries only the counts, so the
-  // attempts themselves are fetched when the reader actually pages through.
-  listVariants: (advId, actionId) =>
-    request(`/adventures/${advId}/actions/${actionId}/variants`),
-  // The same endpoint under the name the pager uses. "Take" is what the UI
-  // calls one of these now, and the vocabulary is worth keeping straight —
-  // `variant` belongs to the pre-tree pair of columns SP8 drops.
+  // pager fetches the attempts when the reader pages through them.
   listTakes: (advId, actionId) =>
     request(`/adventures/${advId}/actions/${actionId}/variants`),
   // No `selectVariant` / `forkFromAttempt` here any more. Both endpoints still
