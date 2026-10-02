@@ -48,10 +48,11 @@ against its published SHA-256. Nothing in the repository changes for this.
 | 4 | Streaming | `turns.py` and `chat.py` repeat the reasoning and text stream loop | done |
 | 5 | Dead routes | `POST /actions/{id}/variant` and `POST /actions/{id}/fork` have no frontend caller | done |
 | 5 | Bug | Playing with `after_id` set to a take that is live on another branch moves that branch's live row, and that branch's story loses the turn | done |
-| 6 | Frontend duplication | `splitTags` and the scenario card markup are copied in `Home.jsx` and `Scenarios.jsx` | pending |
-| 6 | Frontend duplication | `ReasoningBlock` is copied in `Chat.jsx` and `Play/index.jsx` | pending |
-| 6 | Frontend duplication | The story card handlers are copied in `ScenarioEditor.jsx` and `PlotPanel.jsx` | pending |
-| 6 | Frontend duplication | `App.jsx` repeats the same `NavLink` class function seven times | pending |
+| 6 | Frontend duplication | `splitTags` and the scenario card markup are copied in `Home.jsx` and `Scenarios.jsx` | done |
+| 6 | Frontend duplication | The begin-adventure flow (`begin`, `startAdventure`, and the modal) is copied in `Home.jsx` and `Scenarios.jsx` | done |
+| 6 | Frontend duplication | `ReasoningBlock` is copied in `Chat.jsx` and `Play/index.jsx` | done |
+| 6 | Frontend duplication | The story card handlers are copied in `ScenarioEditor.jsx` and `PlotPanel.jsx` | done |
+| 6 | Frontend duplication | `App.jsx` repeats the same `NavLink` class function seven times | done |
 | 7 | Test duplication | `_play` is defined in 13 test files, `_retry` in 7, and `_texts`, `_rows`, and `_state` in 4 each | pending |
 
 ## Batch log
@@ -119,3 +120,24 @@ How the tests moved:
   `test_switching_to_a_missing_index_is_rejected`.
 
 Check: 704 backend tests pass, which is 706 minus those two. Lint and build pass.
+
+### Batch 6: frontend duplication
+
+- `components.jsx` gains `splitTags`, `ScenarioCard`, `useBeginAdventure`, and
+  `ReasoningBlock`. `Home.jsx`, `Scenarios.jsx`, `Chat.jsx`, and
+  `Play/index.jsx` use them. The two card grids still differ in tag count and
+  animation delay, so those are props.
+- `hooks/useStoryCards.js` holds the add, edit, delete, export, and import
+  handlers for story cards. `ScenarioEditor.jsx` and `PlotPanel.jsx` call it.
+- `App.jsx` defines `navClass` once.
+
+One behavior changed. On the Scenarios page, a failed create or a failed
+scenario fetch now shows an error toast, as it already did on Home. Before,
+the rejected promise was dropped and nothing appeared.
+
+Check: lint and build pass. A Playwright run against a scratch SQLite database
+covered these flows: card tags and delays on both grids, the Play modal from
+Home, the blank adventure from Scenarios, the active nav link, adding a card,
+saving an edit after the debounce, exporting, and adding a card from the Play
+page's Plot panel. The only console errors were certificate failures on
+external font requests through the sandbox proxy.

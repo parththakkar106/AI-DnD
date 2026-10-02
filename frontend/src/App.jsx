@@ -4,6 +4,8 @@ import { api } from './api'
 import { AuthModal, ToastHost } from './components'
 import Embers from './Embers.jsx'
 
+const navClass = ({ isActive }) => `navlink${isActive ? ' active' : ''}`
+
 export default function App() {
   // null until /auth/me resolves; in local mode multi_user=false hides all auth UI.
   const [me, setMe] = useState(null)
@@ -60,30 +62,30 @@ export default function App() {
           {navOpen ? '✕' : '☰'}
         </button>
         <div className={`nav-links${navOpen ? ' open' : ''}`} onClick={() => setNavOpen(false)}>
-          <NavLink to="/" end className={({ isActive }) => `navlink${isActive ? ' active' : ''}`}>
+          <NavLink to="/" end className={navClass}>
             Home
           </NavLink>
-          <NavLink to="/adventures" className={({ isActive }) => `navlink${isActive ? ' active' : ''}`}>
+          <NavLink to="/adventures" className={navClass}>
             Adventures
           </NavLink>
-          <NavLink to="/scenarios" className={({ isActive }) => `navlink${isActive ? ' active' : ''}`}>
+          <NavLink to="/scenarios" className={navClass}>
             Scenarios
           </NavLink>
-          <NavLink to="/scripts" className={({ isActive }) => `navlink${isActive ? ' active' : ''}`}>
+          <NavLink to="/scripts" className={navClass}>
             Scripts
           </NavLink>
-          <NavLink to="/settings" className={({ isActive }) => `navlink${isActive ? ' active' : ''}`}>
+          <NavLink to="/settings" className={navClass}>
             Settings
           </NavLink>
           {/* Power-user tooling, not part of the game — hidden for everyone else. */}
           {me?.power_user && (
-            <NavLink to="/chat" className={({ isActive }) => `navlink${isActive ? ' active' : ''}`}>
+            <NavLink to="/chat" className={navClass}>
               AI Chat
             </NavLink>
           )}
           {/* Owner only: the site's own traffic, on its own allowlist. */}
           {me?.analytics && (
-            <NavLink to="/analytics" className={({ isActive }) => `navlink${isActive ? ' active' : ''}`}>
+            <NavLink to="/analytics" className={navClass}>
               Visitors
             </NavLink>
           )}

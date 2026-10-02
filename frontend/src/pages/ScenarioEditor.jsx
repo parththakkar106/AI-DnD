@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { api } from '../api'
-import { Field, StoryCardRow, downloadJSON, pickJSONFile, useToast } from '../components'
+import { Field, StoryCardRow, downloadJSON } from '../components'
 import { useDebouncedSave } from '../hooks/useDebouncedSave'
+import { useStoryCards } from '../hooks/useStoryCards'
 import ArtPicker from '../ArtPicker'
 import SchemaEditor, { NpcEditor, addNpc } from '../SchemaEditor'
 
@@ -18,7 +19,6 @@ export default function ScenarioEditor() {
   // Last successfully-parsed schema (drives the form editor + preview).
   const [parsedSchema, setParsedSchema] = useState(null)
   const [schemaView, setSchemaView] = useState('form') // 'form' | 'json'
-  const toast = useToast()
   const debounceSave = useDebouncedSave()
 
   useEffect(() => {
@@ -110,44 +110,9 @@ export default function ScenarioEditor() {
     applySchema(next)
   }
 
-  const addCard = async () => {
-    const card = await api.createStoryCard({ scenario_id: Number(id) })
-    setScenario({ ...scenario, story_cards: [...scenario.story_cards, card] })
-  }
-
-  const updateCard = (card) => {
-    setScenario({
-      ...scenario,
-      story_cards: scenario.story_cards.map((c) => (c.id === card.id ? card : c)),
-    })
-    debounceSave(`card-${card.id}`, () => {
-      api.updateStoryCard(card.id, {
-        name: card.name, type: card.type, keys: card.keys, entry: card.entry, notes: card.notes,
-      })
-    })
-  }
-
-  const deleteCard = async (cardId) => {
-    await api.deleteStoryCard(cardId)
-    setScenario({ ...scenario, story_cards: scenario.story_cards.filter((c) => c.id !== cardId) })
-  }
-
-  const exportCards = async () => {
-    const cards = await api.exportStoryCards({ scenario_id: id })
-    downloadJSON(cards, `${scenario.title.replace(/\W+/g, '-')}-cards.json`)
-  }
-
-  const importCards = async () => {
-    try {
-      const parsed = await pickJSONFile()
-      const cards = Array.isArray(parsed) ? parsed : (parsed.cards || parsed.storyCards)
-      if (!Array.isArray(cards)) return toast('Expected a JSON array of story cards.', 'error')
-      const created = await api.importStoryCards({ scenario_id: Number(id), cards })
-      setScenario({ ...scenario, story_cards: [...scenario.story_cards, ...created] })
-    } catch (err) {
-      toast(err.message, 'error')
-    }
-  }
+  const { addCard, updateCard, deleteCard, exportCards, importCards } = useStoryCards(
+    scenario, setScenario, { scenario_id: Number(id) }, scenario?.title || 'scenario',
+  )
 
   const toggleScript = async (scriptId) => {
     const current = scenario.scripts.map((s) => s.id)

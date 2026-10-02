@@ -14,7 +14,7 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { api } from '../../api'
-import { AutoTextarea } from '../../components'
+import { AutoTextarea, ReasoningBlock } from '../../components'
 import { DeltaEditor } from './DeltaEditor'
 import { StateChangeChips } from './reports'
 import { TakePager } from './TakePager'
@@ -46,16 +46,6 @@ function renderEmphasis(text) {
   if (parts.length === 0) return text
   if (last < text.length) parts.push(text.slice(last))
   return parts
-}
-
-function ReasoningBlock({ text, streaming }) {
-  if (!text) return null
-  return (
-    <details className="reasoning" open={streaming || undefined}>
-      <summary>💭 Reasoning{streaming ? '…' : ''}</summary>
-      <div className="reasoning-text">{text}</div>
-    </details>
-  )
 }
 
 
