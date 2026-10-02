@@ -31,6 +31,7 @@ against its published SHA-256. Nothing in the repository changes for this.
 | `Provider` is an ABC with one implementation | Keep it. A second provider is planned. |
 | Test helpers repeated across files | Move the shared helpers into `tests/fakes.py`. Leave each `client` fixture alone. |
 | Duplicated setup in the `backend/tools` fixture scripts | Out of scope. Remove only the unused import. |
+| Removing `/fork` drops its guard against a take that is live on another branch | Move the guard into `nodes._move_to_after`, which `after_id` uses. |
 
 ## Findings and progress
 
@@ -45,7 +46,8 @@ against its published SHA-256. Nothing in the repository changes for this.
 | 2 | Dead code | `pyflakes` reports six unused imports in `bundle.py`, two routers, and three tests | done |
 | 3 | World state | `apply.py` repeats the cooldown check, the text truncation, and the min and max clamp | done |
 | 4 | Streaming | `turns.py` and `chat.py` repeat the reasoning and text stream loop | done |
-| 5 | Dead routes | `POST /actions/{id}/variant` and `POST /actions/{id}/fork` have no frontend caller | pending |
+| 5 | Dead routes | `POST /actions/{id}/variant` and `POST /actions/{id}/fork` have no frontend caller | done |
+| 5 | Bug | Playing with `after_id` set to a take that is live on another branch moves that branch's live row, and that branch's story loses the turn | done |
 | 6 | Frontend duplication | `splitTags` and the scenario card markup are copied in `Home.jsx` and `Scenarios.jsx` | pending |
 | 6 | Frontend duplication | `ReasoningBlock` is copied in `Chat.jsx` and `Play/index.jsx` | pending |
 | 6 | Frontend duplication | The story card handlers are copied in `ScenarioEditor.jsx` and `PlotPanel.jsx` | pending |
@@ -93,3 +95,27 @@ empty-reply messages stay separate, because each one names the settings
 on its own page.
 
 Check: 706 backend tests pass.
+
+### Batch 5: dead routes, and the guard they held
+
+Removed `select_variant`, `fork_from_attempt`, and the `VariantSelect` schema.
+The fork logic itself, `nodes.stand_on`, stays, because a turn played with
+`after_id` calls it.
+
+The fork endpoint refused a take that is live on another branch. The `after_id`
+path did not, and the pager offers such a take because attempt groups span
+branches. A probe showed the result. After a fork, playing below the parent's
+live attempt returned 200, and the parent's story lost that turn.
+`_move_to_after` now returns the same 400 the endpoint did. The ported test
+failed before the fix and passes after it.
+
+How the tests moved:
+
+- `tests/fakes.py` gains `stand_on`, which calls `nodes.stand_on` in a session,
+  and `take_id`. Tests that check the state right after a move use them.
+- Tests that play a turn right after the move now send `after_id`.
+- Two tests are gone with the endpoint, because each checked only a refusal that
+  `/variant` made: `test_only_the_newest_turn_can_be_switched` and
+  `test_switching_to_a_missing_index_is_rejected`.
+
+Check: 704 backend tests pass, which is 706 minus those two. Lint and build pass.

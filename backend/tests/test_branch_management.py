@@ -30,7 +30,7 @@ from app.database import Base, SessionLocal, engine, get_db
 from app.main import app
 from app.routers import adventures
 
-from fakes import ScriptedProvider
+from fakes import ScriptedProvider, stand_on
 
 
 @pytest.fixture()
@@ -139,9 +139,7 @@ def _forked(client):
     _retry(client)
     _play(client, "go deeper")
     root = _branches(client)[0]["id"]
-    r = client.post(
-        f"/api/adventures/{client.adv_id}/actions/{_discarded_on(client.adv_id)}/fork")
-    assert r.status_code == 200, r.text
+    stand_on(client.adv_id, _discarded_on(client.adv_id))
     forked = [b for b in _branches(client) if b["id"] != root][0]["id"]
     return root, forked
 
@@ -268,8 +266,7 @@ def test_an_ancestor_of_the_branch_being_read_cannot_be_deleted(client):
     _retry(client)
     _play(client, "press on")
     nested = _discarded_on(client.adv_id, branch_id=forked)
-    r = client.post(f"/api/adventures/{client.adv_id}/actions/{nested}/fork")
-    assert r.status_code == 200, r.text
+    stand_on(client.adv_id, nested)
     assert len(_branches(client)) == 3
 
     r = _delete(client, forked)
@@ -295,7 +292,7 @@ def test_deleting_a_branch_takes_its_nodes_and_its_descendants(client):
     _retry(client)
     _play(client, "press on")
     nested_attempt = _discarded_on(client.adv_id, branch_id=forked)
-    client.post(f"/api/adventures/{client.adv_id}/actions/{nested_attempt}/fork")
+    stand_on(client.adv_id, nested_attempt)
     nested = [b["id"] for b in _branches(client) if b["id"] not in (root, forked)][0]
 
     doomed_actions, _ = _counts(client.adv_id, [forked, nested])

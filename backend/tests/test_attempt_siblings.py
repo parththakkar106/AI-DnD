@@ -19,7 +19,7 @@ from app.database import Base, SessionLocal, engine, get_db
 from app.main import app
 from app.routers import adventures
 
-from fakes import ScriptedProvider
+from fakes import ScriptedProvider, stand_on, take_id
 
 SCHEMA = {"player": {"hp": {"min": 0, "max": 100, "initial": 100}}}
 
@@ -164,7 +164,7 @@ def test_a_discarded_attempt_never_reaches_the_prompt(client):
     assert "Attempt one." not in story
 
 
-def test_switching_moves_the_story_onto_the_other_row(client):
+def test_standing_on_a_take_moves_the_story_onto_that_row(client):
     ScriptedProvider.replies = [
         "A scratch.\n```state\n{\"player.hp\": -5}\n```",
         "A beating.\n```state\n{\"player.hp\": -40}\n```",
@@ -173,12 +173,11 @@ def test_switching_moves_the_story_onto_the_other_row(client):
     _retry(client)
     newest_id = _page(client)["actions"][-1]["id"]
 
-    r = client.post(
-        f"/api/adventures/{client.adv_id}/actions/{newest_id}/variant", json={"index": 0})
-    assert r.status_code == 200, r.text
-    # A different row answers the request. That is the only change.
-    assert r.json()["id"] != newest_id
-    assert r.json()["text"].startswith("A scratch")
+    first_id = take_id(client, newest_id, 0)
+    stand_on(client.adv_id, first_id)
+    # A different row is now the story. That is the only change.
+    assert first_id != newest_id
+    assert _page(client)["actions"][-1]["text"].startswith("A scratch")
 
     rows = _rows(client.adv_id)
     ai = [a for a in rows if a.type == "ai"]
@@ -207,8 +206,7 @@ def test_the_assembled_prompt_is_stored_once_per_turn(client):
     newest = _page(client)["actions"][-1]
     assert live_holder == [newest["id"]]
 
-    client.post(f"/api/adventures/{client.adv_id}/actions/{newest['id']}/variant",
-                json={"index": 0})
+    stand_on(client.adv_id, take_id(client, newest["id"], 0))
     moved = holders()
     assert len(moved) == 1 and moved != live_holder, "the prompt follows the story"
 
@@ -411,10 +409,7 @@ def test_a_retry_after_switching_back_files_the_new_attempt_last(client):
         "One.", "Two.", "Three."]
 
     live = _page(client)["actions"][-1]
-    r = client.post(
-        f"/api/adventures/{client.adv_id}/actions/{live['id']}/variant",
-        json={"index": 0})
-    assert r.status_code == 200, r.text
+    stand_on(client.adv_id, take_id(client, live["id"], 0))
 
     _retry(client)
     ai = [a for a in _rows(client.adv_id) if a.type == "ai"]
@@ -435,8 +430,7 @@ def test_the_adventure_list_quotes_the_take_the_story_tells(client):
     _retry(client)
     live = _page(client)["actions"][-1]
     assert live["text"] == "Two."
-    client.post(f"/api/adventures/{client.adv_id}/actions/{live['id']}/variant",
-                json={"index": 0})
+    stand_on(client.adv_id, take_id(client, live["id"], 0))
 
     listed = client.get("/api/adventures").json()
     row = [a for a in listed if a["id"] == client.adv_id][0]

@@ -22,7 +22,7 @@ from app.database import Base, SessionLocal, engine, get_db
 from app.main import app
 from app.routers import adventures
 
-from fakes import ScriptedProvider
+from fakes import ScriptedProvider, stand_on
 
 # `hp` moves freely. `mana` has a cooldown of 2 turns, so an incorrect
 # advance shows up as a change the referee should have rejected.
@@ -114,7 +114,14 @@ def _branches(client) -> list[dict]:
 
 
 def _fork(client, action_id):
-    return client.post(f"/api/adventures/{client.adv_id}/actions/{action_id}/fork")
+    """Moves the story onto `action_id`, which is what a turn played below it does first."""
+    stand_on(client.adv_id, action_id)
+
+
+def _play_after(client, after_id, text="look around"):
+    r = client.post(f"/api/adventures/{client.adv_id}/actions",
+                    json={"type": "do", "text": text, "after_id": after_id})
+    return r
 
 
 def _state(adv_id):
@@ -161,8 +168,7 @@ def test_a_fork_inserts_one_branch_row_and_copies_no_actions(client):
     rows_before = [a.id for a in _rows(client.adv_id)]
     assert len(_branches(client)) == 1
 
-    r = _fork(client, discarded)
-    assert r.status_code == 200, r.text
+    _fork(client, discarded)
 
     branches = _branches(client)
     assert len(branches) == 2, "exactly one branch row per divergence built on"
@@ -268,56 +274,57 @@ def test_forking_at_the_tip_switches_without_making_a_branch(client):
     _retry(client)
     discarded = [a.id for a in _rows(client.adv_id) if a.type == "ai" and not a.live][0]
 
-    r = _fork(client, discarded)
-    assert r.status_code == 200, r.text
+    _fork(client, discarded)
     assert len(_branches(client)) == 1, "no branch for an attempt at the tip"
     assert _texts(client)[-1] == "Attempt one."
 
 
-def test_forking_the_attempt_already_in_the_story_does_nothing(client):
-    """This call is idempotent. A client that has lost track of which take
-    is live must not create a new branch on every click."""
+def test_playing_after_the_attempt_already_in_the_story_does_not_fork(client):
+    """A client that has lost track of which take is live must not create a
+    new branch on every turn it plays."""
     discarded = _divergent_story(client)
     _fork(client, discarded)
     promoted = [a.id for a in _rows(client.adv_id) if a.type == "ai" and a.live
                 and a.branch_id != _branches(client)[0]["id"]][0]
     before = _texts(client)
 
+    ScriptedProvider.replies = ["Onward."]
     for _ in range(3):
-        r = _fork(client, promoted)
+        r = _play_after(client, promoted)
         assert r.status_code == 200, r.text
     assert len(_branches(client)) == 2
-    assert _texts(client) == before
+    assert _texts(client)[:len(before)] == before
 
 
-def test_forking_a_turn_that_is_already_the_story_is_a_no_op(client):
+def test_playing_after_a_turn_that_is_already_the_story_does_not_fork(client):
     ScriptedProvider.replies = ["Only take."]
     _play(client)
     only = [a.id for a in _rows(client.adv_id) if a.type == "ai"][0]
 
-    r = _fork(client, only)
+    r = _play_after(client, only)
     assert r.status_code == 200, r.text
     assert len(_branches(client)) == 1
 
 
-def test_forking_a_live_node_on_another_branch_is_refused(client):
+def test_playing_after_a_live_node_on_another_branch_is_refused(client):
     """A live node off the path belongs to another branch's story, not to a
-    spare attempt on this one. The refusal names the tool that actually
-    switches branches. It used to answer "only one take", which was true
-    of the attempt group but useless here: the caller does not want
-    another take, it wants the branch this node is on."""
+    spare attempt on this one. The pager still lists it, because attempt
+    groups span branches. The refusal names the tool that actually switches
+    branches."""
     discarded = _divergent_story(client)
     _fork(client, discarded)
     parent_id = [b for b in _branches(client) if b["parent_branch_id"] is None][0]["id"]
     stranded = [a.id for a in _rows(client.adv_id)
                 if a.branch_id == parent_id and a.depth == 2][0]
+    rows_before = [(a.id, a.branch_id, a.live) for a in _rows(client.adv_id)]
 
-    r = _fork(client, stranded)
+    r = _play_after(client, stranded)
     assert r.status_code == 400
     assert "another branch" in r.json()["detail"]
-    # Refusing must leave the tree alone. The bug this guards against is a
-    # fork that promotes a sibling on the branch it was called against.
+    # Refusing must leave the tree alone. Without the check, the turn moved
+    # the live row off the parent, and the parent's story lost that turn.
     assert len(_branches(client)) == 2
+    assert [(a.id, a.branch_id, a.live) for a in _rows(client.adv_id)] == rows_before
 
 
 # -------------------------------------------------------------- the state
@@ -519,7 +526,7 @@ def test_a_deep_fork_chain_reads_for_what_one_branch_costs(client):
             if a.type == "ai" and not a.live
         ]
         if discarded:
-            assert _fork(client, discarded[-1]).status_code == 200
+            _fork(client, discarded[-1])
             _play(client, "onward")
     branches = _branches(client)
     assert len(branches) > 4, "the fixture did not actually fork"

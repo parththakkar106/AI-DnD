@@ -57,9 +57,18 @@ def _move_to_after(
     if after_id is None:
         return
     node = get_row_or_404(db, models.Action, after_id, adventure, "Action")
-    if node.live and lineage.path_of(db, adventure).contains(node):
-        return
-    if not node.live and len(attempts.group(db, node)) < 2:
+    if node.live:
+        if lineage.path_of(db, adventure).contains(node):
+            return
+        # Attempt groups span branches, so the pager also lists a take that is
+        # live on another branch. Standing on it would move that branch's live
+        # row away, and that branch's story would lose the turn.
+        raise HTTPException(
+            400,
+            "That take is already the story on another branch. Switch to that "
+            "branch to read it.",
+        )
+    if len(attempts.group(db, node)) < 2:
         # The pager cannot reach this node, so no legitimate action put the
         # player here.
         raise HTTPException(400, "That take is not one of this turn's.")
@@ -115,9 +124,7 @@ def stand_on(
     moved past the turn, the line being left keeps every turn it has, so the
     attempt needs a branch of its own.
 
-    The fork endpoint calls this function, and so does a turn played below an
-    attempt the story moved past. Both are the same operation, once as a request
-    and once as a step on the way to writing (SP9).
+    A turn played below an attempt calls this function before it writes (SP9).
     """
     newest = last_action(adventure, db)
     at_the_tip = (

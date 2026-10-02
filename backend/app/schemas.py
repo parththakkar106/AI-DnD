@@ -242,10 +242,6 @@ class VariantOut(BaseModel):
     active: bool = False
 
 
-class VariantSelect(BaseModel):
-    index: int = Field(ge=0)
-
-
 class BranchOut(ORMModel):
     """One line through the story tree (Phase 14, SP5).
 

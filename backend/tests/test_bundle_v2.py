@@ -209,8 +209,10 @@ def _forked_story(client) -> int:
     _retry(client, adv_id)
     _play(client, adv_id, "go deeper")
     discarded = [a.id for a in _rows(adv_id) if a.type == "ai" and not a.live][0]
-    assert client.post(f"/api/adventures/{adv_id}/actions/{discarded}/fork").status_code == 200
-    _play(client, adv_id, "go sideways")
+    # Playing below the discarded attempt is what forks it.
+    r = client.post(f"/api/adventures/{adv_id}/actions",
+                    json={"type": "do", "text": "go sideways", "after_id": discarded})
+    assert r.status_code == 200, r.text
     return adv_id
 
 

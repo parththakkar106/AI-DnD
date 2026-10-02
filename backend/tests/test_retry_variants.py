@@ -175,10 +175,25 @@ def test_three_attempts_all_kept_in_order(client):
 
 # ---------------------------------------------------------------- switching
 
-def test_switching_back_restores_that_attempt_state(client):
+def _take_id(client, action_id, index):
+    """Returns the id of attempt `index` of the turn that `action_id` belongs to."""
+    takes = client.get(
+        f"/api/adventures/{client.adv_id}/actions/{action_id}/variants").json()
+    return takes[index]["id"]
+
+
+def _play_after(client, after_id, text="look around"):
+    """Plays a turn below `after_id`, which is how the pager picks a take."""
+    r = client.post(f"/api/adventures/{client.adv_id}/actions",
+                    json={"type": "do", "text": text, "after_id": after_id})
+    assert r.status_code == 200, r.text
+
+
+def test_playing_after_an_earlier_attempt_restores_its_state(client):
     ScriptedProvider.replies = [
         "You take a scratch.\n```state\n{\"player.hp\": -5}\n```",
         "You take a beating.\n```state\n{\"player.hp\": -40}\n```",
+        "Onward.",
     ]
     _play(client)
     assert _adv(client.adv_id)[1]["player"]["hp"] == 95
@@ -188,62 +203,44 @@ def test_switching_back_restores_that_attempt_state(client):
     assert script_state == {"gold": 10}  # rolled back, not stacked to 20
 
     last = _actions(client)[-1]
-    r = client.post(
-        f"/api/adventures/{client.adv_id}/actions/{last['id']}/variant", json={"index": 0})
-    assert r.status_code == 200, r.text
-    assert r.json()["text"].startswith("You take a scratch")
-    assert r.json()["take_index"] == 0
-    # The stats follow the narration back.
+    _play_after(client, _take_id(client, last["id"], 0))
+    assert _actions(client)[-3]["text"].startswith("You take a scratch")
+    # The stats follow the narration back. The new turn adds its own gold.
     script_state, world_state = _adv(client.adv_id)
     assert world_state["player"]["hp"] == 95
-    assert script_state == {"gold": 10}
+    assert script_state == {"gold": 20}
 
-    # And forward again.
-    client.post(f"/api/adventures/{client.adv_id}/actions/{last['id']}/variant",
-                json={"index": 1})
+    # And forward again. The story moved past the turn, so this forks.
+    ScriptedProvider.replies = ["Onward again."]
+    _play_after(client, _take_id(client, last["id"], 1))
     assert _adv(client.adv_id)[1]["player"]["hp"] == 60
 
 
-def test_switching_updates_the_world_change_chips(client):
+def test_playing_after_an_attempt_updates_the_world_change_chips(client):
     ScriptedProvider.replies = [
         "A scratch.\n```state\n{\"player.hp\": -5}\n```",
         "A beating.\n```state\n{\"player.hp\": -40}\n```",
+        "Onward.",
     ]
     _play(client)
     _retry(client)
     last = _actions(client)[-1]
     assert last["world_changes"][0]["delta"] == -40
 
-    client.post(f"/api/adventures/{client.adv_id}/actions/{last['id']}/variant",
-                json={"index": 0})
-    assert _actions(client)[-1]["world_changes"][0]["delta"] == -5
+    _play_after(client, _take_id(client, last["id"], 0))
+    assert _actions(client)[-3]["world_changes"][0]["delta"] == -5
 
 
-def test_cannot_switch_a_turn_the_story_moved_past(client):
+def test_a_turn_the_story_moved_past_keeps_its_attempts_readable(client):
     ScriptedProvider.replies = ["One.", "Two.", "Three."]
     _play(client)
     _retry(client)
     retried = _actions(client)[-1]
     _play(client)  # story continues from "Two."
 
-    r = client.post(
-        f"/api/adventures/{client.adv_id}/actions/{retried['id']}/variant", json={"index": 0})
-    assert r.status_code == 400
-    assert "latest message" in r.json()["detail"]
-    # The variant is still readable. Keeping every attempt browsable is why it still exists.
     variants = client.get(
         f"/api/adventures/{client.adv_id}/actions/{retried['id']}/variants").json()
     assert [v["text"] for v in variants] == ["One.", "Two."]
-
-
-def test_switching_to_a_missing_index_is_rejected(client):
-    ScriptedProvider.replies = ["One.", "Two."]
-    _play(client)
-    _retry(client)
-    last = _actions(client)[-1]
-    r = client.post(
-        f"/api/adventures/{client.adv_id}/actions/{last['id']}/variant", json={"index": 7})
-    assert r.status_code == 400
 
 
 # ---------------------------------------------------------------- edge cases
@@ -281,11 +278,10 @@ def test_editing_the_text_updates_the_live_variant(client):
     client.patch(f"/api/adventures/{client.adv_id}/actions/{last['id']}",
                  json={"text": "Two, but better."})
 
-    # Page away and back: the edit must survive, not be reverted by the switch.
-    client.post(f"/api/adventures/{client.adv_id}/actions/{last['id']}/variant",
-                json={"index": 0})
-    client.post(f"/api/adventures/{client.adv_id}/actions/{last['id']}/variant",
-                json={"index": 1})
+    # The pager reads the attempts from this list, so the edit must show here.
+    variants = client.get(
+        f"/api/adventures/{client.adv_id}/actions/{last['id']}/variants").json()
+    assert [v["text"] for v in variants] == ["One.", "Two, but better."]
     assert _actions(client)[-1]["text"] == "Two, but better."
 
 

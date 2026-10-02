@@ -39,3 +39,30 @@ class ScriptedProvider:
         if isinstance(reply, Exception):
             raise reply
         yield ("text", reply)
+
+
+def stand_on(adv_id: int, action_id: int) -> None:
+    """Moves the story onto the attempt `action_id` without playing a turn.
+
+    A turn played with `after_id` makes this move first. Tests call it directly
+    to check the story and the state between the move and the next turn.
+    """
+    from app import models
+    from app.database import SessionLocal
+    from app.routers.adventures import nodes
+
+    db = SessionLocal()
+    try:
+        adventure = db.get(models.Adventure, adv_id)
+        nodes.stand_on(db, adventure, db.get(models.Action, action_id))
+        adventure.updated_at = models.utcnow()
+        db.commit()
+    finally:
+        db.close()
+
+
+def take_id(client, action_id: int, index: int) -> int:
+    """Returns the id of attempt `index` of the turn that `action_id` belongs to."""
+    r = client.get(f"/api/adventures/{client.adv_id}/actions/{action_id}/variants")
+    assert r.status_code == 200, r.text
+    return r.json()[index]["id"]

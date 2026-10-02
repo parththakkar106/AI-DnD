@@ -26,7 +26,7 @@ from app.database import Base, SessionLocal, engine, get_db
 from app.main import app
 from app.routers import adventures
 
-from fakes import ScriptedProvider
+from fakes import ScriptedProvider, stand_on, take_id
 
 # A world-state schema, so the RPG layer is exercised rather than skipped.
 SCHEMA = {"player": {"hp": {"min": 0, "max": 100, "initial": 100}}}
@@ -240,35 +240,17 @@ def test_retry_does_not_stack_script_effects(client):
     assert script_state["gold"] == 10
 
 
-def test_switching_back_to_an_earlier_attempt_restores_it(client):
+def test_standing_on_an_earlier_attempt_restores_it(client):
     ScriptedProvider.replies = ["Attempt one.", "Attempt two."]
     _play(client)
     client.post(f"/api/adventures/{client.adv_id}/retry")
     action_id = _actions(client)[-1]["id"]
 
-    r = client.post(
-        f"/api/adventures/{client.adv_id}/actions/{action_id}/variant",
-        json={"index": 0})
-    assert r.status_code == 200, r.text
+    stand_on(client.adv_id, take_id(client, action_id, 0))
     assert _texts(client)[-1] == "Attempt one."
     # The script state that attempt produced comes back with it.
     script_state, _ = _state(client.adv_id)
     assert script_state["gold"] == 10
-
-
-def test_only_the_newest_turn_can_be_switched(client):
-    """An older turn's alternatives stay readable but not selectable. The
-    story after it continues from what is live."""
-    ScriptedProvider.replies = ["One.", "Again.", "Two."]
-    _play(client)
-    client.post(f"/api/adventures/{client.adv_id}/retry")
-    older_id = _actions(client)[-1]["id"]
-    _play(client)  # the story moves on
-
-    r = client.post(
-        f"/api/adventures/{client.adv_id}/actions/{older_id}/variant",
-        json={"index": 0})
-    assert r.status_code == 400
 
 
 # ------------------------------------------------------------------- undo
