@@ -60,9 +60,11 @@ def _move_to_after(
     if node.live:
         if lineage.path_of(db, adventure).contains(node):
             return
-        # Attempt groups span branches, so the pager also lists a take that is
-        # live on another branch. Standing on it would move that branch's live
-        # row away, and that branch's story would lose the turn.
+        # The take is the story on another branch. The pager switches branches
+        # instead of offering such a take, but a second tab can still send one
+        # it previewed before another tab forked it. Standing on it would move
+        # that branch's live row away, and that branch's story would lose the
+        # turn.
         raise HTTPException(
             400,
             "That take is already the story on another branch. Switch to that "

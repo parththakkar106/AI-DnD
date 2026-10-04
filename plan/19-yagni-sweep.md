@@ -104,9 +104,12 @@ The fork logic itself, `nodes.stand_on`, stays, because a turn played with
 `after_id` calls it.
 
 The fork endpoint refused a take that is live on another branch. The `after_id`
-path did not, and the pager offers such a take because attempt groups span
-branches. A probe showed the result. After a fork, playing below the parent's
-live attempt returned 200, and the parent's story lost that turn.
+path did not. In one tab the pager prevents this, because it switches branches
+instead of previewing such a take. Two tabs reach it. Tab X previews a spare
+take, tab Y forks from that take and switches back, and then tab X writes below
+the take. Before the fix, the server returned 200, and the forked branch lost
+that turn. A browser run on commit `4c92daa` reproduced it with a fake AI and a
+scratch database.
 `_move_to_after` now returns the same 400 the endpoint did. The ported test
 failed before the fix and passes after it.
 

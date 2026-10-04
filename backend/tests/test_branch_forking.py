@@ -270,9 +270,9 @@ def test_playing_after_a_turn_that_is_already_the_story_does_not_fork(client):
 
 def test_playing_after_a_live_node_on_another_branch_is_refused(client):
     """A live node off the path belongs to another branch's story, not to a
-    spare attempt on this one. The pager still lists it, because attempt
-    groups span branches. The refusal names the tool that actually switches
-    branches."""
+    spare attempt on this one. A second tab that previewed the take before
+    another tab forked it still sends it as `after_id`. The refusal names the
+    tool that actually switches branches."""
     discarded = _divergent_story(client)
     _fork(client, discarded)
     parent_id = [b for b in list_branches(client) if b["parent_branch_id"] is None][0]["id"]
