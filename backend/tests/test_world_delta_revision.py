@@ -20,7 +20,7 @@ from app.database import Base, SessionLocal, engine, get_db
 from app.main import app
 from app.routers import adventures
 
-from fakes import ScriptedProvider
+from fakes import ScriptedProvider, play_turn
 
 SCHEMA = {
     "player": {"hp": {"min": 0, "max": 100, "initial": 100, "max_delta_per_turn": 30}},
@@ -88,12 +88,6 @@ def client(monkeypatch):
         Base.metadata.drop_all(bind=engine)
 
 
-def _play(client, text="attack"):
-    r = client.post(f"/api/adventures/{client.adv_id}/actions",
-                    json={"type": "do", "text": text})
-    assert r.status_code == 200, r.text
-
-
 def _ai_actions(adv_id):
     db = SessionLocal()
     try:
@@ -118,7 +112,7 @@ def _revise(client, action_id, delta):
 
 
 def test_reads_back_the_delta_the_turn_proposed(client):
-    _play(client)
+    play_turn(client, "attack")
     action_id = _ai_actions(client.adv_id)[-1]
     r = client.get(f"/api/adventures/{client.adv_id}/actions/{action_id}/world-delta")
     assert r.status_code == 200, r.text
@@ -130,7 +124,7 @@ def test_reads_back_the_delta_the_turn_proposed(client):
 
 def test_revision_replays_the_turn_from_where_it_started(client):
     """The delta is replaced, not stacked on what the AI's already did."""
-    _play(client)
+    play_turn(client, "attack")
     action_id = _ai_actions(client.adv_id)[-1]
     assert _world(client.adv_id)["player"]["hp"] == 80
 
@@ -146,7 +140,7 @@ def test_revision_replays_the_turn_from_where_it_started(client):
 def test_the_node_carries_the_revised_outcome(client):
     """Undo and take-switching restore a node's outcome, so it has to be the
     revised one. Leaving the AI's there would put its numbers back."""
-    _play(client)
+    play_turn(client, "attack")
     action_id = _ai_actions(client.adv_id)[-1]
     _revise(client, action_id, {"player.hp": -5})
 
@@ -166,7 +160,7 @@ def test_the_node_carries_the_revised_outcome(client):
 def test_a_revision_is_held_to_the_same_limits(client):
     """`max_delta_per_turn` is 30. A revision is a turn's delta, not an
     override, so a bigger change is clamped and reported the same way."""
-    _play(client)
+    play_turn(client, "attack")
     action_id = _ai_actions(client.adv_id)[-1]
     r = _revise(client, action_id, {"player.hp": -90})
     assert r.status_code == 200, r.text
@@ -175,7 +169,7 @@ def test_a_revision_is_held_to_the_same_limits(client):
 
 
 def test_an_unknown_path_is_refused_and_the_rest_applies(client):
-    _play(client)
+    play_turn(client, "attack")
     action_id = _ai_actions(client.adv_id)[-1]
     r = _revise(client, action_id, {"player.hp": -5, "npc.bogus.trust": 3})
     assert r.status_code == 200, r.text
@@ -185,7 +179,7 @@ def test_an_unknown_path_is_refused_and_the_rest_applies(client):
 
 
 def test_a_change_can_be_added_to_a_turn(client):
-    _play(client)
+    play_turn(client, "attack")
     action_id = _ai_actions(client.adv_id)[-1]
     r = _revise(client, action_id,
                 {"player.hp": -20, "flags.alarm": True, "milestones.win": True})
@@ -197,8 +191,8 @@ def test_a_change_can_be_added_to_a_turn(client):
 
 def test_only_the_newest_turn_can_be_revised(client):
     """An older turn is the starting position of every turn under it."""
-    _play(client)
-    _play(client, "again")
+    play_turn(client, "attack")
+    play_turn(client, "again")
     first, second = _ai_actions(client.adv_id)
     assert _world(client.adv_id)["player"]["hp"] == 60
 
@@ -216,7 +210,7 @@ def test_only_the_newest_turn_can_be_revised(client):
 
 
 def test_a_players_turn_has_no_delta_to_revise(client):
-    _play(client)
+    play_turn(client, "attack")
     db = SessionLocal()
     try:
         adv = db.get(models.Adventure, client.adv_id)
@@ -227,7 +221,7 @@ def test_a_players_turn_has_no_delta_to_revise(client):
 
 
 def test_an_empty_revision_takes_the_whole_turn_back(client):
-    _play(client)
+    play_turn(client, "attack")
     action_id = _ai_actions(client.adv_id)[-1]
     r = _revise(client, action_id, {})
     assert r.status_code == 200, r.text

@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { api } from './api'
 
 export function downloadJSON(obj, filename) {
@@ -110,6 +111,46 @@ export function ScenarioArt({ image, icon, title, large = false }) {
     <span className={`${className} art-mono`} style={style} aria-hidden="true">
       {monogram(title)}
     </span>
+  )
+}
+
+/** A scenario's comma-separated tags. Public scenarios already carry a "demo ✦"
+ * badge, so `isPublic` drops the tag that would repeat it. */
+export function splitTags(tags, { isPublic = false } = {}) {
+  const all = (tags || '').split(',').map((t) => t.trim()).filter(Boolean)
+  return isPublic ? all.filter((t) => t.toLowerCase() !== 'demo') : all
+}
+
+/** One scenario on a card grid. Clicking the card opens the scenario, and
+ * `onPlay(event, id)` handles the Play button. */
+export function ScenarioCard({ scenario: sc, delay, maxTags, onOpen, onPlay }) {
+  return (
+    <article
+      className="card tome enter"
+      style={{ animationDelay: `${delay}ms` }}
+      onClick={onOpen}
+    >
+      <div className="card-head">
+        <ScenarioArt image={sc.image_url} icon={sc.icon} title={sc.title} />
+        <div className="card-headings">
+          <h3>{sc.title}</h3>
+        </div>
+      </div>
+      <p className="snippet">{sc.description || 'No description yet.'}</p>
+      <footer className="card-foot">
+        <div className="tag-cluster">
+          {sc.is_public && (
+            <span className="tag small" title="Shared demo scenario (read-only)">demo ✦</span>
+          )}
+          {splitTags(sc.tags, { isPublic: sc.is_public }).slice(0, maxTags).map((tag) => (
+            <span key={tag} className="tag small">{tag}</span>
+          ))}
+        </div>
+        <button className="primary compact" onClick={(e) => onPlay(e, sc.id)}>
+          Play
+        </button>
+      </footer>
+    </article>
   )
 }
 
@@ -287,6 +328,66 @@ export function BeginAdventureModal({ title, names = [], onSubmit, onCancel }) {
 
 // Phase 8: register/login for the hosted multi-user mode. `onAuthed(me)` gets
 // the fresh /auth/me payload after success.
+// Starts an adventure from a scenario, or a blank one, through
+// `BeginAdventureModal`. Render the returned `modal` once on the page.
+export function useBeginAdventure() {
+  // `{ scenario, names }` while the modal is open. `scenario` is null for a
+  // blank adventure, which has no placeholders but still names a character.
+  const [pending, setPending] = useState(null)
+  const navigate = useNavigate()
+  const toast = useToast()
+
+  const begin = async (scenario, { persona = {}, placeholders = {} } = {}) => {
+    try {
+      const adv = await api.createAdventure({
+        scenario_id: scenario ? scenario.id : null,
+        // A blank adventure has no scenario to take a title from.
+        title: scenario ? null : 'Blank Adventure',
+        placeholders,
+        persona_name: persona.name || '',
+        persona_pronouns: persona.pronouns || '',
+        persona_desc: persona.desc || '',
+      })
+      navigate(`/play/${adv.id}`)
+    } catch (err) {
+      toast(err.message, 'error')
+    }
+  }
+
+  const start = async (e, scenarioId) => {
+    e.stopPropagation()
+    try {
+      const scenario = await api.getScenario(scenarioId)
+      const names = extractPlaceholders(
+        scenario.prompt, scenario.memory, scenario.authors_note, scenario.ai_instructions,
+        // Cards can carry ${placeholders} in trigger keys too, not just entries.
+        ...scenario.story_cards.flatMap((c) => [c.keys, c.entry]),
+      )
+      // Open the modal even with no placeholders, because it is where the
+      // player names their character.
+      setPending({ scenario, names })
+    } catch (err) {
+      toast(err.message, 'error')
+    }
+  }
+
+  const startBlank = () => setPending({ scenario: null, names: [] })
+
+  const modal = pending && (
+    <BeginAdventureModal
+      title={pending.scenario ? pending.scenario.title : 'Blank Adventure'}
+      names={pending.names}
+      onCancel={() => setPending(null)}
+      onSubmit={(answers) => {
+        setPending(null)
+        begin(pending.scenario, answers)
+      }}
+    />
+  )
+
+  return { start, startBlank, modal }
+}
+
 export function AuthModal({ mode: initialMode, onClose, onAuthed, retentionDays }) {
   const [mode, setMode] = useState(initialMode || 'register')
   const [email, setEmail] = useState('')
@@ -446,5 +547,16 @@ export function StoryCardRow({ card, onChange, onDelete }) {
         </button>
       </div>
     </div>
+  )
+}
+
+/** The model's reasoning for a reply, collapsed unless it is still streaming. */
+export function ReasoningBlock({ text, streaming }) {
+  if (!text) return null
+  return (
+    <details className="reasoning" open={streaming || undefined}>
+      <summary>💭 Reasoning{streaming ? '…' : ''}</summary>
+      <div className="reasoning-text">{text}</div>
+    </details>
   )
 }

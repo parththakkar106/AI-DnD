@@ -31,7 +31,7 @@ from app.database import Base, SessionLocal, engine, get_db
 from app.main import app
 from app.routers import adventures
 
-from fakes import ScriptedProvider
+from fakes import ScriptedProvider, play_turn, retry_turn
 
 
 @pytest.fixture()
@@ -82,20 +82,6 @@ def client(monkeypatch):
 
 # ------------------------------------------------------------------ helpers
 
-def _play(client, text="look around", after_id=None):
-    body = {"type": "do", "text": text}
-    if after_id is not None:
-        body["after_id"] = after_id
-    r = client.post(f"/api/adventures/{client.adv_id}/actions", json=body)
-    assert r.status_code == 200, r.text
-    return r
-
-
-def _retry(client):
-    r = client.post(f"/api/adventures/{client.adv_id}/retry")
-    assert r.status_code == 200, r.text
-
-
 def _branch_count(adv_id) -> int:
     db = SessionLocal()
     try:
@@ -137,9 +123,9 @@ def _group_size(action_id: int) -> int:
 
 def test_retaken_turn_groups_all_its_takes(client):
     """The baseline the rest of the file relies on: three takes, one turn."""
-    _play(client)
-    _retry(client)
-    _retry(client)
+    play_turn(client)
+    retry_turn(client)
+    retry_turn(client)
 
     takes = _ai_rows(client.adv_id)
     assert len(takes) == 3
@@ -153,17 +139,17 @@ def test_a_forked_take_keeps_its_siblings(client):
     Under coordinate grouping the forked take reads 1/1: it has left the
     (branch, depth) the others are still at. The parent does not move with it.
     """
-    _play(client)
-    _retry(client)
-    _retry(client)
+    play_turn(client)
+    retry_turn(client)
+    retry_turn(client)
     # The story moves past the turn, so taking a different take is now a fork.
-    _play(client, "press on")
+    play_turn(client, "press on")
 
     first_take = _ai_rows(client.adv_id)[0]
     assert first_take.live is False
 
     # Writing below it is what forks. See the next test.
-    _play(client, "go back and try this instead", after_id=first_take.id)
+    play_turn(client, "go back and try this instead", after_id=first_take.id)
 
     assert _group_size(first_take.id) == 3, (
         "a take forked onto its own branch is still a take of the same turn"
@@ -172,9 +158,9 @@ def test_a_forked_take_keeps_its_siblings(client):
 
 def test_stepping_between_takes_creates_no_branch(client):
     """Looking is free. Only writing commits to a line."""
-    _play(client)
-    _retry(client)
-    _play(client, "press on")
+    play_turn(client)
+    retry_turn(client)
+    play_turn(client, "press on")
     before = _branch_count(client.adv_id)
 
     first_take = _ai_rows(client.adv_id)[0]
@@ -189,13 +175,13 @@ def test_stepping_between_takes_creates_no_branch(client):
 
 
 def test_writing_below_a_passed_take_forks_exactly_once(client):
-    _play(client)
-    _retry(client)
-    _play(client, "press on")
+    play_turn(client)
+    retry_turn(client)
+    play_turn(client, "press on")
     before = _branch_count(client.adv_id)
 
     first_take = _ai_rows(client.adv_id)[0]
-    _play(client, "a different way", after_id=first_take.id)
+    play_turn(client, "a different way", after_id=first_take.id)
 
     assert _branch_count(client.adv_id) == before + 1, "one write, one branch"
 
@@ -207,21 +193,21 @@ def test_takes_under_one_parent_do_not_count_takes_under_its_sibling(client):
     is a different turn, and the two turns must not merge. They share a
     depth, and until the fork they share a branch too.
     """
-    _play(client)
-    _retry(client)               # two takes at this turn: C1, C2 (C2 live)
+    play_turn(client)
+    retry_turn(client)               # two takes at this turn: C1, C2 (C2 live)
     c1, c2 = _ai_rows(client.adv_id)[:2]
 
     # Below C2, the live one: a turn with three takes.
-    _play(client, "down the second path")
-    _retry(client)
-    _retry(client)
+    play_turn(client, "down the second path")
+    retry_turn(client)
+    retry_turn(client)
     under_c2 = [a for a in _ai_rows(client.adv_id) if a.parent_id is not None]
     under_c2 = [a for a in under_c2 if a.id not in (c1.id, c2.id)]
     assert len(under_c2) == 3
 
     # Now take C1 instead, and play a turn with two takes below it.
-    _play(client, "down the first path", after_id=c1.id)
-    _retry(client)
+    play_turn(client, "down the first path", after_id=c1.id)
+    retry_turn(client)
 
     everything = _ai_rows(client.adv_id)
     under_c1 = [a for a in everything if a.parent_id not in (None,)
@@ -238,9 +224,9 @@ def _page(client) -> list[dict]:
 
 def test_the_page_carries_the_pager_numbers(client):
     """`2/4` arrives with the page, not from a query per message."""
-    _play(client)
-    _retry(client)
-    _retry(client)
+    play_turn(client)
+    retry_turn(client)
+    retry_turn(client)
 
     ai = [a for a in _page(client) if a["type"] == "ai"]
     assert len(ai) == 1, "one take is on the path; the others are behind it"
@@ -267,7 +253,7 @@ def test_the_streamed_action_carries_the_pager_too(client):
     The pager appeared only once the page was reloaded, which is exactly
     the moment nobody reloads.
     """
-    _play(client)
+    play_turn(client)
     r = client.post(f"/api/adventures/{client.adv_id}/retry")
     assert r.status_code == 200, r.text
 
@@ -277,7 +263,7 @@ def test_the_streamed_action_carries_the_pager_too(client):
 
 
 def test_a_turn_nobody_retook_reads_one_of_one(client):
-    _play(client)
+    play_turn(client)
     for action in _page(client):
         assert action["take_count"] == 1
         assert action["take_index"] == 0
@@ -285,13 +271,13 @@ def test_a_turn_nobody_retook_reads_one_of_one(client):
 
 def test_the_pager_still_counts_a_take_that_was_forked_away(client):
     """The 1/3 case, seen from the wire rather than from `attempts.group`."""
-    _play(client)
-    _retry(client)
-    _retry(client)
-    _play(client, "press on")
+    play_turn(client)
+    retry_turn(client)
+    retry_turn(client)
+    play_turn(client, "press on")
 
     first_take = _ai_rows(client.adv_id)[0]
-    _play(client, "a different way", after_id=first_take.id)
+    play_turn(client, "a different way", after_id=first_take.id)
 
     ai = [a for a in _page(client) if a["id"] == first_take.id]
     assert ai, "the forked take is what this branch now tells"
@@ -331,8 +317,8 @@ def _user_rows(adv_id) -> list[models.Action]:
 
 def test_a_players_own_turn_can_be_played_again(client):
     """The gap SP7 left: nothing could give a player's own message another take."""
-    _play(client, "open the door")
-    _play(client, "press on")
+    play_turn(client, "open the door")
+    play_turn(client, "press on")
     before = _branch_count(client.adv_id)
 
     first = _user_rows(client.adv_id)[0]
@@ -356,8 +342,8 @@ def test_a_retaken_player_turn_is_not_formatted_twice(client):
     it back verbatim. Running it through the formatter again doubles the
     prefix.
     """
-    _play(client, "open the door")
-    _play(client, "press on")
+    play_turn(client, "open the door")
+    play_turn(client, "press on")
 
     first = _user_rows(client.adv_id)[0]
     assert first.text.startswith("> You "), "stored formatted, which is the premise"
@@ -371,8 +357,8 @@ def test_a_retaken_player_turn_is_not_formatted_twice(client):
 
 
 def test_the_line_left_behind_keeps_its_whole_story(client):
-    _play(client, "open the door")
-    _play(client, "press on")
+    play_turn(client, "open the door")
+    play_turn(client, "press on")
     first = _user_rows(client.adv_id)[0]
     _take(client, first.id, "smash the door instead")
 
@@ -383,8 +369,8 @@ def test_the_line_left_behind_keeps_its_whole_story(client):
 
 
 def test_both_takes_of_a_players_turn_are_one_group(client):
-    _play(client, "open the door")
-    _play(client, "press on")
+    play_turn(client, "open the door")
+    play_turn(client, "press on")
     first = _user_rows(client.adv_id)[0]
     _take(client, first.id, "smash the door instead")
 
@@ -396,7 +382,7 @@ def test_both_takes_of_a_players_turn_are_one_group(client):
 
 def test_an_ai_turn_at_the_tip_takes_no_branch(client):
     """Its takes are still leaves. This is `retry`, reached the other way."""
-    _play(client)
+    play_turn(client)
     before = _branch_count(client.adv_id)
 
     ai = _ai_rows(client.adv_id)[0]
@@ -409,8 +395,8 @@ def test_an_ai_turn_at_the_tip_takes_no_branch(client):
 
 def test_an_ai_turn_the_story_moved_past_takes_a_branch(client):
     """Retry could never reach this case: it only ever saw the newest turn."""
-    _play(client)
-    _play(client, "press on")
+    play_turn(client)
+    play_turn(client, "press on")
     before = _branch_count(client.adv_id)
     first_ai = _ai_rows(client.adv_id)[0]
 
@@ -425,8 +411,8 @@ def test_an_ai_turn_the_story_moved_past_takes_a_branch(client):
 
 
 def test_the_old_line_still_has_its_continuation(client):
-    _play(client, "open the door")
-    _play(client, "press on")
+    play_turn(client, "open the door")
+    play_turn(client, "press on")
     first_ai = _ai_rows(client.adv_id)[0]
     _take(client, first_ai.id, "")
 
@@ -461,7 +447,7 @@ def test_retaking_even_the_newest_player_turn_forks(client):
     text. So this case must fork too. The guard against forking for
     nothing only fires for a player action with no reply under it.
     """
-    _play(client, "open the door")
+    play_turn(client, "open the door")
     before = _branch_count(client.adv_id)
 
     first = _user_rows(client.adv_id)[0]
@@ -473,10 +459,10 @@ def test_retaking_even_the_newest_player_turn_forks(client):
 
 def test_naming_a_take_that_is_already_the_story_just_plays_on(client):
     """`after_id` pointing at the tip is an ordinary turn, and forks nothing."""
-    _play(client)
+    play_turn(client)
     before = _branch_count(client.adv_id)
 
     live = [a for a in _ai_rows(client.adv_id) if a.live][-1]
-    _play(client, "carry on", after_id=live.id)
+    play_turn(client, "carry on", after_id=live.id)
 
     assert _branch_count(client.adv_id) == before

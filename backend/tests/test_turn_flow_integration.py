@@ -16,7 +16,7 @@ from app.database import Base, SessionLocal, engine, get_db
 from app.main import app
 from app.routers import adventures
 
-from fakes import ScriptedProvider
+from fakes import ScriptedProvider, play_turn
 
 GOLD_SCRIPT = """
 const modifier = (text) => {
@@ -81,15 +81,9 @@ def _state(adv_id):
         db.close()
 
 
-def _play(client, type_="do", text="look around"):
-    r = client.post(f"/api/adventures/{client.adv_id}/actions", json={"type": type_, "text": text})
-    assert r.status_code == 200, r.text
-    return r
-
-
 def test_play_then_undo_reverts_gold(client):
     assert _state(client.adv_id) == {}
-    _play(client)
+    play_turn(client)
     assert _state(client.adv_id) == {"gold": 10}
 
     r = client.post(f"/api/adventures/{client.adv_id}/undo")
@@ -98,8 +92,8 @@ def test_play_then_undo_reverts_gold(client):
 
 
 def test_two_turns_then_undo_reverts_only_last(client):
-    _play(client)
-    _play(client)
+    play_turn(client)
+    play_turn(client)
     assert _state(client.adv_id) == {"gold": 20}
 
     client.post(f"/api/adventures/{client.adv_id}/undo")
@@ -107,7 +101,7 @@ def test_two_turns_then_undo_reverts_only_last(client):
 
 
 def test_retry_does_not_double_apply_gold(client):
-    _play(client)
+    play_turn(client)
     assert _state(client.adv_id) == {"gold": 10}
 
     # Before the fix, this produced 20 because the output hook ran twice.
@@ -118,7 +112,7 @@ def test_retry_does_not_double_apply_gold(client):
 
 
 def test_retry_then_undo_still_clean(client):
-    _play(client)
+    play_turn(client)
     client.post(f"/api/adventures/{client.adv_id}/retry")
     assert _state(client.adv_id) == {"gold": 10}
     client.post(f"/api/adventures/{client.adv_id}/undo")

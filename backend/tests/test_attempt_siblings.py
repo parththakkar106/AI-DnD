@@ -19,7 +19,7 @@ from app.database import Base, SessionLocal, engine, get_db
 from app.main import app
 from app.routers import adventures
 
-from fakes import ScriptedProvider
+from fakes import ScriptedProvider, play_turn, retry_turn, stand_on, take_id
 
 SCHEMA = {"player": {"hp": {"min": 0, "max": 100, "initial": 100}}}
 
@@ -80,17 +80,6 @@ def client(monkeypatch):
         Base.metadata.drop_all(bind=engine)
 
 
-def _play(client, text="look around", type="do"):
-    r = client.post(f"/api/adventures/{client.adv_id}/actions",
-                    json={"type": type, "text": text})
-    assert r.status_code == 200, r.text
-
-
-def _retry(client):
-    r = client.post(f"/api/adventures/{client.adv_id}/retry")
-    assert r.status_code == 200, r.text
-
-
 def _page(client) -> dict:
     return client.get(f"/api/adventures/{client.adv_id}").json()
 
@@ -123,8 +112,8 @@ def _rows(adv_id) -> list[models.Action]:
 
 def test_a_retry_writes_a_second_row_at_the_same_coordinate(client):
     ScriptedProvider.replies = ["Attempt one.", "Attempt two."]
-    _play(client)
-    _retry(client)
+    play_turn(client)
+    retry_turn(client)
 
     rows = _rows(client.adv_id)
     ai = [a for a in rows if a.type == "ai"]
@@ -139,9 +128,9 @@ def test_a_retry_writes_a_second_row_at_the_same_coordinate(client):
 
 def test_the_story_shows_and_counts_the_turn_once(client):
     ScriptedProvider.replies = ["Attempt one.", "Attempt two."]
-    _play(client)
+    play_turn(client)
     before = _page(client)["action_count"]
-    _retry(client)
+    retry_turn(client)
     after = _page(client)
 
     assert after["action_count"] == before, "a discarded attempt is not a turn"
@@ -155,30 +144,29 @@ def test_a_discarded_attempt_never_reaches_the_prompt(client):
     the live one, so anything reading the story by coordinate alone would
     replay both."""
     ScriptedProvider.replies = ["Attempt one.", "Attempt two.", "Next turn."]
-    _play(client)
-    _retry(client)
-    _play(client, "go deeper")
+    play_turn(client)
+    retry_turn(client)
+    play_turn(client, "go deeper")
 
     story = ScriptedProvider.prompts[-1][1]
     assert "Attempt two." in story
     assert "Attempt one." not in story
 
 
-def test_switching_moves_the_story_onto_the_other_row(client):
+def test_standing_on_a_take_moves_the_story_onto_that_row(client):
     ScriptedProvider.replies = [
         "A scratch.\n```state\n{\"player.hp\": -5}\n```",
         "A beating.\n```state\n{\"player.hp\": -40}\n```",
     ]
-    _play(client)
-    _retry(client)
+    play_turn(client)
+    retry_turn(client)
     newest_id = _page(client)["actions"][-1]["id"]
 
-    r = client.post(
-        f"/api/adventures/{client.adv_id}/actions/{newest_id}/variant", json={"index": 0})
-    assert r.status_code == 200, r.text
-    # A different row answers the request. That is the only change.
-    assert r.json()["id"] != newest_id
-    assert r.json()["text"].startswith("A scratch")
+    first_id = take_id(client, newest_id, 0)
+    stand_on(client.adv_id, first_id)
+    # A different row is now the story. That is the only change.
+    assert first_id != newest_id
+    assert _page(client)["actions"][-1]["text"].startswith("A scratch")
 
     rows = _rows(client.adv_id)
     ai = [a for a in rows if a.type == "ai"]
@@ -193,8 +181,8 @@ def test_the_assembled_prompt_is_stored_once_per_turn(client):
     size of the largest column in the database. Instead, the prompt moves
     with the live flag."""
     ScriptedProvider.replies = ["Attempt one.", "Attempt two."]
-    _play(client)
-    _retry(client)
+    play_turn(client)
+    retry_turn(client)
 
     def holders():
         return [
@@ -207,8 +195,7 @@ def test_the_assembled_prompt_is_stored_once_per_turn(client):
     newest = _page(client)["actions"][-1]
     assert live_holder == [newest["id"]]
 
-    client.post(f"/api/adventures/{client.adv_id}/actions/{newest['id']}/variant",
-                json={"index": 0})
+    stand_on(client.adv_id, take_id(client, newest["id"], 0))
     moved = holders()
     assert len(moved) == 1 and moved != live_holder, "the prompt follows the story"
 
@@ -217,9 +204,9 @@ def test_the_assembled_prompt_is_stored_once_per_turn(client):
 
 def test_undo_takes_every_attempt_with_it(client):
     ScriptedProvider.replies = ["One.", "Two.", "Three."]
-    _play(client)
-    _retry(client)
-    _retry(client)
+    play_turn(client)
+    retry_turn(client)
+    retry_turn(client)
     assert len([a for a in _rows(client.adv_id) if a.type == "ai"]) == 3
 
     r = client.post(f"/api/adventures/{client.adv_id}/undo")
@@ -229,8 +216,8 @@ def test_undo_takes_every_attempt_with_it(client):
 
 def test_deleting_a_retried_turn_deletes_its_attempts(client):
     ScriptedProvider.replies = ["One.", "Two."]
-    _play(client)
-    _retry(client)
+    play_turn(client)
+    retry_turn(client)
     newest = _page(client)["actions"][-1]
 
     r = client.delete(f"/api/adventures/{client.adv_id}/actions/{newest['id']}")
@@ -243,8 +230,8 @@ def test_deleting_a_turn_through_a_discarded_attempt_still_takes_the_turn(client
     row that is. Deleting through the losing sibling must not leave the story
     holding a turn with no attempts."""
     ScriptedProvider.replies = ["One.", "Two."]
-    _play(client)
-    _retry(client)
+    play_turn(client)
+    retry_turn(client)
     discarded = [a for a in _rows(client.adv_id) if a.type == "ai" and not a.live][0]
 
     r = client.delete(f"/api/adventures/{client.adv_id}/actions/{discarded.id}")
@@ -265,7 +252,7 @@ def test_retrying_withdraws_the_memory_the_turn_produced(client):
     was the only gap a retry still needed to close.
     """
     ScriptedProvider.replies = ["One.", "Two."]
-    _play(client)
+    play_turn(client)
 
     db = SessionLocal()
     try:
@@ -284,7 +271,7 @@ def test_retrying_withdraws_the_memory_the_turn_produced(client):
     finally:
         db.close()
 
-    _retry(client)
+    retry_turn(client)
 
     db = SessionLocal()
     try:
@@ -302,8 +289,8 @@ def test_retrying_withdraws_the_memory_the_turn_produced(client):
 def test_a_memory_on_an_earlier_turn_survives_a_retry(client):
     """Only the coordinate whose text changed is withdrawn."""
     ScriptedProvider.replies = ["One.", "Two.", "Three."]
-    _play(client)
-    _play(client, "go deeper")
+    play_turn(client)
+    play_turn(client, "go deeper")
 
     db = SessionLocal()
     try:
@@ -319,7 +306,7 @@ def test_a_memory_on_an_earlier_turn_survives_a_retry(client):
     finally:
         db.close()
 
-    _retry(client)
+    retry_turn(client)
 
     db = SessionLocal()
     try:
@@ -338,10 +325,10 @@ def test_the_group_grows_in_the_order_the_attempts_arrive(client):
     attempt is made.
     """
     ScriptedProvider.replies = ["One.", "Two.", "Three."]
-    _play(client)
+    play_turn(client)
     assert _page(client)["actions"][-1]["take_count"] == 1  # never retried
-    _retry(client)
-    _retry(client)
+    retry_turn(client)
+    retry_turn(client)
 
     ai = [a for a in _rows(client.adv_id) if a.type == "ai"]
     assert [a.text for a in ai] == ["One.", "Two.", "Three."]
@@ -350,8 +337,8 @@ def test_the_group_grows_in_the_order_the_attempts_arrive(client):
 
 def test_attempts_module_agrees_with_the_endpoint(client):
     ScriptedProvider.replies = ["One.", "Two."]
-    _play(client)
-    _retry(client)
+    play_turn(client)
+    retry_turn(client)
     newest = _page(client)["actions"][-1]
 
     listed = client.get(
@@ -377,8 +364,8 @@ def test_export_carries_every_attempt_as_its_own_node(client):
     the story.
     """
     ScriptedProvider.replies = ["One.", "Two."]
-    _play(client)
-    _retry(client)
+    play_turn(client)
+    retry_turn(client)
 
     bundle = client.get(f"/api/adventures/{client.adv_id}/export").json()
     ai = [a for a in bundle["actions"] if a["type"] == "ai"]
@@ -404,19 +391,16 @@ def test_a_retry_after_switching_back_files_the_new_attempt_last(client):
     group orders by `id` now, so a new attempt is always last.
     """
     ScriptedProvider.replies = ["One.", "Two.", "Three.", "Four."]
-    _play(client)
-    _retry(client)
-    _retry(client)
+    play_turn(client)
+    retry_turn(client)
+    retry_turn(client)
     assert [a.text for a in _rows(client.adv_id) if a.type == "ai"] == [
         "One.", "Two.", "Three."]
 
     live = _page(client)["actions"][-1]
-    r = client.post(
-        f"/api/adventures/{client.adv_id}/actions/{live['id']}/variant",
-        json={"index": 0})
-    assert r.status_code == 200, r.text
+    stand_on(client.adv_id, take_id(client, live["id"], 0))
 
-    _retry(client)
+    retry_turn(client)
     ai = [a for a in _rows(client.adv_id) if a.type == "ai"]
     assert [a.text for a in ai] == ["One.", "Two.", "Three.", "Four."]
     assert attempts.live_in(ai).text == "Four."
@@ -431,12 +415,11 @@ def test_the_adventure_list_quotes_the_take_the_story_tells(client):
     discarded.
     """
     ScriptedProvider.replies = ["One.", "Two."]
-    _play(client)
-    _retry(client)
+    play_turn(client)
+    retry_turn(client)
     live = _page(client)["actions"][-1]
     assert live["text"] == "Two."
-    client.post(f"/api/adventures/{client.adv_id}/actions/{live['id']}/variant",
-                json={"index": 0})
+    stand_on(client.adv_id, take_id(client, live["id"], 0))
 
     listed = client.get("/api/adventures").json()
     row = [a for a in listed if a["id"] == client.adv_id][0]

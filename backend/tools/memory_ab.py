@@ -47,7 +47,6 @@ import re
 import subprocess
 import sys
 import tempfile
-import textwrap
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent.parent

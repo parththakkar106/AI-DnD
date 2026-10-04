@@ -20,7 +20,7 @@ try {
   names = new Intl.DisplayNames(undefined, { type: 'region' })
 } catch { /* no Intl.DisplayNames — codes it is */ }
 
-export function flagOf(code) {
+function flagOf(code) {
   if (!CODE.test(code)) return ''
   return String.fromCodePoint(
     ...[...code.toUpperCase()].map((letter) => letter.charCodeAt(0) + INDICATOR),
@@ -30,7 +30,7 @@ export function flagOf(code) {
 /* The name for a code, or the value itself when it isn't one. The analytics
    list also holds "(unknown)" and "(other)", which are already words and pass
    straight through. */
-export function countryName(code) {
+function countryName(code) {
   if (!CODE.test(code)) return code || ''
   const upper = code.toUpperCase()
   try {

@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from ... import models, schemas
 from ...database import get_db
 
-from .deps import CurrentUser, current_adventure, router
+from .deps import CurrentUser, current_adventure, get_row_or_404, router
 
 
 # Fields that are copied from a library Script into its adventure-script
@@ -81,9 +81,7 @@ def sync_adventure_script(
 
     `enabled`, `position`, and the adventure's shared `script_state` are kept.
     """
-    script = db.get(models.AdventureScript, adv_script_id)
-    if script is None or script.adventure_id != adventure_id:
-        raise HTTPException(404, "Script not found")
+    script = get_row_or_404(db, models.AdventureScript, adv_script_id, adventure, "Script")
     library = resolve_library_script(script, db, user)
     if library is None:
         raise HTTPException(404, "No library script to sync from")
@@ -107,9 +105,7 @@ def update_adventure_script(
     db: Session = Depends(get_db),
     adventure: models.Adventure = Depends(current_adventure),
 ):
-    script = db.get(models.AdventureScript, adv_script_id)
-    if script is None or script.adventure_id != adventure_id:
-        raise HTTPException(404, "Script not found")
+    script = get_row_or_404(db, models.AdventureScript, adv_script_id, adventure, "Script")
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(script, field, value)
     db.commit()

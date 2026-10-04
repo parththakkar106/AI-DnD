@@ -30,7 +30,7 @@ from app.database import Base, SessionLocal, engine, get_db
 from app.main import app
 from app.routers import adventures
 
-from fakes import ScriptedProvider
+from fakes import ScriptedProvider, list_branches, play_turn, retry_turn, stand_on, story_texts
 
 
 @pytest.fixture()
@@ -76,23 +76,6 @@ def client(monkeypatch):
 
 # ------------------------------------------------------------------ helpers
 
-def _play(client, text="look around"):
-    r = client.post(f"/api/adventures/{client.adv_id}/actions",
-                    json={"type": "do", "text": text})
-    assert r.status_code == 200, r.text
-
-
-def _retry(client):
-    r = client.post(f"/api/adventures/{client.adv_id}/retry")
-    assert r.status_code == 200, r.text
-
-
-def _branches(client) -> list[dict]:
-    r = client.get(f"/api/adventures/{client.adv_id}/branches")
-    assert r.status_code == 200, r.text
-    return r.json()
-
-
 def _rename(client, branch_id, name):
     return client.patch(f"/api/adventures/{client.adv_id}/branches/{branch_id}",
                         json={"name": name})
@@ -104,13 +87,6 @@ def _delete(client, branch_id):
 
 def _switch(client, branch_id):
     return client.post(f"/api/adventures/{client.adv_id}/branches/{branch_id}/switch")
-
-
-def _texts(client) -> list[str]:
-    return [
-        a["text"]
-        for a in client.get(f"/api/adventures/{client.adv_id}").json()["actions"]
-    ]
 
 
 def _discarded_on(adv_id, branch_id=None) -> int:
@@ -135,14 +111,12 @@ def _forked(client):
         start · do · [attempt one | ATTEMPT TWO] · do · next turn
                           └── forked here
     """
-    _play(client)
-    _retry(client)
-    _play(client, "go deeper")
-    root = _branches(client)[0]["id"]
-    r = client.post(
-        f"/api/adventures/{client.adv_id}/actions/{_discarded_on(client.adv_id)}/fork")
-    assert r.status_code == 200, r.text
-    forked = [b for b in _branches(client) if b["id"] != root][0]["id"]
+    play_turn(client)
+    retry_turn(client)
+    play_turn(client, "go deeper")
+    root = list_branches(client)[0]["id"]
+    stand_on(client.adv_id, _discarded_on(client.adv_id))
+    forked = [b for b in list_branches(client) if b["id"] != root][0]["id"]
     return root, forked
 
 
@@ -168,7 +142,7 @@ def test_a_branch_starts_unnamed(client):
     deleted and the ordinals shift.
     """
     root, forked = _forked(client)
-    assert [b["name"] for b in _branches(client)] == [None, None]
+    assert [b["name"] for b in list_branches(client)] == [None, None]
 
 
 def test_a_name_is_stored_and_read_back(client):
@@ -176,7 +150,7 @@ def test_a_name_is_stored_and_read_back(client):
     r = _rename(client, forked, "the cellar")
     assert r.status_code == 200, r.text
     assert r.json()["name"] == "the cellar"
-    assert {b["id"]: b["name"] for b in _branches(client)} == {
+    assert {b["id"]: b["name"] for b in list_branches(client)} == {
         root: None, forked: "the cellar",
     }
 
@@ -209,7 +183,7 @@ def test_a_rename_hands_back_the_row_the_listing_would_give(client):
     its turns.
     """
     root, forked = _forked(client)
-    listed = {b["id"]: b for b in _branches(client)}
+    listed = {b["id"]: b for b in list_branches(client)}
 
     renamed = _rename(client, forked, "the cellar").json()
 
@@ -244,12 +218,12 @@ def test_the_root_branch_cannot_be_deleted(client):
     r = _delete(client, root)
     assert r.status_code == 400
     assert "adventure" in r.json()["detail"].lower()
-    assert len(_branches(client)) == 2
+    assert len(list_branches(client)) == 2
 
 
 def test_the_branch_being_read_cannot_be_deleted(client):
     root, forked = _forked(client)
-    assert [b["is_head"] for b in _branches(client) if b["id"] == forked] == [True]
+    assert [b["is_head"] for b in list_branches(client) if b["id"] == forked] == [True]
     r = _delete(client, forked)
     assert r.status_code == 400
     assert "switch" in r.json()["detail"].lower()
@@ -265,38 +239,37 @@ def test_an_ancestor_of_the_branch_being_read_cannot_be_deleted(client):
     root, forked = _forked(client)
     # A fork of the fork, so `forked` is an ancestor of the head rather than
     # the head itself.
-    _retry(client)
-    _play(client, "press on")
+    retry_turn(client)
+    play_turn(client, "press on")
     nested = _discarded_on(client.adv_id, branch_id=forked)
-    r = client.post(f"/api/adventures/{client.adv_id}/actions/{nested}/fork")
-    assert r.status_code == 200, r.text
-    assert len(_branches(client)) == 3
+    stand_on(client.adv_id, nested)
+    assert len(list_branches(client)) == 3
 
     r = _delete(client, forked)
     assert r.status_code == 400
     assert "forked from it" in r.json()["detail"]
-    assert len(_branches(client)) == 3
+    assert len(list_branches(client)) == 3
 
 
 def test_deleting_a_branch_leaves_the_line_it_forked_from_untouched(client):
     root, forked = _forked(client)
     _switch(client, root)
-    kept = _texts(client)
+    kept = story_texts(client)
 
     assert _delete(client, forked).status_code == 204
-    assert [b["id"] for b in _branches(client)] == [root]
-    assert _texts(client) == kept, "the parent keeps every turn it had"
+    assert [b["id"] for b in list_branches(client)] == [root]
+    assert story_texts(client) == kept, "the parent keeps every turn it had"
 
 
 def test_deleting_a_branch_takes_its_nodes_and_its_descendants(client):
     """One statement deletes the whole subtree, regardless of depth. The
     cascade performs the traversal."""
     root, forked = _forked(client)
-    _retry(client)
-    _play(client, "press on")
+    retry_turn(client)
+    play_turn(client, "press on")
     nested_attempt = _discarded_on(client.adv_id, branch_id=forked)
-    client.post(f"/api/adventures/{client.adv_id}/actions/{nested_attempt}/fork")
-    nested = [b["id"] for b in _branches(client) if b["id"] not in (root, forked)][0]
+    stand_on(client.adv_id, nested_attempt)
+    nested = [b["id"] for b in list_branches(client) if b["id"] not in (root, forked)][0]
 
     doomed_actions, _ = _counts(client.adv_id, [forked, nested])
     assert doomed_actions > 0
@@ -305,7 +278,7 @@ def test_deleting_a_branch_takes_its_nodes_and_its_descendants(client):
     _switch(client, root)
     assert _delete(client, forked).status_code == 204
 
-    assert [b["id"] for b in _branches(client)] == [root]
+    assert [b["id"] for b in list_branches(client)] == [root]
     assert _counts(client.adv_id, [forked, nested]) == (0, 0)
     assert _counts(client.adv_id, [root])[0] == root_actions_before
 

@@ -11,17 +11,16 @@ from fastapi import Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from ... import attempts, limits, memorybank, models, schemas, tree
-from ...context import cursors
+from ... import attempts, limits, models, schemas, tree
 from ...context import lineage
 from ...database import get_db
 from ...scripting import ScriptPipeline
 from ...sse import SSE_HEADERS
 
 from . import turns
-from .deps import CurrentUser, current_adventure, router
-from .nodes import delete_turn, last_action, stand_on
-from .paging import action_window, annotate_takes, current_window
+from .deps import CurrentUser, current_adventure, get_row_or_404, router
+from .nodes import delete_turn, last_action
+from .paging import current_window
 
 
 @router.post("/{adventure_id}/retry")
@@ -90,9 +89,7 @@ def list_variants(
     Switching changes which row the story tells, and a client that holds an id it
     received a moment ago still has to be able to ask about the same turn.
     """
-    action = db.get(models.Action, action_id)
-    if action is None or action.adventure_id != adventure_id:
-        raise HTTPException(404, "Action not found")
+    action = get_row_or_404(db, models.Action, action_id, adventure, "Action")
     rows = attempts.group(db, action)
     if len(rows) < 2:
         return []  # Never retried, so the turn has one attempt.
@@ -108,121 +105,6 @@ def list_variants(
         )
         for i, row in enumerate(rows)
     ]
-
-
-@router.post(
-    "/{adventure_id}/actions/{action_id}/variant", response_model=schemas.ActionOut
-)
-def select_variant(
-    adventure_id: int,
-    action_id: int,
-    payload: schemas.VariantSelect,
-    db: Session = Depends(get_db),
-    adventure: models.Adventure = Depends(current_adventure),
-):
-    """Makes an earlier attempt live again and restores the state it produced.
-
-    The restored state covers both the script state and the world state.
-
-    Only the last action can be switched. The turns after an older action were
-    written to continue the text that is currently active, so replacing that text
-    would leave the story contradicting itself. The attempts of earlier turns
-    stay readable through `list_variants`.
-    """
-    action = db.get(models.Action, action_id)
-    if action is None or action.adventure_id != adventure_id:
-        raise HTTPException(404, "Action not found")
-    rows = attempts.group(db, action)
-    if not 0 <= payload.index < len(rows) or len(rows) < 2:
-        raise HTTPException(400, "No such attempt for this action")
-    newest = last_action(adventure, db)
-    if newest is None or newest.depth != action.depth or newest.branch_id != action.branch_id:
-        raise HTTPException(
-            400,
-            "Only the latest message can be switched — the story has already "
-            "continued from this one.",
-        )
-    turns.acquire_turn_lock(adventure_id)
-    try:
-        chosen = rows[payload.index]
-        if not chosen.live:
-            # The story at this coordinate is about to change, so withdraw
-            # anything derived from the previous text. A retry does the same
-            # thing for the same reason.
-            memorybank.forget_node(db, adventure, chosen)
-            cursors.rewind_all(adventure, chosen.branch_id, (chosen.depth or 0) - 1)
-        attempts.make_live(db, adventure, chosen)
-        adventure.updated_at = models.utcnow()
-        db.commit()
-        db.refresh(chosen)
-        # Return the row that is now in the story, which is a different row
-        # from the one the request addressed. An attempt is a node, so choosing
-        # one moves the story onto it rather than rewriting a row.
-        return chosen
-    finally:
-        turns._active_turns.discard(adventure_id)
-
-
-@router.post(
-    "/{adventure_id}/actions/{action_id}/fork", response_model=schemas.ActionPage
-)
-def fork_from_attempt(
-    adventure_id: int,
-    action_id: int,
-    db: Session = Depends(get_db),
-    adventure: models.Adventure = Depends(current_adventure),
-):
-    """Continues the story from this attempt, forking a branch if one is needed.
-
-    There are three cases, and the first two do not fork:
-
-    * The attempt is already the one the story tells, so there is nothing to do.
-    * Its turn is the tip, so the attempts are still leaves that nothing was
-      built on. The endpoint switches, as `/variant` does, and creates no branch.
-    * The story has moved past its turn, so the endpoint forks. The attempt gets
-      a branch of its own, and the line it leaves keeps every turn it has.
-    """
-    action = db.get(models.Action, action_id)
-    if action is None or action.adventure_id != adventure_id:
-        raise HTTPException(404, "Action not found")
-    # Check this before checking the shape of the turn, because a fork leaves
-    # the promoted attempt alone on its branch. A client that repeats the call,
-    # after a double click or a retried request, has to get the same answer
-    # rather than an error saying the turn it just forked has nothing to fork
-    # to.
-    if action.live:
-        # A live node already holds what its coordinate says, so there is no
-        # attempt here to promote. On the path being read this call does
-        # nothing, and it has to stay that way, so that a repeated call after a
-        # double click or a retried request gets the same answer. Off the path
-        # the node belongs to another line's story, and moving there is a branch
-        # switch.
-        #
-        # The membership test covers the whole lineage, not `head_branch_id`. A
-        # head borrows its ancestors' turns, so a live node on an ancestor is
-        # already being read. Forking it would move the live row off the parent
-        # and promote a sibling in its place, which rewrites the story on a
-        # branch nobody asked about and on this one, which borrows that depth.
-        if lineage.path_of(db, adventure).contains(action):
-            return current_window(db, adventure)
-        raise HTTPException(
-            400,
-            "That take is already the story on another branch. Switch to that "
-            "branch to read it.",
-        )
-    if len(attempts.group(db, action)) < 2:
-        raise HTTPException(
-            400, "This turn has only one take, so there is nothing to fork to."
-        )
-    turns.acquire_turn_lock(adventure_id)
-    try:
-        stand_on(db, adventure, action)
-        adventure.updated_at = models.utcnow()
-        db.commit()
-        db.refresh(adventure)
-        return current_window(db, adventure)
-    finally:
-        turns._active_turns.discard(adventure_id)
 
 
 @router.post("/{adventure_id}/actions/{action_id}/takes")
@@ -257,9 +139,7 @@ def add_take(
     limits.rate_limit("turn", request, user)
     limits.check_row_cap("actions", db, user, adventure=adventure)
     turns.check_demo_cap(db, user)
-    action = db.get(models.Action, action_id)
-    if action is None or action.adventure_id != adventure_id:
-        raise HTTPException(404, "Action not found")
+    action = get_row_or_404(db, models.Action, action_id, adventure, "Action")
     if action.type not in ("do", "say", "story", "continue", "ai"):
         # The opening is not a turn anyone played, so it has no second attempt.
         # Editing the scenario is what changes it.
@@ -375,14 +255,6 @@ def undo_turn(
         # replaces its transcript with this response, and the transcript is a
         # window. Returning everything would defeat the paging on the action a
         # player is most likely to repeat several times in a row.
-        actions, total, has_more = action_window(db, adventure)
-        return schemas.ActionPage(
-            actions=[
-            schemas.ActionOut.model_validate(a)
-            for a in annotate_takes(db, adventure.id, actions)
-        ],
-            total=total,
-            has_more=has_more,
-        )
+        return current_window(db, adventure)
     finally:
         turns._active_turns.discard(adventure_id)

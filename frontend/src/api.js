@@ -159,18 +159,11 @@ export const api = {
   deleteAction: (advId, actionId) =>
     request(`/adventures/${advId}/actions/${actionId}`, { method: 'DELETE' }),
   // Retry history. The adventure payload carries only the counts, so the
-  // attempts themselves are fetched when the reader actually pages through.
-  listVariants: (advId, actionId) =>
-    request(`/adventures/${advId}/actions/${actionId}/variants`),
-  // The same endpoint under the name the pager uses. "Take" is what the UI
-  // calls one of these now, and the vocabulary is worth keeping straight —
-  // `variant` belongs to the pre-tree pair of columns SP8 drops.
+  // pager fetches the attempts when the reader pages through them.
   listTakes: (advId, actionId) =>
     request(`/adventures/${advId}/actions/${actionId}/variants`),
-  // No `selectVariant` / `forkFromAttempt` here any more. Both endpoints still
-  // exist and are tested, but the pager needs neither: stepping between takes
-  // tells the server nothing, and what used to be "take this path" is now
-  // whatever the reader writes next, carried by `after_id` on the turn itself.
+  // Stepping between takes tells the server nothing. The take the reader
+  // continues from reaches the server as `after_id` on the next turn.
 
   // The story tree (Phase 14). One request draws the whole shape however many
   // forks there are. The three that change it answer with the story as it now

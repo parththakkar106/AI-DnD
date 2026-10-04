@@ -3,22 +3,15 @@ import { useNavigate } from 'react-router-dom'
 import { api } from '../api'
 import {
   CardSkeleton,
-  extractPlaceholders,
-  BeginAdventureModal,
   ScenarioArt,
-  useToast,
+  ScenarioCard,
+  useBeginAdventure,
 } from '../components'
 
 // How many in-progress stories the landing page shows before deferring to
 // "See all". Two rows on a wide screen; enough to recognise, not a full index.
 const CONTINUE_LIMIT = 4
 const SCENARIO_LIMIT = 6
-
-function splitTags(tags, { isPublic = false } = {}) {
-  const all = (tags || '').split(',').map((t) => t.trim()).filter(Boolean)
-  // Public scenarios already carry a "demo ✦" badge; the tag would repeat it.
-  return isPublic ? all.filter((t) => t.toLowerCase() !== 'demo') : all
-}
 
 function relativeTime(iso) {
   // Stored timestamps are naive UTC, hence the appended Z (matches the rest of
@@ -49,9 +42,8 @@ function Rule({ children, action }) {
 export default function Home() {
   const [adventures, setAdventures] = useState(null)
   const [scenarios, setScenarios] = useState(null)
-  const [pending, setPending] = useState(null) // { scenario, names } awaiting placeholders
   const navigate = useNavigate()
-  const toast = useToast()
+  const { start: startAdventure, modal } = useBeginAdventure()
 
   useEffect(() => {
     api.listAdventures().then(setAdventures).catch(() => setAdventures([]))
@@ -60,37 +52,6 @@ export default function Home() {
 
   const ongoing = useMemo(() => (adventures || []).slice(0, CONTINUE_LIMIT), [adventures])
   const featured = useMemo(() => (scenarios || []).slice(0, SCENARIO_LIMIT), [scenarios])
-
-  const begin = async (scenarioId, { persona = {}, placeholders = {} } = {}) => {
-    try {
-      const adv = await api.createAdventure({
-        scenario_id: scenarioId,
-        placeholders,
-        persona_name: persona.name || '',
-        persona_pronouns: persona.pronouns || '',
-        persona_desc: persona.desc || '',
-      })
-      navigate(`/play/${adv.id}`)
-    } catch (err) {
-      toast(err.message, 'error')
-    }
-  }
-
-  const startAdventure = async (e, scenarioId) => {
-    e.stopPropagation()
-    try {
-      const scenario = await api.getScenario(scenarioId)
-      const names = extractPlaceholders(
-        scenario.prompt, scenario.memory, scenario.authors_note, scenario.ai_instructions,
-        ...scenario.story_cards.flatMap((c) => [c.keys, c.entry]),
-      )
-      // Always open the modal, even with no placeholders: it is where the
-      // player names their character.
-      setPending({ scenario, names })
-    } catch (err) {
-      toast(err.message, 'error')
-    }
-  }
 
   const loading = adventures === null || scenarios === null
   const nothingAtAll = !loading && adventures.length === 0 && scenarios.length === 0
@@ -192,46 +153,20 @@ export default function Home() {
         ) : (
           <div className="card-grid">
             {featured.map((sc, i) => (
-              <article
+              <ScenarioCard
                 key={sc.id}
-                className="card tome enter"
-                style={{ animationDelay: `${i * 60}ms` }}
-                onClick={() => navigate(`/scenarios/${sc.id}`)}
-              >
-                <div className="card-head">
-                  <ScenarioArt image={sc.image_url} icon={sc.icon} title={sc.title} />
-                  <div className="card-headings">
-                    <h3>{sc.title}</h3>
-                  </div>
-                </div>
-                <p className="snippet">{sc.description || 'No description yet.'}</p>
-                <footer className="card-foot">
-                  <div className="tag-cluster">
-                    {sc.is_public && (
-                      <span className="tag small" title="Shared demo scenario (read-only)">demo ✦</span>
-                    )}
-                    {splitTags(sc.tags, { isPublic: sc.is_public }).slice(0, 2).map((tag) => (
-                      <span key={tag} className="tag small">{tag}</span>
-                    ))}
-                  </div>
-                  <button className="primary compact" onClick={(e) => startAdventure(e, sc.id)}>
-                    Play
-                  </button>
-                </footer>
-              </article>
+                scenario={sc}
+                delay={i * 60}
+                maxTags={2}
+                onOpen={() => navigate(`/scenarios/${sc.id}`)}
+                onPlay={startAdventure}
+              />
             ))}
           </div>
         )}
       </section>
 
-      {pending && (
-        <BeginAdventureModal
-          title={pending.scenario.title}
-          names={pending.names}
-          onCancel={() => setPending(null)}
-          onSubmit={(answers) => { setPending(null); begin(pending.scenario.id, answers) }}
-        />
-      )}
+      {modal}
     </div>
   )
 }

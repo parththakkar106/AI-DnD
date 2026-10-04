@@ -19,7 +19,7 @@ from ...context import build_context, cursors
 from ...database import get_db
 from ...providers import OpenAICompatibleProvider, PromptParts, ProviderError
 from ...scripting import ScriptPipeline
-from ...sse import SSE_HEADERS, sse, turn_error
+from ...sse import SSE_HEADERS, relay, sse, turn_error
 from ..settings import get_settings
 
 from .deps import CurrentUser, current_adventure, router
@@ -208,15 +208,11 @@ async def _generate_turn(
     chunks: list[str] = []
     reasoning_chunks: list[str] = []
     try:
-        async for kind, chunk in provider.generate(
+        events = provider.generate(
             parts, temperature=settings.temperature, max_tokens=settings.max_output_tokens
-        ):
-            if kind == "reasoning":
-                reasoning_chunks.append(chunk)
-                yield sse({"type": "reasoning", "text": chunk})
-            else:
-                chunks.append(chunk)
-                yield sse({"type": "chunk", "text": chunk})
+        )
+        async for frame in relay(events, chunks, reasoning_chunks):
+            yield frame
     except ProviderError as exc:
         yield turn_error(str(exc))
         return

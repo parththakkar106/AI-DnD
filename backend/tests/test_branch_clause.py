@@ -26,7 +26,7 @@ from fastapi import Depends
 from fastapi.testclient import TestClient
 from sqlalchemy import event
 
-from app import auth, limits, models, tree
+from app import auth, limits, models
 from app.context import history, lineage
 from app.database import Base, SessionLocal, engine, get_db
 from app.main import app

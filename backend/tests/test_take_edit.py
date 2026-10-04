@@ -29,7 +29,7 @@ from app.database import Base, SessionLocal, engine, get_db
 from app.main import app
 from app.routers import adventures
 
-from fakes import ScriptedProvider
+from fakes import ScriptedProvider, play_turn, retry_turn
 
 
 @pytest.fixture()
@@ -76,17 +76,6 @@ def client(monkeypatch):
         Base.metadata.drop_all(bind=engine)
 
 
-def _play(client, text="look around"):
-    r = client.post(f"/api/adventures/{client.adv_id}/actions",
-                    json={"type": "do", "text": text})
-    assert r.status_code == 200, r.text
-
-
-def _retry(client):
-    r = client.post(f"/api/adventures/{client.adv_id}/retry")
-    assert r.status_code == 200, r.text
-
-
 def _takes(client, action_id):
     r = client.get(f"/api/adventures/{client.adv_id}/actions/{action_id}/variants")
     assert r.status_code == 200, r.text
@@ -106,9 +95,9 @@ def _live_ai(client):
 
 def _four_takes(client):
     """One turn, played four times. Returns (row the page holds, take list)."""
-    _play(client)
+    play_turn(client)
     for _ in range(3):
-        _retry(client)
+        retry_turn(client)
     row = _live_ai(client)
     assert row["take_count"] == 4
     return row, _takes(client, row["id"])

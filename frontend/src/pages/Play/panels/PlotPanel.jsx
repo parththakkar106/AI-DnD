@@ -2,8 +2,9 @@
 
 import { useState } from 'react'
 import { api } from '../../../api'
-import { Field, StoryCardRow, downloadJSON, pickJSONFile, useToast } from '../../../components'
+import { Field, StoryCardRow, useToast } from '../../../components'
 import { useDebouncedSave } from '../../../hooks/useDebouncedSave'
+import { useStoryCards } from '../../../hooks/useStoryCards'
 import { RefreshModal } from '../RefreshModal'
 
 function PlotPanel({ adventure, setAdventure, onWorldStateChanged }) {
@@ -18,47 +19,9 @@ function PlotPanel({ adventure, setAdventure, onWorldStateChanged }) {
     debounceSave(field, () => api.updateAdventure(adventure.id, { [field]: value }))
   }
 
-  const addCard = async () => {
-    const card = await api.createStoryCard({ adventure_id: adventure.id })
-    setAdventure({ ...adventure, story_cards: [...adventure.story_cards, card] })
-  }
-
-  const updateCard = (card) => {
-    setAdventure({
-      ...adventure,
-      story_cards: adventure.story_cards.map((c) => (c.id === card.id ? card : c)),
-    })
-    debounceSave(`card-${card.id}`, () => {
-      api.updateStoryCard(card.id, {
-        name: card.name, type: card.type, keys: card.keys, entry: card.entry, notes: card.notes,
-      })
-    })
-  }
-
-  const deleteCard = async (cardId) => {
-    await api.deleteStoryCard(cardId)
-    setAdventure({
-      ...adventure,
-      story_cards: adventure.story_cards.filter((c) => c.id !== cardId),
-    })
-  }
-
-  const exportCards = async () => {
-    const cards = await api.exportStoryCards({ adventure_id: adventure.id })
-    downloadJSON(cards, `${(adventure.title || 'adventure').replace(/\W+/g, '-')}-cards.json`)
-  }
-
-  const importCards = async () => {
-    try {
-      const parsed = await pickJSONFile()
-      const cards = Array.isArray(parsed) ? parsed : (parsed.cards || parsed.storyCards)
-      if (!Array.isArray(cards)) return toast('Expected a JSON array of story cards.', 'error')
-      const created = await api.importStoryCards({ adventure_id: adventure.id, cards })
-      setAdventure({ ...adventure, story_cards: [...adventure.story_cards, ...created] })
-    } catch (err) {
-      toast(err.message, 'error')
-    }
-  }
+  const { addCard, updateCard, deleteCard, exportCards, importCards } = useStoryCards(
+    adventure, setAdventure, { adventure_id: adventure.id }, adventure.title || 'adventure',
+  )
 
   // Ask the server what a refresh would do, then let the player confirm it.
   const openRefresh = async () => {

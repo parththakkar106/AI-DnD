@@ -25,7 +25,7 @@ from ... import attempts, models, schemas, worldstate
 from ...database import get_db
 
 from . import turns
-from .deps import current_adventure, router
+from .deps import current_adventure, get_row_or_404, router
 from .nodes import db_tip
 
 
@@ -39,9 +39,7 @@ def _schema_or_400(adventure: models.Adventure) -> dict:
 def _ai_action_or_404(
     db: Session, adventure: models.Adventure, action_id: int
 ) -> models.Action:
-    action = db.get(models.Action, action_id)
-    if action is None or action.adventure_id != adventure.id:
-        raise HTTPException(404, "Action not found")
+    action = get_row_or_404(db, models.Action, action_id, adventure, "Action")
     if action.type != "ai":
         raise HTTPException(400, "Only the AI's turns change world state")
     return action

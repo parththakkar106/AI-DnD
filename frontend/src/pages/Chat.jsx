@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useOutletContext } from 'react-router-dom'
 import { api } from '../api'
-import { useToast } from '../components'
+import { ReasoningBlock, useToast } from '../components'
 
 const STORAGE_KEY = 'aidnd.chat.v1'
 
@@ -28,16 +28,6 @@ function load() {
 }
 
 const ROLE_LABEL = { user: 'You', assistant: 'AI', system: 'System' }
-
-function ReasoningBlock({ text, streaming }) {
-  if (!text) return null
-  return (
-    <details className="reasoning" open={streaming || undefined}>
-      <summary>💭 Reasoning{streaming ? '…' : ''}</summary>
-      <div className="reasoning-text">{text}</div>
-    </details>
-  )
-}
 
 function Message({ message, onDelete }) {
   const [copied, setCopied] = useState(false)

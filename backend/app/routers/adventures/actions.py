@@ -5,16 +5,16 @@ change one node, and deleting one removes the whole attempt group at its
 coordinate through `nodes.delete_turn`.
 """
 
-from fastapi import Depends, HTTPException
+from fastapi import Depends
 from sqlalchemy.orm import Session
 
 from ... import attempts, models, schemas, tree
 from ...database import get_db
 
 from . import turns
-from .deps import CurrentUser, current_adventure, router
+from .deps import current_adventure, get_row_or_404, router
 from .nodes import db_tip, delete_turn
-from .paging import ACTION_PAGE, action_window, annotate_takes
+from .paging import ACTION_PAGE, current_window
 
 
 @router.get("/{adventure_id}/actions", response_model=schemas.ActionPage)
@@ -31,17 +31,7 @@ def list_actions(
     `action_window` for why this anchors on a row rather than an offset.
     """
     limit = max(1, min(limit, ACTION_PAGE * 4))
-    actions, total, has_more = action_window(
-        db, adventure, before_id=before_id, limit=limit
-    )
-    return schemas.ActionPage(
-        actions=[
-            schemas.ActionOut.model_validate(a)
-            for a in annotate_takes(db, adventure.id, actions)
-        ],
-        total=total,
-        has_more=has_more,
-    )
+    return current_window(db, adventure, before_id=before_id, limit=limit)
 
 
 @router.patch("/{adventure_id}/actions/{action_id}", response_model=schemas.ActionOut)
@@ -52,9 +42,7 @@ def update_action(
     db: Session = Depends(get_db),
     adventure: models.Adventure = Depends(current_adventure),
 ):
-    action = db.get(models.Action, action_id)
-    if action is None or action.adventure_id != adventure_id:
-        raise HTTPException(404, "Action not found")
+    action = get_row_or_404(db, models.Action, action_id, adventure, "Action")
     # One row holds one text. Nothing mirrors it now, so nothing else has to be
     # updated. The edit used to have to be written into the live variant entry
     # as well, or paging away and back reverted it.
@@ -70,9 +58,7 @@ def delete_action(
     db: Session = Depends(get_db),
     adventure: models.Adventure = Depends(current_adventure),
 ):
-    action = db.get(models.Action, action_id)
-    if action is None or action.adventure_id != adventure_id:
-        raise HTTPException(404, "Action not found")
+    action = get_row_or_404(db, models.Action, action_id, adventure, "Action")
     # The lock is held for the same reason undo holds it: this endpoint puts
     # the shared state back, and a turn that is still generating is about to
     # write it.

@@ -156,8 +156,14 @@ def annotate_takes(
     return actions
 
 
-def current_window(db: Session, adventure: models.Adventure) -> schemas.ActionPage:
-    actions, total, has_more = action_window(db, adventure)
+def current_window(
+    db: Session,
+    adventure: models.Adventure,
+    before_id: int | None = None,
+    limit: int = ACTION_PAGE,
+) -> schemas.ActionPage:
+    """Returns `action_window` as a response page, with the pager numbers filled in."""
+    actions, total, has_more = action_window(db, adventure, before_id=before_id, limit=limit)
     return schemas.ActionPage(
         actions=[
             schemas.ActionOut.model_validate(a)

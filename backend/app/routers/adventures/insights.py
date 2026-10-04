@@ -12,7 +12,7 @@ from ...context import build_context
 from ...database import get_db
 from ..settings import get_settings
 
-from .deps import CurrentUser, current_adventure, router
+from .deps import CurrentUser, current_adventure, get_row_or_404, router
 
 
 @router.get("/{adventure_id}/context")
@@ -42,9 +42,7 @@ def action_context(
     db: Session = Depends(get_db),
     adventure: models.Adventure = Depends(current_adventure),
 ):
-    action = db.get(models.Action, action_id)
-    if action is None or action.adventure_id != adventure_id:
-        raise HTTPException(404, "Action not found")
+    action = get_row_or_404(db, models.Action, action_id, adventure, "Action")
     if action.context_snapshot is None:
         raise HTTPException(404, "No context snapshot for this action")
     return action.context_snapshot

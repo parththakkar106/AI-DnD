@@ -13,7 +13,7 @@ from app.database import Base, SessionLocal, engine, get_db
 from app.main import app
 from app.routers import adventures
 
-from fakes import ScriptedProvider
+from fakes import ScriptedProvider, play_turn
 
 SCHEMA = {
     "player": {"hp": {"min": 0, "max": 100, "initial": 100, "max_delta_per_turn": 30}},
@@ -100,14 +100,8 @@ def _last_ai_text(adv_id):
         db.close()
 
 
-def _play(client, text="attack the goblin"):
-    r = client.post(f"/api/adventures/{client.adv_id}/actions", json={"type": "do", "text": text})
-    assert r.status_code == 200, r.text
-    return r
-
-
 def test_turn_applies_clamped_delta_and_strips_block(client):
-    _play(client)
+    play_turn(client, "attack the goblin")
     ws = _world(client.adv_id)
     assert ws["player"]["hp"] == 70          # -80 capped to -30
     assert ws["npc"]["gwen"]["trust"] == 15
@@ -127,7 +121,7 @@ def test_turn_applies_clamped_delta_and_strips_block(client):
 
 
 def test_action_world_changes_summary(client):
-    _play(client)
+    play_turn(client, "attack the goblin")
     db = SessionLocal()
     try:
         changes = db.get(models.Adventure, client.adv_id).actions[-1].world_changes
@@ -141,7 +135,7 @@ def test_action_world_changes_summary(client):
 
 
 def test_world_state_endpoint(client):
-    _play(client)
+    play_turn(client, "attack the goblin")
     r = client.get(f"/api/adventures/{client.adv_id}/world-state")
     assert r.status_code == 200, r.text
     body = r.json()
@@ -166,7 +160,7 @@ def test_override_world_state_endpoint(client):
 
 
 def test_undo_reverts_world_state(client):
-    _play(client)
+    play_turn(client, "attack the goblin")
     assert _world(client.adv_id)["player"]["hp"] == 70
     r = client.post(f"/api/adventures/{client.adv_id}/undo")
     assert r.status_code == 200, r.text
@@ -175,7 +169,7 @@ def test_undo_reverts_world_state(client):
 
 
 def test_retry_does_not_double_apply(client):
-    _play(client)
+    play_turn(client, "attack the goblin")
     assert _world(client.adv_id)["player"]["hp"] == 70
     r = client.post(f"/api/adventures/{client.adv_id}/retry")
     assert r.status_code == 200, r.text
