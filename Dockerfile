@@ -10,7 +10,7 @@ RUN npm run build
 # Stage 2 — build Python wheels (quickjs compiles from source if no wheel
 # matches, so keep the toolchain out of the final image)
 FROM python:3.12-slim AS python-build
-RUN apt-get update && apt-get install -y --no-install-recommends gcc make \
+RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev make \
     && rm -rf /var/lib/apt/lists/*
 COPY backend/requirements.txt /tmp/requirements.txt
 RUN pip wheel --no-cache-dir -r /tmp/requirements.txt -w /wheels
