@@ -7,9 +7,18 @@ session; the per-phase plan files hold the detail, this holds the thread.
 
 ---
 
-## The live URL is not the one in render.yaml
+## Production runs on the Oracle server
 
-**Production is `https://ai-dnd-1gmp.onrender.com`.** Render appended a suffix to the
+**Production is `https://dnd.parth.party`** (moved 2026-10-25). The image runs on the
+shared Oracle ARM server behind Caddy, from `/srv/ai-dnd/compose.yml`, and CI deploys it
+from `main` (the `image` and `deploy` jobs in `.github/workflows/ci.yml`). The database is
+still Neon us-east-1. The Render service stays up with `AIDND_ASGI_APP=app.redirect:app`,
+which redirects every page to the new host and carries the session across
+(`backend/app/redirect.py`).
+
+## The old Render URL is not the one in render.yaml
+
+**The old host is `https://ai-dnd-1gmp.onrender.com`.** Render appended a suffix to the
 `ai-dnd` service name in `render.yaml`, and plain `ai-dnd.onrender.com` belongs to a
 different, suspended service that answers 503 with "suspended by its owner" — which is
 easy to mistake for this deploy being down. The authoritative link is the one the

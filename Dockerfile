@@ -42,5 +42,6 @@ WORKDIR /app/backend
 # AIDND_TRUSTED_PROXY_HOPS if the platform adds more proxy hops.
 # Single worker on purpose: the turn lock, rate limiter, and debug log are
 # in-process state.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", \
-     "--proxy-headers"]
+# Set AIDND_ASGI_APP=app.redirect:app to run the old-domain redirect instead
+# of the game (see backend/app/redirect.py).
+CMD ["sh", "-c", "exec uvicorn ${AIDND_ASGI_APP:-app.main:app} --host 0.0.0.0 --port 8000 --proxy-headers"]

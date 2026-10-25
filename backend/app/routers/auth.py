@@ -1,6 +1,7 @@
 import re
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from .. import (accesslog, analytics, auth, cleanup, limits, models, schemas,
@@ -172,6 +173,46 @@ def login(
     analytics.record_event(analytics.EV_LOGIN, user)
     accesslog.record(db, accesslog.LOGIN, request, user=user)
     return me_payload(user, db)
+
+
+def _safe_next(path: str) -> str:
+    # Only a path on this host. `//evil.com` and `/\evil.com` are read by
+    # browsers as another host, which would turn this into an open redirect.
+    if not path.startswith("/") or path.startswith(("//", "/\\")):
+        return "/"
+    return path
+
+
+@router.get("/handoff")
+def handoff(
+    request: Request,
+    t: str = "",
+    next: str = "/",
+    db: Session = Depends(get_db),
+):
+    """Carries a session over from the old host.
+
+    The old host signs a short-lived token for its session and redirects here.
+    This endpoint sets the matching session cookie and sends the browser on to
+    the page it asked for, flagged with `from=render` so the SPA can tell the
+    visitor to update their bookmark. If the token is missing, expired, or
+    names a deleted user, the visitor still lands on the page and `/me` gives
+    them a fresh guest. A registered session already on this host is kept,
+    because replacing it would sign that person into a different account.
+    """
+    target = _safe_next(next)
+    target += ("&" if "?" in target else "?") + "from=render"
+    response = RedirectResponse(target, status_code=303)
+    if not auth.MULTI_USER:
+        return response
+    user_id = security.verify_handoff(t)
+    if user_id is None or db.get(models.User, user_id) is None:
+        return response
+    current = auth.resolve_session_user(request, db)
+    if current is not None and not current.is_guest:
+        return response
+    _set_session_cookie(response, user_id)
+    return response
 
 
 @router.post("/logout")

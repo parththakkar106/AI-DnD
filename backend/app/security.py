@@ -21,6 +21,7 @@ import hashlib
 import hmac
 import os
 import secrets
+import time
 
 from cryptography.fernet import Fernet, InvalidToken
 
@@ -146,6 +147,38 @@ def verify_session(token: str) -> int | None:
         payload = f"{version}.{user_id}"
         expected = hmac.new(SECRET_KEY, payload.encode(), hashlib.sha256).hexdigest()
         if not hmac.compare_digest(sig, expected):
+            return None
+        return int(user_id)
+    except (ValueError, AttributeError):
+        return None
+
+
+# ---------- Domain handoff tokens ----------
+# The old host redirects a visitor to the new host with one of these in the
+# URL, and the new host trades it for a session cookie. It expires quickly
+# because a URL ends up in browser history and server logs. Its "h1" prefix
+# keeps it from passing as a session token, which never expires.
+
+HANDOFF_TTL_SECONDS = 120
+
+
+def sign_handoff(user_id: int, now: float | None = None) -> str:
+    expires = int((time.time() if now is None else now) + HANDOFF_TTL_SECONDS)
+    payload = f"h1.{user_id}.{expires}"
+    sig = hmac.new(SECRET_KEY, payload.encode(), hashlib.sha256).hexdigest()
+    return f"{payload}.{sig}"
+
+
+def verify_handoff(token: str, now: float | None = None) -> int | None:
+    try:
+        version, user_id, expires, sig = token.split(".")
+        if version != "h1":
+            return None
+        payload = f"{version}.{user_id}.{expires}"
+        expected = hmac.new(SECRET_KEY, payload.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(sig, expected):
+            return None
+        if int(expires) < (time.time() if now is None else now):
             return None
         return int(user_id)
     except (ValueError, AttributeError):
