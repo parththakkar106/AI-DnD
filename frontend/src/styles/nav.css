@@ -118,3 +118,14 @@ button.linklike:hover { text-decoration: underline; }
   to { opacity: 1; transform: none; }
 }
 
+
+/* Shown once to visitors redirected from the old onrender.com host. */
+.moved-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: 960px;
+  margin: 16px auto 0;
+  width: calc(100% - 32px);
+}
+.moved-banner span { flex: 1; }

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { NavLink, Outlet, useLocation } from 'react-router-dom'
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { api } from './api'
 import { AuthModal, ToastHost } from './components'
 import Embers from './Embers.jsx'
@@ -12,11 +12,25 @@ export default function App() {
   const [authMode, setAuthMode] = useState(null) // 'register' | 'login' | null
   const [navOpen, setNavOpen] = useState(false) // mobile hamburger menu
   const location = useLocation()
+  const navigate = useNavigate()
   const lastPath = useRef(null)
+  // The old onrender.com host redirects here with ?from=render. Read it once,
+  // then drop it from the URL so a bookmark taken now is the clean link.
+  const [movedNotice, setMovedNotice] = useState(
+    () => new URLSearchParams(location.search).get('from') === 'render'
+  )
 
   useEffect(() => {
     api.getMe().then(setMe).catch(() => {})
   }, [])
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search)
+    if (params.get('from') !== 'render') return
+    params.delete('from')
+    const query = params.toString()
+    navigate({ pathname: location.pathname, search: query ? `?${query}` : '' }, { replace: true })
+  }, [location.search, location.pathname, navigate])
 
   // One pageview per route the reader actually lands on. Guarded on the path
   // rather than fired on every render: StrictMode runs effects twice in dev,
@@ -112,6 +126,15 @@ export default function App() {
           )}
         </div>
       </nav>
+      {movedNotice && (
+        <div className="demo-banner moved-banner" role="status">
+          <span>
+            <strong>AI D&D has a new home: {window.location.host}.</strong>{' '}
+            Bookmark this page. The old onrender.com link will stop working in the future.
+          </span>
+          <button onClick={() => setMovedNotice(false)} aria-label="Dismiss">✕</button>
+        </div>
+      )}
       <Outlet context={{ me, setMe }} />
       {authMode && (
         <AuthModal mode={authMode} onClose={() => setAuthMode(null)} onAuthed={onAuthed}
