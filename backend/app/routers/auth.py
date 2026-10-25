@@ -211,7 +211,7 @@ def handoff(
     current = auth.resolve_session_user(request, db)
     if current is not None and not current.is_guest:
         return response
-    _set_session_cookie(response, user_id)
+    auth.set_session_cookie(response, user_id)
     return response
 
 
