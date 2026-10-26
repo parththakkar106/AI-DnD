@@ -600,12 +600,13 @@ export default function Play() {
                 <div className={`action ${isPlayer ? 'player' : ''}${opening ? ' opening' : ''}`}>
                   <ReasoningBlock text={shown ? shown.reasoning : action.reasoning} />
                   {renderEmphasis(shown ? shown.text : action.text)}
-                  {/* The chips describe the *active* attempt's state changes,
-                      which the take on screen didn't make — so they're hidden
-                      rather than shown against the wrong text. */}
-                  {action.type === 'ai' && !shown && (
-                    <StateChangeChips changes={action.world_changes}
-                      revised={action.world_changes_revised} />
+                  {/* The row carries the live take's changes. A take the pager
+                      is showing instead made its own, so the chips follow the
+                      text on screen. */}
+                  {action.type === 'ai' && (
+                    <StateChangeChips
+                      changes={shown ? shown.worldChanges : action.world_changes}
+                      revised={shown ? shown.worldChangesRevised : action.world_changes_revised} />
                   )}
                   {/* Closes itself when the turn stops being the newest one
                       — a turn played under it, an undo — because that is the

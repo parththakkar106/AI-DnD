@@ -102,6 +102,8 @@ def list_variants(
             branch_id=row.branch_id,
             created_at=row.created_at.isoformat() if row.created_at else None,
             active=row.live,
+            world_changes=row.world_changes,
+            world_changes_revised=row.world_changes_revised,
         )
         for i, row in enumerate(rows)
     ]

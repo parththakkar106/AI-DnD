@@ -227,3 +227,15 @@ def test_an_empty_revision_takes_the_whole_turn_back(client):
     assert r.status_code == 200, r.text
     assert r.json()["state"]["player"]["hp"] == 100
     assert _world(client.adv_id)["npc"]["gwen"]["trust"] == 0
+
+
+def test_each_take_carries_its_own_changes(client):
+    """The pager shows a take that is not live, so the take list has to carry
+    that take's chips. Without them, stepping the newest reply to another take
+    showed its text with no state changes under it."""
+    play_turn(client)
+    tip = client.get(f"/api/adventures/{client.adv_id}").json()["actions"][-1]
+    r = client.post(f"/api/adventures/{client.adv_id}/actions/{tip['id']}/takes", json={"text": ""})
+    assert r.status_code == 200, r.text
+    takes = client.get(f"/api/adventures/{client.adv_id}/actions/{tip['id']}/variants").json()
+    assert [[c["delta"] for c in t["world_changes"]] for t in takes] == [[-20, 5], [-20]]

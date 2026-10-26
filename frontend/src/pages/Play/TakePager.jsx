@@ -61,6 +61,8 @@ function TakePager({
           takeId: target.id,
           text: target.text,
           reasoning: target.reasoning,
+          worldChanges: target.world_changes,
+          worldChangesRevised: target.world_changes_revised,
         })
       }
     } catch (err) {

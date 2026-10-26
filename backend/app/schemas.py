@@ -240,6 +240,10 @@ class VariantOut(BaseModel):
     branch_id: int | None = None
     created_at: str | None = None
     active: bool = False
+    # See `ActionOut.world_changes`. The pager shows a take that is not live,
+    # and that take made its own state changes, so the chips come with it.
+    world_changes: list[dict] = []
+    world_changes_revised: bool = False
 
 
 class BranchOut(ORMModel):
