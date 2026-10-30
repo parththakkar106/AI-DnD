@@ -32,7 +32,7 @@ import pytest
 from app import models, summaries, worldstate
 from app.context import builder
 from app.database import Base, SessionLocal, engine
-from app.providers.openai_compatible import OpenAICompatibleProvider
+from app.providers.openai_compatible import OpenAICompatibleProvider, demo_failure_label
 
 SCHEMA = {
     "player": {"hp": {"min": 0, "max": 100, "initial": 100, "desc": "Health"}},
@@ -78,6 +78,18 @@ def test_fallback_models_are_not_sent_to_other_endpoints():
     body = {"model": "a"}
     provider._apply_provider_routing(body)
     assert body == {"model": "a"}
+
+
+def test_a_demo_failure_label_keeps_the_upstream_reason():
+    body = (
+        '{"error": {"message": "Provider returned error", "code": 429, "metadata": '
+        '{"raw": "limited upstream", "provider_name": "Google AI Studio"}}}'
+    )
+    assert demo_failure_label(429, body) == "demo 429 Google AI Studio: limited upstream"
+    assert demo_failure_label(429, '{"error": {"message": "per-min"}}') == (
+        "demo 429 openrouter: per-min"
+    )
+    assert demo_failure_label(502, "<html>") == "demo 502 openrouter: <html>"
 
 
 def test_non_openrouter_endpoints_get_no_provider_field():

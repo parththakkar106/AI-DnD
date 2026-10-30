@@ -3,7 +3,7 @@ from typing import AsyncIterator
 
 import httpx
 
-from .. import debuglog, netguard
+from .. import analytics, debuglog, netguard
 from .base import PromptParts, Provider, ProviderError
 
 # Appended after the story text in chat mode, so a chat-tuned model continues
@@ -41,6 +41,23 @@ def flatten_messages(messages: list[dict]) -> str:
         f"{_ROLE_LABELS.get(m['role'], m['role'])}: {m['content']}" for m in messages
     )
     return f"{turns}\n\nAssistant:"
+
+
+def demo_failure_label(status: int, detail: str) -> str:
+    """Returns the reason a demo turn failed, as a dashboard error label.
+
+    Players see one friendly sentence for every 429, so the counters keep
+    OpenRouter's own reason. Only fallback requests reach this, which are always
+    on the demo key, so a player's own key and endpoint never appear here.
+    """
+    try:
+        error = json.loads(detail)["error"]
+        metadata = error.get("metadata") or {}
+        upstream = metadata.get("provider_name") or "openrouter"
+        reason = metadata.get("raw") or error.get("message") or ""
+    except (ValueError, KeyError, TypeError, AttributeError):
+        upstream, reason = "openrouter", detail
+    return f"demo {status} {upstream}: {reason}"
 
 
 class OpenAICompatibleProvider(Provider):
@@ -259,6 +276,10 @@ class OpenAICompatibleProvider(Provider):
                 async with client.stream("POST", url, json=body, headers=self._headers()) as resp:
                     if resp.status_code != 200:
                         detail = (await resp.aread()).decode(errors="replace")[:500]
+                        if self.fallback_models:
+                            analytics.record(
+                                analytics.M_ERROR, demo_failure_label(resp.status_code, detail)
+                            )
                         raise ProviderError(self._friendly_http_error(resp.status_code, detail))
                     # Some servers ignore `stream=true` and return one plain
                     # JSON body, so buffer the non-SSE lines to fall back to.
