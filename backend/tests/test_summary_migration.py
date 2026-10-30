@@ -151,6 +151,11 @@ def test_running_the_backfill_twice_writes_one_row(pre_summaries):
     """The pass runs inside the transaction that holds the schema change, so a
     failure anywhere in the loop replays every statement on the next boot."""
     migrations.bootstrap(engine)
+    # Close the pooled connections before the ALTER. Earlier test files leave
+    # several in the pool, and one can still cache the schema from before the
+    # bootstrap. SQLite checks ADD COLUMN against that cache when it parses the
+    # statement, so it reports a duplicate of the column that was just dropped.
+    engine.dispose()
     with engine.begin() as conn:
         conn.execute(text(f"PRAGMA user_version = {migrations.SUMMARY_ROWS_VERSION - 1}"))
         conn.execute(text(

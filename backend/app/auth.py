@@ -24,7 +24,7 @@ a server-funded endpoint with a model allowlist and a per-day turn cap.
 """
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timezone
 
 from fastapi import Depends, HTTPException, Request, Response
@@ -65,6 +65,21 @@ DEMO_MODELS = [
     for m in os.environ.get("AIDND_DEMO_MODELS", "").split(",")
     if m.strip()
 ] or ["google/gemma-4-26b-a4b-it:free"]
+
+
+def _free_models(names: str) -> list[str]:
+    """Keeps the `:free` models. OpenRouter bills whichever model answers, so a
+    paid name in this list would bill the demo key."""
+    return [m.strip() for m in names.split(",") if m.strip().endswith(":free")]
+
+
+# Tried in order when the chosen model fails, which on the free tier usually
+# means a rate limit. The second default comes from a different upstream,
+# because a limit on Google's side can hit both Gemma models.
+DEMO_FALLBACK_MODELS = _free_models(os.environ.get(
+    "AIDND_DEMO_FALLBACK_MODELS",
+    "google/gemma-4-31b-it:free,thinkingmachines/inkling-small:free",
+))
 DEMO_TURNS_PER_DAY = int(os.environ.get("AIDND_DEMO_TURNS_PER_DAY", "20") or 20)
 
 # Trusted testers, listed by email, who bypass the daily demo cap and take
@@ -111,6 +126,7 @@ class ProviderConfig:
     api_key: str
     model: str
     using_demo: bool
+    fallback_models: tuple[str, ...] = field(default=(), compare=False)
 
     def __post_init__(self) -> None:
         # A second guard around server-funded turns. `resolve_provider_config()`
@@ -159,7 +175,8 @@ def resolve_provider_config(
     if key or not demo_enabled():
         return ProviderConfig(settings.endpoint_url, key, requested, False)
     model = requested if requested in DEMO_MODELS else DEMO_MODELS[0]
-    return ProviderConfig(DEMO_ENDPOINT_URL, DEMO_API_KEY, model, True)
+    fallbacks = tuple(m for m in DEMO_FALLBACK_MODELS if m != model)
+    return ProviderConfig(DEMO_ENDPOINT_URL, DEMO_API_KEY, model, True, fallbacks)
 
 
 def _today() -> str:

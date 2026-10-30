@@ -733,7 +733,8 @@ export default function Analytics() {
             {fullDate(data.since)} – {fullDate(data.until)}, UTC. Your own visits aren’t
             counted here. These totals are anonymous — visitors are counted as one-way
             hashes, and nothing on this tab can be traced back to a player or their
-            stories. The access log tab is the separate, identifying record.
+            stories. The access log tab is the separate, identifying record.{' '}
+            <a href="https://db-ip.com">IP Geolocation by DB-IP</a>.
           </p>
         </>
       )}

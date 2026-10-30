@@ -239,6 +239,22 @@ def test_resolve_provider_config_is_the_single_choke_point(monkeypatch):
         "http://mine/v1", "sk-mine", "expensive/paid", False)
 
 
+def test_demo_fallbacks_skip_the_chosen_model_and_stay_off_byok(monkeypatch):
+    monkeypatch.setattr(auth, "demo_enabled", lambda: True)
+    monkeypatch.setattr(auth, "DEMO_API_KEY", "demo-key")
+    monkeypatch.setattr(auth, "DEMO_MODELS", ["a:free"])
+    monkeypatch.setattr(auth, "DEMO_FALLBACK_MODELS", ["a:free", "b:free"])
+
+    no_key = models.Settings(endpoint_url="http://mine/v1", api_key="", model="a:free")
+    assert auth.resolve_provider_config(no_key).fallback_models == ("b:free",)
+    byok = models.Settings(endpoint_url="http://mine/v1", api_key="sk-mine", model="x")
+    assert auth.resolve_provider_config(byok).fallback_models == ()
+
+
+def test_a_paid_model_cannot_enter_the_demo_fallbacks():
+    assert auth._free_models("paid/model, b:free,") == ["b:free"]
+
+
 def test_oversized_conversation_is_refused(client, monkeypatch):
     _byok(monkeypatch)
     huge = "x" * 90_000

@@ -57,6 +57,7 @@ class OpenAICompatibleProvider(Provider):
         model: str,
         api_mode: str = "chat",
         reasoning_max_tokens: int = 0,
+        fallback_models: tuple[str, ...] = (),
     ):
         self.base_url = endpoint_url.rstrip("/")
         self.api_key = api_key
@@ -67,6 +68,7 @@ class OpenAICompatibleProvider(Provider):
         # endpoint that does not know the field may reject it. A negative value
         # asks the endpoint to turn reasoning off.
         self.reasoning_max_tokens = reasoning_max_tokens
+        self.fallback_models = fallback_models
         # The token accounting from the last call, when the endpoint reported
         # any. It holds the prompt and completion counts, plus, on OpenRouter,
         # `prompt_tokens_details.cached_tokens`, which is the number of prompt
@@ -106,9 +108,15 @@ class OpenAICompatibleProvider(Provider):
         The method does nothing anywhere else. `provider` is an OpenRouter
         extension, and Ollama and similar servers reject fields they do not know.
         The `reasoning` parameter above is written around the same constraint.
+
+        It also sends any fallback models. OpenRouter documents `models` in place
+        of `model`, and tries the list in order when a model returns an error.
         """
         if _OPENROUTER_HOST not in self.base_url:
             return
+        if self.fallback_models and self.api_mode == "chat":
+            del body["model"]
+            body["models"] = [self.model, *self.fallback_models]
         upstream = _PREFERRED_UPSTREAM.get(self.model.split("/", 1)[0].lower())
         if upstream:
             body["provider"] = {"order": [upstream]}

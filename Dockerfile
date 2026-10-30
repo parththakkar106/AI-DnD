@@ -15,7 +15,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev m
 COPY backend/requirements.txt /tmp/requirements.txt
 RUN pip wheel --no-cache-dir -r /tmp/requirements.txt -w /wheels
 
-# Stage 3 — runtime
+# Stage 3 — fetch the country file for `analytics.country_of`.
+# shortcut: the file is as old as this cached layer — add a scheduled rebuild if
+# country accuracy starts to matter.
+FROM python:3.12-slim AS geoip
+COPY backend/tools/fetch_geoip.py /tmp/fetch_geoip.py
+RUN python /tmp/fetch_geoip.py /country.mmdb
+
+# Stage 4 — runtime
 FROM python:3.12-slim
 WORKDIR /app
 
@@ -26,9 +33,11 @@ RUN pip install --no-cache-dir /wheels/* && rm -rf /wheels
 # relative to backend/app/main.py.
 COPY backend/app /app/backend/app
 COPY --from=frontend-build /build/dist /app/frontend/dist
+COPY --from=geoip /country.mmdb /app/geoip/country.mmdb
 
 # Database lives on a volume; parent dir is created by the app if missing.
 ENV AIDND_DB_PATH=/data/data.db
+ENV AIDND_GEOIP_DB=/app/geoip/country.mmdb
 VOLUME /data
 
 EXPOSE 8000

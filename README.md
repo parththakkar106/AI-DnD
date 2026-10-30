@@ -249,6 +249,9 @@ are aggregated in memory and flushed as UPSERTs, so a visit is a write and never
 every dashboard query is a `GROUP BY` that returns tens of rows regardless of traffic volume.
 That matters: see the egress note above for what reading rows per request costs on this stack.
 
+Country comes from the [DB-IP Lite](https://db-ip.com/db/lite.php) file (CC BY 4.0), which the
+Docker image includes. The lookup runs on the server, so an address is never sent to a third party.
+
 ## Deploy (Render)
 
 The repo ships a [`render.yaml`](render.yaml) blueprint: one Docker web service that serves

@@ -203,6 +203,10 @@ def handoff(
     target = _safe_next(next)
     target += ("&" if "?" in target else "?") + "from=render"
     response = RedirectResponse(target, status_code=303)
+    # A redirect's policy replaces the one the browser arrived with. The app's
+    # default, `same-origin`, would erase the site that linked to the old host,
+    # and the visit would count as direct.
+    response.headers["referrer-policy"] = "strict-origin-when-cross-origin"
     if not auth.MULTI_USER:
         return response
     user_id = security.verify_handoff(t)
