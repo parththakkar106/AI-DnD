@@ -96,8 +96,13 @@ class SecurityHeadersMiddleware:
 
         async def send_with_headers(message):
             if message["type"] == "http.response.start":
-                message.setdefault("headers", [])
-                message["headers"] = list(message["headers"]) + self._HEADERS
+                headers = list(message.get("headers", []))
+                # A route's own header wins. A second copy would override it,
+                # because browsers use the last referrer policy they read.
+                present = {name.lower() for name, _ in headers}
+                message["headers"] = headers + [
+                    header for header in self._HEADERS if header[0] not in present
+                ]
             await send(message)
 
         await self.app(scope, receive, send_with_headers)

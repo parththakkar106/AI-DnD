@@ -89,13 +89,13 @@ def describe(user: models.User) -> str:
 
 
 def _country(request) -> str:
-    """Returns the edge's country header, or "" when there is none.
+    """Returns the caller's country, or "" when it is not known.
 
     The blank differs from the counters' "(unknown)" label. A table column reads
     better as a dash than as a word, and an empty string is the correct value for
     a country that is not known.
     """
-    country = analytics.country_of(request.headers)
+    country = analytics.country_of(request.headers, _client_ip(request))
     return "" if country == analytics.UNKNOWN else country
 
 

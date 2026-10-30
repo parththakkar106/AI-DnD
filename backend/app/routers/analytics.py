@@ -97,7 +97,10 @@ def collect(
             analytics.M_DEVICE,
             analytics.device_of(request.headers.get("user-agent", "")),
         )
-        analytics.record(analytics.M_COUNTRY, analytics.country_of(request.headers))
+        analytics.record(
+            analytics.M_COUNTRY,
+            analytics.country_of(request.headers, limits.client_ip(request)),
+        )
     return Response(status_code=204)
 
 

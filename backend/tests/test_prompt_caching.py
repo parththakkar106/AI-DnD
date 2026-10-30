@@ -62,6 +62,24 @@ def test_fallbacks_stay_on():
     assert "allow_fallbacks" not in body["provider"]
 
 
+def test_fallback_models_become_the_openrouter_models_list():
+    provider = OpenAICompatibleProvider(
+        "https://openrouter.ai/api/v1", "k", "a:free", "chat", 0, ("b:free", "c:free")
+    )
+    body = {"model": "a:free"}
+    provider._apply_provider_routing(body)
+    assert body == {"models": ["a:free", "b:free", "c:free"]}
+
+
+def test_fallback_models_are_not_sent_to_other_endpoints():
+    provider = OpenAICompatibleProvider(
+        "http://localhost:11434/v1", "k", "a", "chat", 0, ("b",)
+    )
+    body = {"model": "a"}
+    provider._apply_provider_routing(body)
+    assert body == {"model": "a"}
+
+
 def test_non_openrouter_endpoints_get_no_provider_field():
     """Ollama and other providers reject fields they do not know. This is
     the same problem the `reasoning` param works around."""

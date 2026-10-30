@@ -203,7 +203,7 @@ async def _generate_turn(
 
     provider = OpenAICompatibleProvider(
         cfg.endpoint_url, cfg.api_key, cfg.model, settings.api_mode,
-        settings.reasoning_max_tokens,
+        settings.reasoning_max_tokens, cfg.fallback_models,
     )
     chunks: list[str] = []
     reasoning_chunks: list[str] = []

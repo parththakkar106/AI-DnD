@@ -7,3 +7,4 @@ tiktoken>=0.7
 quickjs>=1.19
 cryptography>=42
 psycopg[binary]>=3.2
+maxminddb>=2.6

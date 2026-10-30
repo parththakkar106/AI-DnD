@@ -42,9 +42,11 @@ import os
 import re
 import threading
 from datetime import timedelta
+from functools import lru_cache
 from hashlib import sha256
 from urllib.parse import urlsplit
 
+import maxminddb
 from sqlalchemy import case, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -349,10 +351,45 @@ def platform_of(user_agent: str) -> str:
 # header, so the worst case is a wrong country rather than an unbounded label.
 _GEO_HEADERS = ("cf-ipcountry", "x-vercel-ip-country", "x-geo-country", "x-country-code")
 
+# A host with no edge network gets no geo header, so the Docker image carries
+# the DB-IP Lite country file and `AIDND_GEOIP_DB` names it. The lookup is local,
+# so an address never leaves the server. Nothing here stores the address.
+GEOIP_DB = os.environ.get("AIDND_GEOIP_DB", "").strip()
 
-def country_of(headers) -> str:
-    for name in _GEO_HEADERS:
-        value = (headers.get(name) or "").strip().upper()
+
+@lru_cache(maxsize=1)
+def _geoip():
+    """Returns the open country file, or None when there is no usable file."""
+    if not GEOIP_DB:
+        return None
+    try:
+        return maxminddb.open_database(GEOIP_DB)
+    except (OSError, maxminddb.InvalidDatabaseError):
+        logger.warning("Country file %s could not be opened.", GEOIP_DB)
+        return None
+
+
+def _lookup_country(ip: str) -> str:
+    reader = _geoip()
+    if reader is None:
+        return ""
+    try:
+        record = reader.get(ip)
+    except ValueError:  # `limits.client_ip` can return "unknown".
+        return ""
+    return ((record or {}).get("country") or {}).get("iso_code") or ""
+
+
+def country_of(headers, ip: str = "") -> str:
+    """Returns a two-letter country code, or `UNKNOWN`.
+
+    The local file comes first. On a host with no edge network, a client can set
+    any geo header it likes, and the file reads the address the proxy reported.
+    """
+    candidates = [_lookup_country(ip) if ip else ""]
+    candidates += [headers.get(name) or "" for name in _GEO_HEADERS]
+    for candidate in candidates:
+        value = candidate.strip().upper()
         if _COUNTRY_OK.match(value) and value != "XX":
             return value
     return UNKNOWN

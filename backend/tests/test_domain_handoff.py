@@ -55,6 +55,13 @@ def test_handoff_sets_session_and_keeps_path(client):
     assert security.verify_session(r.cookies[auth.SESSION_COOKIE]) == uid
 
 
+def test_handoff_keeps_the_sending_site_for_the_next_page(client):
+    response = client.get("/api/auth/handoff", follow_redirects=False)
+    policies = response.headers.get_list("referrer-policy")
+    assert policies == ["strict-origin-when-cross-origin"]
+    assert client.get("/api/health").headers["referrer-policy"] == "same-origin"
+
+
 def test_handoff_rejects_offsite_next_and_bad_token(client):
     r = client.get(
         "/api/auth/handoff",

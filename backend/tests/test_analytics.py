@@ -238,6 +238,21 @@ def test_only_iso_looking_country_headers_are_trusted():
     assert analytics.country_of({}) == analytics.UNKNOWN
 
 
+def test_the_local_country_file_outranks_a_header_a_client_can_forge(monkeypatch):
+    class Reader:
+        def get(self, ip):
+            if ip == "unknown":
+                raise ValueError(ip)
+            return {"country": {"iso_code": "IN"}} if ip == "1.2.3.4" else None
+
+    monkeypatch.setattr(analytics, "_geoip", lambda: Reader())
+    forged = {"cf-ipcountry": "DE"}
+    assert analytics.country_of(forged, "1.2.3.4") == "IN"
+    assert analytics.country_of(forged, "5.6.7.8") == "DE"
+    assert analytics.country_of({}, "5.6.7.8") == analytics.UNKNOWN
+    assert analytics.country_of({}, "unknown") == analytics.UNKNOWN
+
+
 def test_error_labels_use_the_route_not_the_path():
     class Route:
         path = "/api/adventures/{adventure_id}"
