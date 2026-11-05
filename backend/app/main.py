@@ -1,4 +1,5 @@
 import os
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -9,7 +10,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import analytics, cleanup
 from .auth import MULTI_USER
-from .database import engine
+from .database import db_timing, engine
 from .limits import BodySizeLimitMiddleware
 from .migrations import bootstrap
 from .routers import (
@@ -140,7 +141,43 @@ class ApiErrorMiddleware:
         await self.app(scope, receive, send_counting)
 
 
+class DbTimingMiddleware:
+    """Adds a `Server-Timing` header to API responses with the request's
+    database query count and time, new connections, and total time.
+
+    shortcut: temporary diagnostic for the Oracle-to-Neon latency. Remove it
+    once the database location is settled.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or not scope.get("path", "").startswith("/api"):
+            return await self.app(scope, receive, send)
+
+        timing = {"queries": 0, "query_ms": 0.0, "connects": 0, "connect_ms": 0.0}
+        db_timing.set(timing)
+        start = time.perf_counter()
+
+        async def send_with_timing(message):
+            if message["type"] == "http.response.start":
+                total_ms = (time.perf_counter() - start) * 1000
+                value = (
+                    f'db;desc="{timing["queries"]} queries";dur={timing["query_ms"]:.1f}, '
+                    f'dbconn;desc="{timing["connects"]} new";dur={timing["connect_ms"]:.1f}, '
+                    f"total;dur={total_ms:.1f}"
+                )
+                message["headers"] = list(message.get("headers", [])) + [
+                    (b"server-timing", value.encode())
+                ]
+            await send(message)
+
+        await self.app(scope, receive, send_with_timing)
+
+
 app.add_middleware(ApiErrorMiddleware)
+app.add_middleware(DbTimingMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 
 app.include_router(auth.router)
