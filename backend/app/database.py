@@ -1,6 +1,4 @@
 import os
-import time
-from contextvars import ContextVar
 from pathlib import Path
 
 from sqlalchemy import create_engine, event
@@ -59,45 +57,6 @@ else:
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
-
-
-# Per-request database timing for the `Server-Timing` header. The middleware in
-# `main.py` sets a fresh dict here. Sync routes run in a threadpool with a copy
-# of the context, so they update the same dict and the totals reach the
-# response. Pool pre-pings bypass these events, so they count as app time.
-db_timing: ContextVar[dict | None] = ContextVar("db_timing", default=None)
-
-
-@event.listens_for(engine, "before_cursor_execute")
-def _start_query(conn, _cursor, _statement, _params, _context, _executemany):
-    conn.info["query_start"] = time.perf_counter()
-
-
-@event.listens_for(engine, "after_cursor_execute")
-def _end_query(conn, _cursor, _statement, _params, _context, _executemany):
-    timing = db_timing.get()
-    start = conn.info.pop("query_start", None)
-    if timing is not None and start is not None:
-        timing["queries"] += 1
-        timing["query_ms"] += (time.perf_counter() - start) * 1000
-
-
-# A custom pool creator (`tools/dbmeter.py`) passes no connection record to
-# `do_connect`, so the connect start time lives in the request's dict.
-@event.listens_for(engine, "do_connect")
-def _start_connect(_dialect, _conn_rec, _cargs, _cparams):
-    timing = db_timing.get()
-    if timing is not None:
-        timing["connect_start"] = time.perf_counter()
-
-
-@event.listens_for(engine, "connect")
-def _end_connect(_dbapi_connection, _conn_rec):
-    timing = db_timing.get()
-    start = timing.pop("connect_start", None) if timing is not None else None
-    if start is not None:
-        timing["connects"] += 1
-        timing["connect_ms"] += (time.perf_counter() - start) * 1000
 
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
