@@ -275,10 +275,14 @@ class OpenAICompatibleProvider(Provider):
             async with httpx.AsyncClient(timeout=httpx.Timeout(120, connect=10)) as client:
                 async with client.stream("POST", url, json=body, headers=self._headers()) as resp:
                     if resp.status_code != 200:
-                        detail = (await resp.aread()).decode(errors="replace")[:500]
+                        # Parse the label from the whole body. An upstream error
+                        # often runs past 500 characters, and a cut body is no
+                        # longer JSON, so the label would lose the upstream name.
+                        body_text = (await resp.aread()).decode(errors="replace")
+                        detail = body_text[:500]
                         if self.fallback_models:
                             analytics.record(
-                                analytics.M_ERROR, demo_failure_label(resp.status_code, detail)
+                                analytics.M_ERROR, demo_failure_label(resp.status_code, body_text)
                             )
                         raise ProviderError(self._friendly_http_error(resp.status_code, detail))
                     # Some servers ignore `stream=true` and return one plain
