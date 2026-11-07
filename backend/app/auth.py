@@ -64,7 +64,7 @@ DEMO_MODELS = [
     m.strip()
     for m in os.environ.get("AIDND_DEMO_MODELS", "").split(",")
     if m.strip()
-] or ["google/gemma-4-26b-a4b-it:free"]
+] or ["nvidia/nemotron-3.5-super-vl:free"]
 
 
 def _free_models(names: str) -> list[str]:
@@ -74,11 +74,12 @@ def _free_models(names: str) -> list[str]:
 
 
 # Tried in order when the chosen model fails, which on the free tier usually
-# means a rate limit. The second default comes from a different upstream,
-# because a limit on Google's side can hit both Gemma models.
+# means a rate limit. Each default runs on a different upstream (NVIDIA for the
+# main model, then Phala, then Google AI Studio), so one upstream's limit
+# cannot fail all three.
 DEMO_FALLBACK_MODELS = _free_models(os.environ.get(
     "AIDND_DEMO_FALLBACK_MODELS",
-    "google/gemma-4-31b-it:free,thinkingmachines/inkling-small:free",
+    "xingchen-agi/xing4.0-29b-a4b:free,google/gemma-4-26b-a4b-it:free",
 ))
 DEMO_TURNS_PER_DAY = int(os.environ.get("AIDND_DEMO_TURNS_PER_DAY", "20") or 20)
 
