@@ -808,6 +808,28 @@ class AccessEvent(Base):
     user_agent: Mapped[str] = mapped_column(String(200), default="")
 
 
+
+class Feedback(Base):
+    """One message a player sent from the feedback page.
+
+    `user_id` is a plain integer with no foreign key, for the same reason as
+    `AccessEvent`: guest cleanup deletes accounts, and the message must outlive
+    them. `who` and `is_guest` are snapshots of the account at send time. The
+    owner reads them to judge spam. `contact_email` is the optional address the
+    player typed for a reply, and it can differ from the account email.
+    """
+
+    __tablename__ = "feedback"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    user_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    who: Mapped[str] = mapped_column(String(320), default="")
+    is_guest: Mapped[bool] = mapped_column(Boolean, default=False)
+    contact_email: Mapped[str] = mapped_column(String(320), default="")
+    message: Mapped[str] = mapped_column(Text)
+    ip: Mapped[str] = mapped_column(String(45), default="")
+
 # Phase 14: the fallback under `tree.place_action`.
 #
 # Since SP2, reads filter on `branch_id` and `depth`. A node written without

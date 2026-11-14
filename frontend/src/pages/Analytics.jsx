@@ -594,6 +594,86 @@ function AccessLog() {
   )
 }
 
+/* ---------- Feedback ---------- */
+
+/* What players sent from the feedback page, newest first. The account and IP
+   sit next to each message so spam is easy to spot, and the optional email is
+   the address the player asked to be answered at. */
+function FeedbackList() {
+  const [page, setPage] = useState(null)   // { items, has_more }
+  const [error, setError] = useState(null)
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    let live = true
+    api.listFeedback().then(
+      (result) => { if (live) setPage(result) },
+      (err) => { if (live) setError(err.message) },
+    )
+    return () => { live = false }
+  }, [])
+
+  const loadMore = async () => {
+    if (!page?.items.length || busy) return
+    setBusy(true)
+    try {
+      const next = await api.listFeedback(page.items[page.items.length - 1].id)
+      setPage({ items: [...page.items, ...next.items], has_more: next.has_more })
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <section className="an-card">
+      {error && <div className="an-empty">Couldn’t load feedback: {error}</div>}
+      {!page && !error && <div className="an-empty">Reading…</div>}
+      {page && (page.items.length === 0 ? (
+        <div className="an-empty">No feedback yet.</div>
+      ) : (
+        <>
+          <div className="an-table-scroll">
+            <table className="an-table">
+              <thead>
+                <tr><th>When</th><th>From</th><th>Reply to</th><th>Message</th></tr>
+              </thead>
+              <tbody>
+                {page.items.map((item) => (
+                  <tr key={item.id}>
+                    <td className="an-cell-dim">{when(item.at)}</td>
+                    <td>
+                      {item.who}
+                      {item.is_guest && <span className="an-tag">guest</span>}
+                      <div className="an-cell-sub an-cell-mono">
+                        user #{item.user_id ?? '—'} · {item.ip || '—'}
+                      </div>
+                    </td>
+                    <td>
+                      {item.email
+                        ? <a href={`mailto:${item.email}`}>{item.email}</a>
+                        : <span className="an-cell-dim">—</span>}
+                    </td>
+                    <td style={{ whiteSpace: 'pre-wrap', minWidth: 240 }}>{item.message}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {page.has_more && (
+            <div className="an-more">
+              <button onClick={loadMore} disabled={busy}>
+                {busy ? 'Loading…' : 'Load older'}
+              </button>
+            </div>
+          )}
+        </>
+      ))}
+    </section>
+  )
+}
+
 /* ---------- Page ---------- */
 
 export default function Analytics() {
@@ -665,6 +745,12 @@ export default function Analytics() {
         >
           Access log
         </button>
+        <button
+          className={tab === 'feedback' ? 'active' : ''}
+          onClick={() => setTab('feedback')}
+        >
+          Feedback
+        </button>
       </div>
 
       {tab === 'access' && (
@@ -673,6 +759,8 @@ export default function Analytics() {
           <AccessLog />
         </>
       )}
+
+      {tab === 'feedback' && <FeedbackList />}
 
       {tab === 'overview' && error && (
         <div className="an-empty">Couldn’t load analytics: {error}</div>

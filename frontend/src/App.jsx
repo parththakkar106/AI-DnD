@@ -91,6 +91,9 @@ export default function App() {
           <NavLink to="/settings" className={navClass}>
             Settings
           </NavLink>
+          <NavLink to="/feedback" className={navClass}>
+            Feedback
+          </NavLink>
           {/* Power-user tooling, not part of the game — hidden for everyone else. */}
           {me?.power_user && (
             <NavLink to="/chat" className={navClass}>

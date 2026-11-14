@@ -13,7 +13,7 @@ from .database import engine
 from .limits import BodySizeLimitMiddleware
 from .migrations import bootstrap
 from .routers import (
-    adventures, analytics as analytics_router, auth, chat, debug, scenarios, scripts,
+    adventures, analytics as analytics_router, auth, chat, debug, feedback, scenarios, scripts,
     settings, story_cards,
 )
 from .seed import seed_public_scenarios
@@ -152,6 +152,7 @@ app.include_router(settings.router)
 app.include_router(chat.router)
 app.include_router(debug.router)
 app.include_router(analytics_router.router)
+app.include_router(feedback.router)
 
 
 @app.get("/api/health")
