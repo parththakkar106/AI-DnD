@@ -75,13 +75,13 @@ def _free_models(names: str) -> list[str]:
 
 # Tried in order when the chosen model fails, which on the free tier usually
 # means a rate limit. The defaults are ranked by chat and instruction-following
-# quality, best first. Adjacent models run on different upstreams (NVIDIA,
-# Google AI Studio, and Phala), so one upstream's limit moves the turn to
-# another upstream instead of to the next model on the same one.
+# quality, best first. Adjacent models run on different upstreams (NVIDIA and
+# Google AI Studio), so one upstream's limit moves the turn to another upstream
+# instead of to the next model on the same one.
 DEMO_FALLBACK_MODELS = _free_models(os.environ.get(
     "AIDND_DEMO_FALLBACK_MODELS",
     "google/gemma-4-31b-it:free,nvidia/nemotron-3.5-super-vl:free,"
-    "google/gemma-4-26b-a4b-it:free,xingchen-agi/xing4.0-29b-a4b:free",
+    "google/gemma-4-26b-a4b-it:free",
 ))
 DEMO_TURNS_PER_DAY = int(os.environ.get("AIDND_DEMO_TURNS_PER_DAY", "20") or 20)
 
