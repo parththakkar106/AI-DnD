@@ -108,12 +108,10 @@ export default function App() {
               {me.is_guest ? (
                 <>
                   <span className="guest-nudge"
-                    title={'Sign up to keep your adventures.' + (me.guest_retention_days
-                      ? ` Guest adventures are deleted after ${me.guest_retention_days} days without a visit.`
-                      : '')}>
-                    {me.demo?.enabled
-                      ? `Playing as guest — sign up for ${me.demo.account_turns_per_day} free turns a day`
-                      : 'Playing as guest — sign up to keep your adventures'}
+                    title={me.guest_retention_days
+                      ? `Guest adventures are deleted after ${me.guest_retention_days} days without a visit.`
+                      : undefined}>
+                    Playing as guest — sign up to keep your adventures
                   </span>
                   <button onClick={() => setAuthMode('login')}>Log in</button>
                   <button className="primary" onClick={() => setAuthMode('register')}>Sign up</button>
