@@ -8,12 +8,18 @@
    ============================================================ */
 @media (max-width: 720px) {
 
-  /* ---------- Demo model picker → its own row under the turn buttons ---------- */
-  .turn-buttons { flex-wrap: wrap; }
-  .demo-model-picker { flex-basis: 100%; flex-wrap: nowrap; margin-left: 0; }
-  .demo-model-picker label:first-child { flex: 1; min-width: 0; }
-  .demo-model-picker select { flex: 1; min-width: 0; max-width: none; }
-  .demo-model-picker label:last-child { white-space: nowrap; }
+  /* ---------- Demo model picker → a button that opens the options ---------- */
+  .demo-model-toggle { display: inline-flex; }
+  .demo-model-options {
+    display: none;
+    position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 20;
+    flex-direction: column; align-items: stretch; gap: 10px;
+    padding: 10px 12px; min-width: 16rem;
+    background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px;
+  }
+  .demo-model-picker.open .demo-model-options { display: flex; }
+  .demo-model-options label:first-child { justify-content: space-between; }
+  .demo-model-options select { max-width: none; }
 
   /* ---------- Top nav → hamburger dropdown ---------- */
   .topnav { gap: 12px; padding: 0 16px; }

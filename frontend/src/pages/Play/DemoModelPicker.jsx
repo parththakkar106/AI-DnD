@@ -5,7 +5,7 @@
  * so this menu only offers what `/auth/me` returns.
  */
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api } from '../../api'
 
 // Turns `google/gemma-4-31b-it:free` into `gemma-4-31b-it`.
@@ -16,10 +16,27 @@ function shortName(model) {
 export function DemoModelPicker({ disabled }) {
   const [demo, setDemo] = useState(null)
   const [saving, setSaving] = useState(false)
+  // Phones show only the "Model" button, and the options open under it.
+  // Desktop CSS ignores this and always shows the options.
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
 
   useEffect(() => {
     api.getMe().then((me) => setDemo(me?.demo)).catch(() => {})
   }, [])
+
+  // Close the options on a tap outside them or on Escape.
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e) => { if (!ref.current?.contains(e.target)) setOpen(false) }
+    const onKey = (e) => { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('pointerdown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('pointerdown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
 
   if (!demo?.using_demo || !demo.models?.length) return null
 
@@ -45,19 +62,25 @@ export function DemoModelPicker({ disabled }) {
   }
 
   return (
-    <div className="demo-model-picker">
-      <label>
-        <span className="dim">Model</span>
-        <select value={demo.model} disabled={disabled || saving}
-          onChange={(e) => save({ demo_model: e.target.value })}>
-          {demo.models.map((m) => <option key={m} value={m}>{shortName(m)}</option>)}
-        </select>
-      </label>
-      <label title="If this model is busy, another free model answers the turn.">
-        <input type="checkbox" checked={!!demo.fallback} disabled={disabled || saving}
-          onChange={(e) => save({ demo_fallback: e.target.checked })} />
-        <span className="dim">Backup models</span>
-      </label>
+    <div ref={ref} className={`demo-model-picker${open ? ' open' : ''}`}>
+      <button type="button" className="demo-model-toggle" aria-expanded={open}
+        aria-controls="demo-model-options" onClick={() => setOpen(!open)}>
+        Model ▾
+      </button>
+      <div id="demo-model-options" className="demo-model-options">
+        <label>
+          <span className="dim">Model</span>
+          <select value={demo.model} disabled={disabled || saving}
+            onChange={(e) => save({ demo_model: e.target.value })}>
+            {demo.models.map((m) => <option key={m} value={m}>{shortName(m)}</option>)}
+          </select>
+        </label>
+        <label title="If this model is busy, another free model answers the turn.">
+          <input type="checkbox" checked={!!demo.fallback} disabled={disabled || saving}
+            onChange={(e) => save({ demo_fallback: e.target.checked })} />
+          <span className="dim">Backup models</span>
+        </label>
+      </div>
     </div>
   )
 }
