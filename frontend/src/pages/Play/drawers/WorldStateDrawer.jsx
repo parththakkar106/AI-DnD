@@ -1,4 +1,5 @@
-// The right drawer: the RPG world state, and the form that edits it.
+// The left State drawer: the RPG world state, the form that edits it, and the
+// script variables.
 //
 // Editing builds a flat draft keyed by path, so a nested value can be edited
 // without rebuilding the tree on every keystroke. `buildWorldStateDraft` makes
@@ -7,6 +8,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '../../../api'
 import { npcInitials } from '../../../components'
+import { ScriptVariables } from './ScriptVariables'
 
 // Returns the word label for a value, read from the stat def's bands. This
 // mirrors `worldstate.band_label` on the server.
@@ -134,11 +136,16 @@ function sliceDraft(draft, prefix) {
   return out
 }
 
-// Collapsible left rail showing the RPG world state (Phase 12): world/player/NPC
-// stats with bands + bars, and a milestones checklist. Renders nothing unless
-// the adventure's scenario defines a stat_schema. An edit mode lets the
-// player/author directly override the live values (a manual correction, not
-// a turn) — it never adds new stats, only edits ones the schema already defines.
+// Collapsible left rail showing all of an adventure's state in one place. The
+// RPG world state (Phase 12) comes first: world/player/NPC stats with bands and
+// bars, flags, and a milestones checklist, shown only when the scenario defines
+// a stat_schema. The script variables follow as their own section. The two
+// stay separate on the server: the engine referees the world state, and the
+// scripts own their variables.
+//
+// An edit mode lets the player or author override the live world-state values
+// (a manual correction, not a turn). It never adds stats and never touches the
+// script variables.
 function WorldStateDrawer({ advId, refreshKey, personaName }) {
   const [open, setOpen] = useState(false)
   const [data, setData] = useState(null) // { state, schema }
@@ -146,6 +153,8 @@ function WorldStateDrawer({ advId, refreshKey, personaName }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(null) // flat path->value, only while editing
   const [saving, setSaving] = useState(false)
+  // Bumped by the refresh button so the script section re-fetches too.
+  const [tick, setTick] = useState(0)
 
   const load = useCallback(() => {
     api.getWorldState(advId)
@@ -153,18 +162,17 @@ function WorldStateDrawer({ advId, refreshKey, personaName }) {
       .catch(() => setFailed(true))
   }, [advId])
 
-  // Load once to learn whether there's an RPG layer, then refresh after turns.
   useEffect(() => { load() }, [load, refreshKey])
 
-  const schema = data?.schema
-  if (!schema) return null // no RPG layer for this adventure
+  const refresh = () => { load(); setTick((t) => t + 1) }
 
+  const schema = data?.schema // null when the adventure has no RPG layer
   const state = data?.state || {}
   const npcState = state.npc || {}
-  const npcs = Object.entries(schema.npcs || {}) // [id, def] — each with its own stats
-  const flags = Object.entries(schema.flags || {})
+  const npcs = Object.entries(schema?.npcs || {}) // [id, def] — each with its own stats
+  const flags = Object.entries(schema?.flags || {})
   const flagState = state.flags || {}
-  const milestones = Object.entries(schema.milestones || {})
+  const milestones = Object.entries(schema?.milestones || {})
   const reached = state.milestones || {}
 
   const startEdit = () => { setDraft(buildWorldStateDraft(schema, state)); setEditing(true) }
@@ -181,13 +189,13 @@ function WorldStateDrawer({ advId, refreshKey, personaName }) {
   return (
     <div className={`status-drawer ws-drawer ${open ? 'open' : ''}`}>
       <button className="status-toggle" onClick={() => setOpen((o) => !o)}
-        title="RPG world state">
-        {open ? '‹' : '›'}<span className="status-toggle-label">World</span>
+        title="World state and script variables">
+        {open ? '‹' : '›'}<span className="status-toggle-label">State</span>
       </button>
       {open && (
         <div className="status-body">
           <div className="side-panel-header">
-            <h2>World State</h2>
+            <h2>State</h2>
             {editing ? (
               <div className="ws-edit-actions">
                 <button onClick={cancelEdit} disabled={saving} title="Discard changes">Cancel</button>
@@ -197,14 +205,14 @@ function WorldStateDrawer({ advId, refreshKey, personaName }) {
               </div>
             ) : (
               <div className="ws-edit-actions">
-                <button onClick={startEdit} title="Edit current values">✎</button>
-                <button onClick={load} title="Refresh">↻</button>
+                {schema && <button onClick={startEdit} title="Edit current values">✎</button>}
+                <button onClick={refresh} title="Refresh">↻</button>
               </div>
             )}
           </div>
           {failed ? (
             <div className="empty">Couldn’t load world state.</div>
-          ) : (
+          ) : schema && (
             <>
               <StatGroup title={null} defs={schema.world} values={state.world}
                 editing={editing} draft={sliceDraft(draft, 'world')}
@@ -288,6 +296,12 @@ function WorldStateDrawer({ advId, refreshKey, personaName }) {
                 </div>
               )}
             </>
+          )}
+          {/* Waits for the world-state reply, because whether the adventure
+              has an RPG layer decides how this section starts. */}
+          {(data || failed) && (
+            <ScriptVariables advId={advId} refreshKey={`${refreshKey}:${tick}`}
+              hasSchema={!!schema} />
           )}
         </div>
       )}

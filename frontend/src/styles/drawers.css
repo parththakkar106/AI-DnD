@@ -89,6 +89,8 @@
 
 /* ---------- World State drawer (Phase 12 RPG) ---------- */
 .ws-group { margin-bottom: 18px; }
+.ws-script > summary { cursor: pointer; }
+.ws-script > summary:hover { color: var(--accent-bright); }
 .ws-group-title {
   font-size: 0.72rem;
   text-transform: uppercase;

@@ -76,10 +76,9 @@
   /* No hover on touch — keep per-action edit/delete tools visible. */
   .story .action-tools { opacity: 1; pointer-events: auto; }
 
-  /* ---------- Left rails (World State / Script State) → edge tabs + overlay ---------- */
+  /* ---------- Left rail (State drawer) → edge tab + overlay ---------- */
   /* Closed: a compact tab pinned to the left edge instead of a full-height
-     column that steals the story's width. World State sits above Script State.
-     (World State only renders for RPG adventures, so it may be absent.) */
+     column that steals the story's width. */
   .status-drawer {
     position: fixed;
     left: 0;
@@ -94,8 +93,6 @@
     border-radius: 0 10px 10px 0;
     box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
   }
-  .ws-drawer:not(.open) { top: 170px; }
-  .status-drawer:not(.ws-drawer):not(.open) { top: 260px; }
   .status-drawer:not(.open) .status-toggle { height: auto; padding: 14px 4px; }
 
   /* Open: slide-in overlay covering most of the screen. */
