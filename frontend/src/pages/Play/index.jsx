@@ -18,7 +18,6 @@ import { AutoTextarea, ReasoningBlock } from '../../components'
 import { DeltaEditor } from './DeltaEditor'
 import { StateChangeChips } from './reports'
 import { TakePager } from './TakePager'
-import { StatusDrawer } from './drawers/StatusDrawer'
 import { WorldStateDrawer } from './drawers/WorldStateDrawer'
 import { BranchPanel } from './panels/BranchPanel'
 import { InsightsPanel } from './panels/InsightsPanel'
@@ -510,13 +509,12 @@ export default function Play() {
 
   return (
     <div className={`play-layout ${panel ? 'with-panel' : ''}`}>
-      {/* Both drawers read per-adventure state that a branch switch puts back,
-          so neither can key on the story's length alone: switching between two
+      {/* The drawer reads per-adventure state that a branch switch puts back,
+          so it cannot key on the story's length alone: switching between two
           branches whose windows are both full changes every number in here
           without changing `actions.length` by one. */}
       <WorldStateDrawer advId={id} refreshKey={`${actions.length}:${stateKey}`}
         personaName={adventure?.persona_name} />
-      <StatusDrawer advId={id} refreshKey={`${actions.length}:${stateKey}`} />
       <div className="page play-page">
         <div className="page-header">
           <h1>{adventure.title}</h1>
