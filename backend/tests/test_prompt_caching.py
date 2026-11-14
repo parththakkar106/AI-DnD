@@ -304,7 +304,7 @@ def test_a_long_upstream_error_still_names_the_upstream(monkeypatch):
     monkeypatch.setattr(analytics, "record", lambda metric, label="", **kw: labels.append(label))
 
     provider = OpenAICompatibleProvider(
-        "https://openrouter.ai/api/v1", "k", "a:free", "chat", 0, ("b:free",)
+        "https://openrouter.ai/api/v1", "k", "a:free", "chat", 0, ("b:free",), True
     )
 
     async def drain():

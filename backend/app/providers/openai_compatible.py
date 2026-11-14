@@ -47,8 +47,8 @@ def demo_failure_label(status: int, detail: str) -> str:
     """Returns the reason a demo turn failed, as a dashboard error label.
 
     Players see one friendly sentence for every 429, so the counters keep
-    OpenRouter's own reason. Only fallback requests reach this, which are always
-    on the demo key, so a player's own key and endpoint never appear here.
+    OpenRouter's own reason. Only demo requests reach this, so a player's own
+    key and endpoint never appear here.
     """
     try:
         error = json.loads(detail)["error"]
@@ -75,6 +75,7 @@ class OpenAICompatibleProvider(Provider):
         api_mode: str = "chat",
         reasoning_max_tokens: int = 0,
         fallback_models: tuple[str, ...] = (),
+        demo: bool = False,
     ):
         self.base_url = endpoint_url.rstrip("/")
         self.api_key = api_key
@@ -86,6 +87,9 @@ class OpenAICompatibleProvider(Provider):
         # asks the endpoint to turn reasoning off.
         self.reasoning_max_tokens = reasoning_max_tokens
         self.fallback_models = fallback_models
+        # Whether the shared demo key pays for this request. It selects the
+        # dashboard error record and the demo wording of a rate-limit error.
+        self.demo = demo
         # The token accounting from the last call, when the endpoint reported
         # any. It holds the prompt and completion counts, plus, on OpenRouter,
         # `prompt_tokens_details.cached_tokens`, which is the number of prompt
@@ -280,7 +284,7 @@ class OpenAICompatibleProvider(Provider):
                         # longer JSON, so the label would lose the upstream name.
                         body_text = (await resp.aread()).decode(errors="replace")
                         detail = body_text[:500]
-                        if self.fallback_models:
+                        if self.demo:
                             analytics.record(
                                 analytics.M_ERROR, demo_failure_label(resp.status_code, body_text)
                             )
@@ -451,6 +455,17 @@ class OpenAICompatibleProvider(Provider):
                 return (
                     "The free demo has hit its daily request limit (resets at "
                     "00:00 UTC). Please try again later."
+                )
+            if self.demo and self.fallback_models:
+                return (
+                    "The free models are busy right now. Wait a moment and try "
+                    "again, or pick a different model from the menu next to Send."
+                )
+            if self.demo:
+                return (
+                    "This free model is busy right now. Pick a different model "
+                    "from the menu next to Send, or turn on backup models so "
+                    "another one answers when this one is busy."
                 )
             return "The AI is getting too many requests right now — wait a moment and try again."
         return f"AI endpoint returned HTTP {status}: {detail}"

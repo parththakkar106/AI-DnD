@@ -16,6 +16,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { api } from '../../api'
 import { AutoTextarea, ReasoningBlock } from '../../components'
 import { DeltaEditor } from './DeltaEditor'
+import { DemoModelPicker } from './DemoModelPicker'
 import { StateChangeChips } from './reports'
 import { TakePager } from './TakePager'
 import { StatusDrawer } from './drawers/StatusDrawer'
@@ -723,6 +724,7 @@ export default function Play() {
             <button onClick={() => send('continue')} disabled={busy}>Continue ▸</button>
             <button onClick={retry} disabled={busy || !lastIsAi} title="Ctrl+R">↻ Retry</button>
             <button onClick={undo} disabled={busy || !canUndo} title="Ctrl+Z">↶ Undo</button>
+            <DemoModelPicker disabled={busy} />
           </div>
           <div className="input-bar">
             <div className="mode-select">

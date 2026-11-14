@@ -110,6 +110,14 @@ DEMO_CAP_MESSAGE = (
 )
 
 
+def demo_choices() -> list[str]:
+    """Returns every model a demo player can pick, the operator's list first.
+
+    The fallbacks are already limited to `:free` models.
+    """
+    return list(dict.fromkeys(DEMO_MODELS + DEMO_FALLBACK_MODELS))
+
+
 def demo_enabled() -> bool:
     # The demo key is a hosted-deployment feature. A local install talks to
     # whatever endpoint Settings points at, even with no API key, such as
@@ -146,7 +154,7 @@ class ProviderConfig:
         # even from `GET /auth/me` and took the whole SPA down. `using_demo` is
         # what means the server is paying, and only the demo branch below sets
         # it.
-        if self.using_demo and self.model not in DEMO_MODELS:
+        if self.using_demo and self.model not in demo_choices():
             raise ValueError(
                 f"Refusing to use the shared demo key with non-whitelisted model {self.model!r}"
             )
@@ -162,10 +170,12 @@ def resolve_provider_config(
     allowlist rule lives. Every caller has to come through this function rather
     than build a `ProviderConfig` itself. On the demo key:
 
-    * The model is pinned to `DEMO_MODELS`, so a caller-supplied override from
+    * The model is pinned to `demo_choices()`, so a caller-supplied override from
       the AI Chat page, or a hand-edited Settings row, cannot point a
       server-funded key at a paid model. An unrecognized model falls back to
       `DEMO_MODELS[0]`.
+    * The other choices are fallbacks only when the player left
+      `demo_fallback` on.
     * The endpoint is pinned to `DEMO_ENDPOINT_URL`, so the key cannot be
       redirected to a URL the user controls and captured there.
 
@@ -177,8 +187,10 @@ def resolve_provider_config(
     requested = (model_override or "").strip() or settings.model
     if key or not demo_enabled():
         return ProviderConfig(settings.endpoint_url, key, requested, False)
-    model = requested if requested in DEMO_MODELS else DEMO_MODELS[0]
-    fallbacks = tuple(m for m in DEMO_FALLBACK_MODELS if m != model)
+    picked = (model_override or "").strip() or settings.demo_model or settings.model
+    choices = demo_choices()
+    model = picked if picked in choices else DEMO_MODELS[0]
+    fallbacks = tuple(m for m in choices if m != model) if settings.demo_fallback else ()
     return ProviderConfig(DEMO_ENDPOINT_URL, DEMO_API_KEY, model, True, fallbacks)
 
 

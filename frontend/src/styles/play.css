@@ -282,6 +282,12 @@
 .turn-buttons { display: flex; gap: 8px; margin-bottom: 10px; }
 .turn-buttons button { font-size: 0.78rem; padding: 4px 12px; color: var(--text-dim); }
 .turn-buttons button:hover:not(:disabled) { color: var(--text); }
+.demo-model-picker {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px;
+  margin-left: auto; font-size: 0.78rem;
+}
+.demo-model-picker label { display: flex; align-items: center; gap: 6px; }
+.demo-model-picker select { font-size: 0.78rem; padding: 3px 6px; max-width: 12rem; }
 
 .input-bar { display: flex; gap: 8px; align-items: flex-end; }
 .input-bar input { flex: 1; }

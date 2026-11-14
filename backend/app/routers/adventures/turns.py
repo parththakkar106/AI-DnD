@@ -201,9 +201,13 @@ async def _generate_turn(
         "context_after": modified if context_changed else None,
     }
 
+    # On the demo key, an unset reasoning budget turns reasoning off. The free
+    # Nemotron models reason by default and can spend the whole output budget
+    # on it, which returns a turn with no story text.
+    reasoning = settings.reasoning_max_tokens or (-1 if cfg.using_demo else 0)
     provider = OpenAICompatibleProvider(
         cfg.endpoint_url, cfg.api_key, cfg.model, settings.api_mode,
-        settings.reasoning_max_tokens, cfg.fallback_models,
+        reasoning, cfg.fallback_models, cfg.using_demo,
     )
     chunks: list[str] = []
     reasoning_chunks: list[str] = []
