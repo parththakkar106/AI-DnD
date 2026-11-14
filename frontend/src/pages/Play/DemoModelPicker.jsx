@@ -56,7 +56,7 @@ export function DemoModelPicker({ disabled }) {
       <label title="If this model is busy, another free model answers the turn.">
         <input type="checkbox" checked={!!demo.fallback} disabled={disabled || saving}
           onChange={(e) => save({ demo_fallback: e.target.checked })} />
-        <span className="dim">Use backup models when busy</span>
+        <span className="dim">Backup models</span>
       </label>
     </div>
   )
