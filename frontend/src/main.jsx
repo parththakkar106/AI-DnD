@@ -12,6 +12,7 @@ import ScriptEditor from './pages/ScriptEditor.jsx'
 import Settings from './pages/Settings.jsx'
 import Chat from './pages/Chat.jsx'
 import Analytics from './pages/Analytics.jsx'
+import Feedback from './pages/Feedback.jsx'
 import { trackKeyboardInset } from './keyboard.js'
 import './index.css'
 
@@ -30,6 +31,7 @@ const router = createBrowserRouter([
       { path: 'scripts', element: <Scripts /> },
       { path: 'scripts/:id', element: <ScriptEditor /> },
       { path: 'settings', element: <Settings /> },
+      { path: 'feedback', element: <Feedback /> },
       // Power users only — the page redirects home and the API 404s otherwise.
       { path: 'chat', element: <Chat /> },
       // Owner only, by a separate allowlist; same redirect-and-404 treatment.

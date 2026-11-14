@@ -97,6 +97,11 @@ export const api = {
   getPerson: (userId) => request(`/analytics/access/${userId}`),
   // The browsers the log has seen, the ones most people use first.
   getAccessDevices: (limit = 12) => request(`/analytics/access/devices?limit=${limit}`),
+  // Feedback. Anyone with a session sends; only the owner lists.
+  sendFeedback: ({ message, email }) =>
+    request('/feedback', { method: 'POST', body: JSON.stringify({ message, email }) }),
+  listFeedback: (beforeId) =>
+    request(`/feedback${beforeId != null ? `?before_id=${beforeId}` : ''}`),
 
   // Auth (Phase 8 — no-ops in local mode beyond getMe)
   // Shares the bootstrap above, so a getMe racing a page's own 401 is one
