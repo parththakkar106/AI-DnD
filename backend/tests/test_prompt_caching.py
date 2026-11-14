@@ -278,3 +278,39 @@ def test_a_new_turn_only_appends_to_the_cached_prefix(story):
     shared = os.path.commonprefix([story_a, story_b])
     assert "[0] The road bends" in shared
     assert "[5] The road bends" in shared
+
+
+def test_a_long_upstream_error_still_names_the_upstream(monkeypatch):
+    """Upstream errors often run past the 500 characters the player message
+    keeps. The label must parse the whole body, or the upstream name is lost."""
+    import asyncio
+
+    import httpx
+
+    from app import analytics
+    from app.providers import openai_compatible
+
+    body = (
+        '{"error": {"message": "Provider returned error", "code": 429, "metadata": '
+        '{"raw": "' + "x" * 600 + '", "provider_name": "Google AI Studio"}}}'
+    )
+    transport = httpx.MockTransport(lambda request: httpx.Response(429, text=body))
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        openai_compatible.httpx, "AsyncClient",
+        lambda **kwargs: real_client(transport=transport, **kwargs),
+    )
+    labels = []
+    monkeypatch.setattr(analytics, "record", lambda metric, label="", **kw: labels.append(label))
+
+    provider = OpenAICompatibleProvider(
+        "https://openrouter.ai/api/v1", "k", "a:free", "chat", 0, ("b:free",)
+    )
+
+    async def drain():
+        async for _ in provider._stream("https://openrouter.ai/api/v1/chat/completions", {}):
+            pass
+
+    with pytest.raises(openai_compatible.ProviderError):
+        asyncio.run(drain())
+    assert labels and labels[0].startswith("demo 429 Google AI Studio: xxx")
