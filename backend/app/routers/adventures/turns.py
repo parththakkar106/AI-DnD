@@ -335,7 +335,7 @@ def check_demo_cap(db: Session, user: models.User) -> None:
     """
     settings = get_settings(db, user)
     if auth.resolve_provider_config(settings).using_demo and auth.demo_turns_left(user) <= 0:
-        raise HTTPException(429, auth.DEMO_CAP_MESSAGE)
+        raise HTTPException(429, auth.demo_cap_message(user))
 
 
 async def run_player_turn(

@@ -388,7 +388,7 @@ export function useBeginAdventure() {
   return { start, startBlank, modal }
 }
 
-export function AuthModal({ mode: initialMode, onClose, onAuthed, retentionDays }) {
+export function AuthModal({ mode: initialMode, onClose, onAuthed, retentionDays, accountTurns }) {
   const [mode, setMode] = useState(initialMode || 'register')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -437,6 +437,9 @@ export function AuthModal({ mode: initialMode, onClose, onAuthed, retentionDays 
           {registering
             ? 'Everything you’ve played as a guest stays with your new account, and you can pick it up from any device.'
             : 'Log in to reach your adventures.'}
+          {registering && accountTurns ? (
+            <> Accounts get {accountTurns} free turns a day.</>
+          ) : null}
           {/* Guest data really is deleted, so say so where the decision is
               being made. The window comes from the server (see cleanup.py) so
               it can't drift from what's enforced. */}

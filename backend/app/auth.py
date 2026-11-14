@@ -83,7 +83,12 @@ DEMO_FALLBACK_MODELS = _free_models(os.environ.get(
     "google/gemma-4-31b-it:free,nvidia/nemotron-3.5-super-vl:free,"
     "google/gemma-4-26b-a4b-it:free",
 ))
+# Daily demo turns. A guest gets the first number, and a signed-up account gets
+# the second, which gives guests a reason to sign up.
 DEMO_TURNS_PER_DAY = int(os.environ.get("AIDND_DEMO_TURNS_PER_DAY", "20") or 20)
+DEMO_ACCOUNT_TURNS_PER_DAY = int(
+    os.environ.get("AIDND_DEMO_ACCOUNT_TURNS_PER_DAY", "50") or 50
+)
 
 # Trusted testers, listed by email, who bypass the daily demo cap and take
 # unmetered turns on the shared demo key. The list is comma-separated, and the
@@ -104,10 +109,19 @@ ANALYTICS_EMAILS = {
     if e.strip()
 }
 
-DEMO_CAP_MESSAGE = (
-    f"You've used all {DEMO_TURNS_PER_DAY} free demo turns for today. "
-    "Add your own API key in Settings to keep playing (it resets tomorrow)."
-)
+
+def demo_cap_message(user: models.User) -> str:
+    """Returns the message a player sees when they reach their daily demo cap."""
+    used = f"You've used all {demo_turns_per_day(user)} free demo turns for today."
+    if user.is_guest:
+        return (
+            f"{used} Sign up for {DEMO_ACCOUNT_TURNS_PER_DAY} free turns a day, or "
+            "add your own API key in Settings. Your turns reset tomorrow."
+        )
+    return (
+        f"{used} Add your own API key in Settings to keep playing. "
+        "Your turns reset tomorrow."
+    )
 
 
 def demo_choices() -> list[str]:
@@ -223,13 +237,17 @@ def is_owner(user: models.User) -> bool:
     return bool(user.email) and user.email.lower() in ANALYTICS_EMAILS
 
 
+def demo_turns_per_day(user: models.User) -> int:
+    return DEMO_TURNS_PER_DAY if user.is_guest else DEMO_ACCOUNT_TURNS_PER_DAY
+
+
 def demo_turns_left(user: models.User) -> int:
     # A power user is never capped, so report the full cap and let the banner
     # read "N of N" rather than count down.
     if is_power_user(user):
-        return DEMO_TURNS_PER_DAY
+        return demo_turns_per_day(user)
     used = user.demo_turns_used if user.demo_turns_date == _today() else 0
-    return max(0, DEMO_TURNS_PER_DAY - used)
+    return max(0, demo_turns_per_day(user) - used)
 
 
 def count_demo_turn(user: models.User) -> None:

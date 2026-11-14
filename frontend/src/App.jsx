@@ -108,10 +108,12 @@ export default function App() {
               {me.is_guest ? (
                 <>
                   <span className="guest-nudge"
-                    title={me.guest_retention_days
-                      ? `Guest adventures are deleted after ${me.guest_retention_days} days without a visit.`
-                      : undefined}>
-                    Playing as guest — sign up to keep your adventures
+                    title={'Sign up to keep your adventures.' + (me.guest_retention_days
+                      ? ` Guest adventures are deleted after ${me.guest_retention_days} days without a visit.`
+                      : '')}>
+                    {me.demo?.enabled
+                      ? `Playing as guest — sign up for ${me.demo.account_turns_per_day} free turns a day`
+                      : 'Playing as guest — sign up to keep your adventures'}
                   </span>
                   <button onClick={() => setAuthMode('login')}>Log in</button>
                   <button className="primary" onClick={() => setAuthMode('register')}>Sign up</button>
@@ -138,7 +140,8 @@ export default function App() {
       <Outlet context={{ me, setMe }} />
       {authMode && (
         <AuthModal mode={authMode} onClose={() => setAuthMode(null)} onAuthed={onAuthed}
-          retentionDays={me?.guest_retention_days} />
+          retentionDays={me?.guest_retention_days}
+          accountTurns={me?.demo?.enabled ? me.demo.account_turns_per_day : null} />
       )}
     </ToastHost>
   )
