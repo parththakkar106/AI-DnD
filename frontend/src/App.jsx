@@ -138,7 +138,8 @@ export default function App() {
       <Outlet context={{ me, setMe }} />
       {authMode && (
         <AuthModal mode={authMode} onClose={() => setAuthMode(null)} onAuthed={onAuthed}
-          retentionDays={me?.guest_retention_days} />
+          retentionDays={me?.guest_retention_days}
+          accountTurns={me?.demo?.enabled ? me.demo.account_turns_per_day : null} />
       )}
     </ToastHost>
   )

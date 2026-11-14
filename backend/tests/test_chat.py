@@ -275,3 +275,17 @@ def test_oversized_conversation_is_refused(client, monkeypatch):
         "messages": [{"role": "user", "content": huge} for _ in range(5)],
     })
     assert resp.status_code == 413, resp.text
+
+
+def test_a_signed_up_account_gets_the_larger_daily_demo_cap(monkeypatch):
+    monkeypatch.setattr(auth, "MULTI_USER", True)
+    monkeypatch.setattr(auth, "DEMO_TURNS_PER_DAY", 20)
+    monkeypatch.setattr(auth, "DEMO_ACCOUNT_TURNS_PER_DAY", 50)
+    today = auth._today()
+    guest = models.User(is_guest=True, demo_turns_used=20, demo_turns_date=today)
+    account = models.User(is_guest=False, email="a@b.c", demo_turns_used=20,
+                          demo_turns_date=today)
+    assert auth.demo_turns_left(guest) == 0
+    assert auth.demo_turns_left(account) == 30
+    assert "Sign up for 50" in auth.demo_cap_message(guest)
+    assert "Sign up" not in auth.demo_cap_message(account)
