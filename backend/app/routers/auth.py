@@ -38,7 +38,8 @@ def me_payload(user: models.User, db: Session) -> dict:
             "model": cfg.model if cfg.using_demo else None,
             "turns_per_day": auth.DEMO_TURNS_PER_DAY,
             "turns_left": auth.demo_turns_left(user) if auth.demo_enabled() else None,
-            "models": auth.DEMO_MODELS if auth.demo_enabled() else [],
+            "models": auth.demo_choices() if auth.demo_enabled() else [],
+            "fallback": settings.demo_fallback,
         },
     }
 
@@ -70,7 +71,8 @@ def visitor_payload(visitor: auth.Visitor) -> dict:
             "model": auth.DEMO_MODELS[0] if auth.demo_enabled() else None,
             "turns_per_day": auth.DEMO_TURNS_PER_DAY,
             "turns_left": auth.DEMO_TURNS_PER_DAY if auth.demo_enabled() else None,
-            "models": auth.DEMO_MODELS if auth.demo_enabled() else [],
+            "models": auth.demo_choices() if auth.demo_enabled() else [],
+            "fallback": True,
         },
     }
 

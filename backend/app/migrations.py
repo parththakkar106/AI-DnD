@@ -356,6 +356,12 @@ MIGRATIONS: list[tuple[int, str | dict[str, str]]] = [
     (79, "ALTER TABLE users ADD COLUMN visitor_key VARCHAR(64)"),
     (80, "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_visitor_key "
          "ON users (visitor_key)"),
+    # The demo model picker. Existing players keep the model they were playing
+    # on, which was Gemma 4 26B on the hosted site, and keep fallbacks off. New
+    # rows get fallbacks on from the model default.
+    (81, "ALTER TABLE settings ADD COLUMN demo_model VARCHAR(200) NOT NULL DEFAULT ''"),
+    (82, "ALTER TABLE settings ADD COLUMN demo_fallback BOOLEAN NOT NULL DEFAULT FALSE"),
+    (83, "UPDATE settings SET demo_model = 'google/gemma-4-26b-a4b-it:free'"),
 ]
 
 LATEST_VERSION = max((v for v, _ in MIGRATIONS), default=1)

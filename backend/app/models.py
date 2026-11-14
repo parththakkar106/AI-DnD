@@ -679,6 +679,14 @@ class Settings(Base):
     # max_output_tokens so story output keeps its full budget.
     reasoning_max_tokens: Mapped[int] = mapped_column(Integer, default=0)
     context_token_budget: Mapped[int] = mapped_column(Integer, default=16384)
+    # The model a player on the shared demo key picked from `auth.demo_choices()`.
+    # It is separate from `model`, so a demo pick never changes the model used
+    # with the player's own key. An empty value means `DEMO_MODELS[0]`.
+    demo_model: Mapped[str] = mapped_column(String(200), default="")
+    # Whether a demo turn tries the other demo models when the picked one fails.
+    # Migration 82 sets it off for players who existed before it, so they keep
+    # answers from one model unless they turn it on.
+    demo_fallback: Mapped[bool] = mapped_column(Boolean, default=True)
     narrator_prompt: Mapped[str] = mapped_column(
         Text,
         default=(

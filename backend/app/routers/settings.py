@@ -1,5 +1,5 @@
 import httpx
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
@@ -60,6 +60,8 @@ def update_settings(
 ):
     settings = get_settings(db, user)
     fields = payload.model_dump(exclude_unset=True)
+    if fields.get("demo_model") and fields["demo_model"] not in auth.demo_choices():
+        raise HTTPException(422, "That model isn't one of the free demo models.")
     # Write-only API key: absent = unchanged, "" = cleared, else encrypted.
     if "api_key" in fields:
         fields["api_key"] = security.encrypt_secret(fields["api_key"].strip())

@@ -460,6 +460,8 @@ class SettingsOut(ORMModel):
     max_output_tokens: int
     reasoning_max_tokens: int
     context_token_budget: int
+    demo_model: str
+    demo_fallback: bool
     narrator_prompt: str
     summary_model: str
     embedding_model: str
@@ -506,6 +508,10 @@ class SettingsUpdate(BaseModel):
     # `reasoning: {effort: none}`. A value of 0 sends nothing.
     reasoning_max_tokens: Annotated[int, Field(ge=-1, le=100_000)] | None = None
     context_token_budget: Annotated[int, Field(ge=256, le=200_000)] | None = None
+    # Checked against `auth.demo_choices()` in the route. An empty value means the
+    # first demo model.
+    demo_model: Name | None = None
+    demo_fallback: bool | None = None
     narrator_prompt: Prose | None = None
     summary_model: Name | None = None
     embedding_model: Name | None = None

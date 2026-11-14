@@ -245,10 +245,23 @@ def test_demo_fallbacks_skip_the_chosen_model_and_stay_off_byok(monkeypatch):
     monkeypatch.setattr(auth, "DEMO_MODELS", ["a:free"])
     monkeypatch.setattr(auth, "DEMO_FALLBACK_MODELS", ["a:free", "b:free"])
 
-    no_key = models.Settings(endpoint_url="http://mine/v1", api_key="", model="a:free")
+    no_key = models.Settings(endpoint_url="http://mine/v1", api_key="", model="a:free",
+                             demo_fallback=True)
     assert auth.resolve_provider_config(no_key).fallback_models == ("b:free",)
     byok = models.Settings(endpoint_url="http://mine/v1", api_key="sk-mine", model="x")
     assert auth.resolve_provider_config(byok).fallback_models == ()
+
+    # A player can pick a fallback model as their main one, and the operator's
+    # model becomes its fallback.
+    no_key.demo_model = "b:free"
+    cfg = auth.resolve_provider_config(no_key)
+    assert (cfg.model, cfg.fallback_models) == ("b:free", ("a:free",))
+    # With fallbacks off, only the picked model is tried.
+    no_key.demo_fallback = False
+    assert auth.resolve_provider_config(no_key).fallback_models == ()
+    # A model that is not a demo choice falls back to the operator's first one.
+    no_key.demo_model = "paid/model"
+    assert auth.resolve_provider_config(no_key).model == "a:free"
 
 
 def test_a_paid_model_cannot_enter_the_demo_fallbacks():
