@@ -269,6 +269,12 @@
   font-size: inherit;
 }
 .action-edit .edit-buttons { display: flex; gap: 8px; margin-top: 6px; }
+/* On a phone the keyboard takes about half the screen, and the sticky headers
+   take more. dvh shrinks with the keyboard (interactive-widget=resizes-content),
+   so this cap keeps the text and Save/Cancel visible together. */
+@media (max-width: 720px) {
+  .action-edit textarea { max-height: 40dvh; }
+}
 
 .play-controls {
   position: sticky;

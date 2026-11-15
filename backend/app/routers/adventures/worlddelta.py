@@ -14,6 +14,11 @@ wants `PUT /world-state`, which sets values outright and is a different act.
 Only the newest turn can be revised. A delta halfway up the story is the input to
 every state that followed it, and re-running one would leave those states
 describing a turn that no longer happened.
+
+The other takes of the newest turn can be revised too. A take on the tip's branch
+that is not live is a leaf, so no later state depends on it. Its revision is
+stored on the take and leaves the live world state alone. Writing below the take
+makes it live, and `attempts.make_live` restores the revised state then.
 """
 
 import copy
@@ -72,6 +77,23 @@ def _is_the_newest_turn(db: Session, adventure: models.Adventure,
     return tip is not None and tip.id == action.id
 
 
+def _is_a_take_of_the_newest_turn(db: Session, adventure: models.Adventure,
+                                  action: models.Action) -> bool:
+    """Returns whether `action` is a non-live take beside the tip, on its branch.
+
+    The branch check matters. A take forked onto its own branch has a story under
+    it, so its delta is the input to later states, as an older turn's is.
+    """
+    tip = db_tip(db, adventure)
+    return (
+        tip is not None
+        and not action.live
+        and tip.parent_id is not None
+        and action.parent_id == tip.parent_id
+        and action.branch_id == tip.branch_id
+    )
+
+
 @router.get("/{adventure_id}/actions/{action_id}/world-delta")
 def get_world_delta(
     action_id: int,
@@ -100,7 +122,8 @@ def get_world_delta(
         "clamped": wd.get("clamped") or [],
         "rejected": wd.get("rejected") or [],
         "revised": bool(wd.get("revised")),
-        "editable": _is_the_newest_turn(db, adventure, action),
+        "editable": _is_the_newest_turn(db, adventure, action)
+        or _is_a_take_of_the_newest_turn(db, adventure, action),
     }
 
 
@@ -128,7 +151,8 @@ def revise_world_delta(
     action = _ai_action_or_404(db, adventure, action_id)
     if not isinstance(delta, dict):
         raise HTTPException(422, "The delta must be an object of path → change")
-    if not _is_the_newest_turn(db, adventure, action):
+    live = _is_the_newest_turn(db, adventure, action)
+    if not live and not _is_a_take_of_the_newest_turn(db, adventure, action):
         raise HTTPException(
             409,
             "Only the newest turn's changes can be revised. Later turns were "
@@ -146,7 +170,10 @@ def revise_world_delta(
             delta,
             action.depth or 0,
         )
-        adventure.world_state = new_state
+        # A take that is not live is only read, so the story does not stand on
+        # its state yet. See the module docstring.
+        if live:
+            adventure.world_state = new_state
         # The turn's outcome is what the story now stands on, so the node has to
         # carry the revised state and not the one the AI produced. A later undo,
         # delete, or take switch restores this node's outcome, and leaving the
