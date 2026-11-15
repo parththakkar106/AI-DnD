@@ -239,3 +239,26 @@ def test_each_take_carries_its_own_changes(client):
     assert r.status_code == 200, r.text
     takes = client.get(f"/api/adventures/{client.adv_id}/actions/{tip['id']}/variants").json()
     assert [[c["delta"] for c in t["world_changes"]] for t in takes] == [[-20, 5], [-20]]
+
+
+def test_a_take_that_is_not_live_is_revised_on_the_take(client):
+    """The newest turn's other takes are leaves, so they can be revised. The
+    world state stays on the live take until the player writes below the
+    revised one."""
+    ScriptedProvider.replies.append("All quiet.\n```state_delta\n{}\n```")
+    play_turn(client, "attack")
+    first = _ai_actions(client.adv_id)[-1]
+    r = client.post(f"/api/adventures/{client.adv_id}/actions/{first}/takes", json={"text": ""})
+    assert r.status_code == 200, r.text
+    assert _world(client.adv_id)["player"]["hp"] == 80
+
+    r = client.get(f"/api/adventures/{client.adv_id}/actions/{first}/world-delta")
+    assert r.json()["editable"] is True
+    r = _revise(client, first, {"player.hp": -5})
+    assert r.status_code == 200, r.text
+    assert r.json()["action"]["world_changes_revised"] is True
+    # The live take still decides the state.
+    assert _world(client.adv_id)["player"]["hp"] == 80
+
+    play_turn(client, "wait", after_id=first)
+    assert _world(client.adv_id)["player"]["hp"] == 95

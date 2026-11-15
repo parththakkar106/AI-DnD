@@ -66,10 +66,10 @@ export default function Play() {
   // (currently "Update from scenario"), which no action count would reflect.
   const [stateKey, setStateKey] = useState(0)
   const [inspectActionId, setInspectActionId] = useState(null)
-  // The turn whose state changes are open for editing, or null. Only ever the
-  // newest turn: every state after a turn was played from what it left behind,
-  // so re-running an older one would leave those behind describing a turn the
-  // story no longer contains. The server refuses it too.
+  // The node whose state changes are open for editing, or null. Only ever the
+  // newest turn or one of its takes: every state after a turn was played from
+  // what it left behind, so re-running an older one would leave those behind
+  // describing a turn the story no longer contains. The server refuses it too.
   const [revising, setRevising] = useState(null)
   // Which take is being read, when it is not the live one (see TakePager).
   // One at a time; null when every message is showing the take the story tells.
@@ -106,6 +106,7 @@ export default function Play() {
   const abortRef = useRef(null)
   const pinnedRef = useRef(true) // autoscroll only while the reader is at the bottom
   const inputRef = useRef(null)
+  const editBoxRef = useRef(null)
   // Set just before older actions are prepended, read once afterwards to put
   // the reader back where they were. See the layout effect below.
   const restoreScrollRef = useRef(null)
@@ -418,6 +419,33 @@ export default function Play() {
     if (editing?.take && preview?.takeId !== editing.id) setEditing(null)
   }, [editing, preview])
 
+  // Opening an editor puts the caret at the end and keeps the box in view
+  // while a phone keyboard opens. Without this, Android places the caret at
+  // the start and scrolls the top of the text into view, so the end of a long
+  // message sits under the keyboard where it cannot be tapped.
+  const editingKey = editing && `${editing.id}:${!!editing.take}:${!!editing.fork}`
+  useEffect(() => {
+    const box = editBoxRef.current
+    const el = box?.querySelector('textarea')
+    if (!el) return undefined
+    el.focus({ preventScroll: true })
+    el.setSelectionRange(el.value.length, el.value.length)
+    // The keyboard resizes the viewport over several frames after focus, and
+    // the box's max-height shrinks with it.
+    const reveal = () => {
+      el.scrollTop = el.scrollHeight
+      box.scrollIntoView({ block: 'end' })
+    }
+    reveal()
+    const vv = window.visualViewport
+    vv?.addEventListener('resize', reveal)
+    const stop = setTimeout(() => vv?.removeEventListener('resize', reveal), 1000)
+    return () => {
+      clearTimeout(stop)
+      vv?.removeEventListener('resize', reveal)
+    }
+  }, [editingKey])
+
   async function saveEdit() {
     const { id: actionId, text, fork, take } = editing
     setEditing(null)
@@ -578,13 +606,19 @@ export default function Play() {
             // keyed by the live node, so an edit on a take the pager is parked
             // on carries the take's id instead and is matched through the
             // preview.
+            // The node the ⚖ editor revises: the take on screen, which is
+            // the live node unless the pager is parked on another take.
+            const revisingId = previewing ? previewing.takeId : action.id
             const editingHere = editing
               && (editing.take ? previewing?.takeId === editing.id : editing.id === action.id)
 
             return editingHere ? (
-              <div key={action.id} className="action-edit">
+              <div key={action.id} className="action-edit" ref={editBoxRef}>
+                {/* spellCheck off: on Android, tapping an underlined word
+                    opens Chrome's suggestion popup, which hides the keyboard.
+                    The keyboard's own suggestion strip still corrects words. */}
                 <AutoTextarea
-                  autoFocus
+                  spellCheck={false}
                   value={editing.text}
                   onChange={(e) => setEditing({ ...editing, text: e.target.value })}
                 />
@@ -610,13 +644,25 @@ export default function Play() {
                   {/* Closes itself when the turn stops being the newest one
                       — a turn played under it, an undo — because that is the
                       moment the server stops accepting a revision of it. */}
-                  {revising === action.id && action.id === revisableId
-                    && !shown && !busy && (
+                  {revising === revisingId && action.id === revisableId
+                    && (!shown || previewing) && !busy && (
                     <DeltaEditor
+                      key={revisingId}
                       advId={id}
-                      actionId={action.id}
+                      actionId={revisingId}
                       onClose={() => setRevising(null)}
                       onSaved={(result) => {
+                        if (previewing) {
+                          // A take that is only being read leaves the live
+                          // world state alone. Its chips come from the
+                          // preview, and the pager's cached list is stale.
+                          const { world_changes: worldChanges,
+                            world_changes_revised: worldChangesRevised } = result.action
+                          setPreview((p) => (p && p.takeId === result.action.id
+                            ? { ...p, worldChanges, worldChangesRevised } : p))
+                          setTakesKey((k) => k + 1)
+                          return
+                        }
                         // The chips are rendered from the action, so the row
                         // has to take the revised one. The drawers read the
                         // live world state, which this just moved.
@@ -685,14 +731,14 @@ export default function Play() {
                             }))}
                         >⑂</button>
                       )}
-                      {/* Only on the newest turn. An older turn's changes are
-                          the starting position of every turn under it, so the
-                          referee cannot replay one without the states below it
-                          becoming wrong. */}
-                      {action.id === revisableId && !shown && (
+                      {/* Only on the newest turn and its takes. An older
+                          turn's changes are the starting position of every
+                          turn under it, so the referee cannot replay one
+                          without the states below it becoming wrong. */}
+                      {action.id === revisableId && (!shown || previewing) && (
                         <button title="Adjust this turn's state changes"
                           onClick={() => setRevising(
-                            (open) => (open === action.id ? null : action.id))}>⚖</button>
+                            (open) => (open === revisingId ? null : revisingId))}>⚖</button>
                       )}
                       <button title="Delete" onClick={() => removeAction(action.id)}>✕</button>
                     </span>
@@ -717,7 +763,10 @@ export default function Play() {
           <div ref={storyEndRef} />
         </div>
 
-        <div className="play-controls">
+        {/* Hidden while a message is being edited. On a phone, the composer
+            and the keyboard together leave too little room to see the edit
+            box. */}
+        <div className="play-controls" hidden={!!editing}>
           <div className="turn-buttons">
             <button onClick={() => send('continue')} disabled={busy}>Continue ▸</button>
             <button onClick={retry} disabled={busy || !lastIsAi} title="Ctrl+R">↻ Retry</button>
