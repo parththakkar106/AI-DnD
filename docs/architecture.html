@@ -566,7 +566,7 @@ footer {
 <section id="topology">
   <div class="tags"><span class="tag hld">HLD</span></div>
   <h3>1.1 &ensp;One process, two things outside it</h3>
-  <p>Production is a single Docker web service on Render. It serves both the API and the built SPA. Only two things live off-box: the database and the model endpoint.</p>
+  <p>Production is a single Docker container on an Oracle Cloud server, behind Caddy. It serves both the API and the built SPA. Only two things live off-box: the database and the model endpoint.</p>
   <p>This shape is not an accident. It is what makes the in-process turn lock and the in-memory rate limiter honest. It is also what the <em>Known limitations</em> list is measured against.</p>
 </section>
 
@@ -600,7 +600,7 @@ footer {
 
     <!-- the one process -->
     <rect x="258" y="34" width="330" height="266" rx="3" class="svg-box-hi"/>
-    <text x="423" y="58" text-anchor="middle" class="svg-t">One Render web service</text>
+    <text x="423" y="58" text-anchor="middle" class="svg-t">One app container</text>
     <text x="423" y="75" text-anchor="middle" class="svg-t-sm">uvicorn &middot; single worker</text>
 
     <rect x="278" y="92" width="132" height="40" rx="2" class="svg-box"/>

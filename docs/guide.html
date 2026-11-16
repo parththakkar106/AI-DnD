@@ -1260,7 +1260,7 @@ async def with_turn_lock(adventure_id, gen):  # wraps the SSE generator
         _active_turns.discard(adventure_id)</code></pre>
 
 <p>In-memory, so it’s a single-process guarantee. That’s honest for the deployment this targets —
-one Render web service. Two processes would need the lock in the database.</p>
+one container. Two processes would need the lock in the database.</p>
 
 <h3 id="s25"><span class="h-num">2.5</span>The 189× egress fix</h3>
 
@@ -1462,12 +1462,23 @@ enforces, otherwise the cap is trivially bypassed by uploading a file.</p>
 
 <h3><span class="h-num">3.5</span>Deployment</h3>
 
-<p>One Docker web service on Render, serving the SPA and the API same-origin, with Postgres on Neon.</p>
+<p>One Docker container serving the SPA and the API same-origin, with Postgres on Neon.</p>
 
-<p>The Postgres decision was forced: Render’s free tier has no persistent disk, so a SQLite file
-wouldn’t survive a deploy. The database lives off-box.</p>
+<p>Production runs at <a href="https://dnd.parth.party">dnd.parth.party</a> on an arm64 Oracle
+Cloud server, behind Caddy. The database is a Neon project in Singapore, the same region as the
+server. Before that move, each database round trip crossed to us-east-1 and cost about 240&nbsp;ms,
+so one page that ran three queries took more than a second.</p>
 
-<p>Two things worth knowing about the free tier:</p>
+<p>A push to <code>main</code> publishes an arm64 image to GitHub Container Registry and then
+deploys it. The deploy job uses an SSH key that the server pins to one command, so the key can only
+pull the new image and restart the container. The old Render host stays up as a redirect: every
+page sends the visitor to the new host with their session (<code>backend/app/redirect.py</code>).</p>
+
+<p>The project started on Render, and <code>render.yaml</code> still deploys a copy there. The
+Postgres decision came from that host: Render’s free tier has no persistent disk, so a SQLite file
+wouldn’t survive a deploy.</p>
+
+<p>Two things worth knowing if you run it on Render’s free tier:</p>
 
 <ul>
   <li>The service <strong>sleeps after ~15 minutes idle</strong>, and the first request then takes

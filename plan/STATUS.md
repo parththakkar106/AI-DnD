@@ -11,8 +11,8 @@ session; the per-phase plan files hold the detail, this holds the thread.
 
 **Production is `https://dnd.parth.party`** (moved 2026-10-25). The image runs on the
 shared Oracle ARM server behind Caddy, from `/srv/ai-dnd/compose.yml`, and CI deploys it
-from `main` (the `image` and `deploy` jobs in `.github/workflows/ci.yml`). The database is
-still Neon us-east-1. The Render service stays up with `AIDND_ASGI_APP=app.redirect:app`,
+from `main` (the `image` and `deploy` jobs in `.github/workflows/ci.yml`). The database moved
+to a Neon project in Singapore (`ap-southeast-1`) on 2026-11-05, next to the server. The Render service stays up with `AIDND_ASGI_APP=app.redirect:app`,
 which redirects every page to the new host and carries the session across
 (`backend/app/redirect.py`).
 

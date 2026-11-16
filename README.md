@@ -251,7 +251,19 @@ That matters: see the egress note above for what reading rows per request costs 
 Country comes from the [DB-IP Lite](https://db-ip.com/db/lite.php) file (CC BY 4.0), which the
 Docker image includes. The lookup runs on the server, so an address is never sent to a third party.
 
-## Deploy (Render)
+## Deploy
+
+The live demo at [dnd.parth.party](https://dnd.parth.party) runs on an arm64 Oracle Cloud
+server. Caddy terminates TLS and proxies to the app container. The database is Neon Postgres
+in Singapore (`ap-southeast-1`), in the same region as the server. A push to `main` runs two
+more CI jobs after the tests pass. The `image` job builds the arm64 image on an ARM runner and
+pushes it to `ghcr.io/parththakkar106/ai-dnd`. The `deploy` job connects over SSH with a key
+that the server limits to one command, which pulls the new image and restarts the container.
+
+The app used to run on Render. The old Render URL now redirects every page to the new host
+and carries the session across (`backend/app/redirect.py`).
+
+### Deploy your own copy on Render
 
 The repo ships a [`render.yaml`](render.yaml) blueprint: one Docker web service that serves
 the SPA and API same-origin, backed by external [Neon](https://neon.tech) Postgres. The free

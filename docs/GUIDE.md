@@ -936,7 +936,7 @@ async def with_turn_lock(adventure_id, gen):  # wraps the SSE generator
 ```
 
 In-memory, so it's a single-process guarantee. That's honest for the deployment this
-targets: one Render web service. Two processes would need the lock in the database.
+targets: one container. Two processes would need the lock in the database.
 
 ## 2.5 The 189x egress fix
 
@@ -1133,13 +1133,23 @@ everything, inline styles (React needs them), and Google Fonts.
 
 ## 3.5 Deployment
 
-One Docker web service on Render, serving the SPA and the API same-origin, with Postgres on
-Neon.
+One Docker container serving the SPA and the API same-origin, with Postgres on Neon.
 
-The Postgres decision was forced: Render's free tier has no persistent disk, so a SQLite
-file wouldn't survive a deploy. The database lives off-box on Neon's free tier.
+Production runs at [dnd.parth.party](https://dnd.parth.party) on an arm64 Oracle Cloud
+server, behind Caddy. The database is a Neon project in Singapore, the same region as the
+server. Before that move, each database round trip crossed to us-east-1 and cost about
+240 ms, so one page that ran three queries took more than a second.
 
-Two things worth knowing about the free tier:
+A push to `main` publishes an arm64 image to GitHub Container Registry and then deploys it.
+The deploy job uses an SSH key that the server pins to one command, so the key can only pull
+the new image and restart the container. The old Render host stays up as a redirect: every
+page sends the visitor to the new host with their session (`backend/app/redirect.py`).
+
+The project started on Render, and `render.yaml` still deploys a copy there. The Postgres
+decision came from that host: Render's free tier has no persistent disk, so a SQLite file
+wouldn't survive a deploy.
+
+Two things worth knowing if you run it on Render's free tier:
 
 - The service **sleeps after ~15 minutes idle**, and the first request then takes 30–60s.
 - `/api/health` deliberately **doesn't touch the database**, so a keep-warm pinger wakes the
