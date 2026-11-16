@@ -15,7 +15,7 @@ production confirmed, and two bugs the playtest found.
 
 ## Where things stand
 
-The scenario is live at `https://ai-dnd-1gmp.onrender.com` as
+The scenario is live at `https://dnd.parth.party` as
 **"[Demo] League Championship: Round One"**, seeded from
 `backend/app/seed_data/05-league-championship.json`. It replaced an earlier,
 weaker draft titled "Road to the Champion" — that old scenario and its stale

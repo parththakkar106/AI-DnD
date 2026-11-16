@@ -8,10 +8,9 @@ your own AI model. Create scenarios, play open-ended adventures where an LLM nar
 world, and extend the engine with **JavaScript scripts compatible with real AI Dungeon
 scripting**.
 
-> ### ▶️ Try it live: **[parththakkar106.github.io/AI-DnD](https://parththakkar106.github.io/AI-DnD/)**
-> The project page loads instantly and launches the hosted demo in one tap. Play a scenario as
-> a guest: no sign-up and no API key needed. The demo runs on a free tier that sleeps, so the
-> first load after it's been idle takes about 30 to 60 seconds to wake up.
+> ### ▶️ Try it live: **[dnd.parth.party](https://dnd.parth.party)**
+> Play a scenario as a guest: no sign-up and no API key needed. The
+> **[project page](https://parththakkar106.github.io/AI-DnD/)** gives an overview first.
 >
 > For the internals, read the **[design notes](https://parththakkar106.github.io/AI-DnD/guide.html)**.
 > They walk through the context budgeting, the world-state referee, and the memory bank, and
