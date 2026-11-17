@@ -190,11 +190,19 @@ async def _generate_turn(
         yield sse({"type": "stopped", "script": pipeline.report()})
         return
     context_changed = modified != combined
-    parts = (
-        PromptParts(system="", story=modified)
-        if context_changed
-        else PromptParts(system=system_text, story=story_text)
-    )
+    parts = PromptParts(system=system_text, story=story_text)
+    if context_changed:
+        # Keep the system and story messages apart when the story still starts
+        # where it did. Weak models lose the player's latest action when the
+        # whole prompt arrives as one user message. If a script rewrote the
+        # start of the story, the boundary is unknown, so send one message.
+        head = story_text[:120]
+        at = modified.find(head) if system_text and head else -1
+        parts = (
+            PromptParts(system=modified[:at].rstrip(), story=modified[at:])
+            if at > 0
+            else PromptParts(system="", story=modified)
+        )
     snapshot["script"] = pipeline.report() | {
         "context_changed": context_changed,
         "context_before": combined if context_changed else None,
