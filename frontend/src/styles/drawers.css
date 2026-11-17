@@ -99,16 +99,15 @@
   margin: 0 0 8px;
 }
 .ws-stat { padding: 5px 0; }
-/* A long stat name or band label must stay inside the 300px rail. If the value
-   does not fit beside the name, it wraps onto its own line. Both sides can
-   break inside a word, because stat ids such as `friendship_with_the_player`
-   contain no spaces. */
+/* A long stat name or band label must stay inside the 300px rail. The name
+   breaks inside a word when it is too long, because stat ids such as
+   `friendship_with_the_player` contain no spaces. The value keeps its line
+   beside the name and wraps at spaces, up to 60% of the row. */
 .ws-stat-head {
   display: flex;
-  flex-wrap: wrap;
   justify-content: space-between;
   align-items: baseline;
-  gap: 0 8px;
+  gap: 8px;
   font-size: 0.85rem;
 }
 .ws-stat-name {
@@ -118,8 +117,8 @@
   text-transform: capitalize;
 }
 .ws-stat-val {
-  min-width: 0;
-  margin-left: auto;
+  flex-shrink: 0;
+  max-width: 60%;
   overflow-wrap: anywhere;
   color: var(--text-dim);
   font-variant-numeric: tabular-nums;
