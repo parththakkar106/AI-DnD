@@ -1,0 +1,279 @@
+{
+  "title": "The Aurelian Job",
+  "description": "Tonight the Aurelian auction house in Port Lucen sells the Larkspur Blue, a 31-carat diamond, and you have eight hours to plan how your crew takes it. Your crew is good, the head of security is better, and nothing goes exactly to plan. The game keeps track of your money, your take, how much attention the crew draws, which defenses you have beaten, and how far each crew member trusts you.",
+  "prompt": "Rain ticks on the shutters, and the canal below smells of diesel and salt.\n\nThe chandlery has not sold a coil of rope in ten years. Now it holds a long table, three folding chairs, a kettle, and the floor plan of the Aurelian, pinned flat under four coffee mugs. Across the water, the old customs palace that houses the auction house catches the last grey light of the afternoon. It is 4 pm in Port Lucen.\n\nAt midnight the Aurelian holds its sale, with four hundred guests in evening dress. Two floors below the sale room, behind a time-locked door, a keypad, and a guard station, sits the Larkspur Blue: thirty-one carats of blue diamond. It goes up to the sale floor for five minutes at half past twelve. At 6 am an armored car takes it to a bank vault. A buyer who calls himself Mr. Quill will pay 600 thousand euros for it at the ferry terminal at dawn.\n\nYour crew is here. Nadia Rahal sits with her laptop open and her coat still on. Lev Marek leans in the doorway, turning a set of van keys in his fingers. Colette Dray arrives last, shaking rain off her umbrella, already dressed for the evening. Between you there are thirty thousand euros, a rented van, a box of burner phones, and one forged invitation. Your instincts are already reading the floor plan for its weak point.\n\nNadia taps the strongroom on the plan. \"Eight hours,\" she says. \"Where do we start?\"",
+  "memory": "Port Lucen, a harbor city on the Adriatic, present day. The player leads a crew that plans to steal the Larkspur Blue, a 31-carat blue diamond, from the Aurelian auction house during tonight's midnight sale. The player's specialty: ${Your specialty (grifter, safecracker, hacker, driver, or your own)}. If no specialty is named there, the player is the planner with no hands-on trade. Crew: Nadia Rahal (systems), Lev Marek (driver and muscle), Colette Dray (the inside face, a guest on the floor). Mr. Quill pays 600 thousand on delivery at the ferry terminal at dawn. The strongroom keypad code changes at 9 pm. The stone leaves for a bank vault at 6 am.",
+  "authors_note": "Tense, precise, and cool. Short paragraphs. Name the time when it matters. Show the floor plan, the faces, and the small details that go wrong. The crew talks like people who have done this work before.",
+  "ai_instructions": "Write in second person, present tense. End every reply at a point where the player decides. Never decide or speak for the player.\n\nThe player runs a crew through one theft in one night. Keep the clock moving. A good plan helps, but a plan never works by itself. A flag turns true only when the story shows the crew doing the work for that layer. A layer the crew did not deal with is fully active during the job and causes trouble there.\n\nHenrik Aalto, head of security, is good at his job. He notices patterns, repeated faces, and small breaks in routine, and he acts on them.\n\nEvery number in the state_delta block is a change, not a total.\n\nHeat follows what the crew does. Raise it for noise, a face remembered, a broken routine, a failed code, or force. Lower it slowly when the crew lies low or covers a trace. When heat reaches 70 the Aurelian raises the alarm: mark flags.alarm_raised true. At 90 the police are in the building.\n\nMoney is finite. When the player buys gear, a bribe, or information, name a price in thousands of euros and send it as a negative budget change. If the budget cannot cover the price, the seller refuses. When the Larkspur Blue is in the crew's hands, add 600 to player.take once.\n\nEach crew member acts on their own trust. Raise it when the player's calls work or the player protects them. Lower it when the player gambles with their safety, hides something, or cuts a share. In the bottom band a member hesitates, argues, or leaves. Colette in the bottom band makes her own deal with someone else.\n\nWhen a note names a complication, make it a real problem in the scene for the player to answer.\n\nMark each milestone as it happens, using the id shown beside the goal.",
+  "tags": "heist, crime, modern, thriller, short",
+  "icon": "💎",
+  "stat_schema": {
+    "world": {
+      "heat": {
+        "desc": "How close the crew is to being caught. Send a positive number for noise, a face remembered, a broken routine, or an alarm. Send a small negative number when the crew lies low or covers a trace.",
+        "min": 0,
+        "max": 100,
+        "initial": 0,
+        "max_delta_per_turn": 25,
+        "bands": [
+          [
+            0,
+            20,
+            "unnoticed"
+          ],
+          [
+            20,
+            45,
+            "something feels off"
+          ],
+          [
+            45,
+            70,
+            "security is looking"
+          ],
+          [
+            70,
+            90,
+            "alarm raised"
+          ],
+          [
+            90,
+            101,
+            "police on scene"
+          ]
+        ]
+      }
+    },
+    "player": {
+      "budget": {
+        "desc": "The crew's cash, in thousands of euros. Send a negative number when the player buys gear, pays a bribe, or pays for information. Send a positive number only if the crew sells something.",
+        "min": 0,
+        "initial": 30,
+        "max_delta_per_turn": 30
+      },
+      "take": {
+        "type": "counter",
+        "desc": "Loot in the crew's hands, in thousands of euros. Add the value when loot reaches the crew's hands. The Larkspur Blue is worth 600 to the client.",
+        "min": 0,
+        "initial": 0,
+        "max_delta_per_turn": 700
+      },
+      "kit": {
+        "type": "text",
+        "desc": "The crew's gear as a short list. Send the full new list when the crew buys, uses up, or loses something.",
+        "initial": "burner phones, a rented van, one forged invitation",
+        "max_length": 220
+      }
+    },
+    "flags": {
+      "cameras_looped": {
+        "desc": "True while the Aurelian's camera feed shows a recording the crew planted. False if the loop is found or fails.",
+        "initial": false
+      },
+      "code_known": {
+        "desc": "True while the crew holds tonight's working strongroom keypad code. The code changes at 9 pm, so a code taken earlier is stale.",
+        "initial": false
+      },
+      "guard_turned": {
+        "desc": "True while one strongroom guard is paid or compromised. False if that guard backs out or is replaced.",
+        "initial": false
+      },
+      "exit_ready": {
+        "desc": "True while a way out is staged and waiting. False if it is lost.",
+        "initial": false
+      },
+      "alarm_raised": {
+        "desc": "True once the Aurelian knows a theft is in progress.",
+        "initial": false
+      }
+    },
+    "npcs": {
+      "nadia": {
+        "name": "Nadia Rahal",
+        "keys": "nadia, rahal",
+        "desc": "Nadia Rahal handles cameras, locks, and networks for the crew. Cautious and exact, she wants every plan to have a margin for error, and she says so.",
+        "stats": {
+          "trust": {
+            "desc": "Nadia's faith in the player's calls. Send a positive number when a call works or the player protects her, a negative number when the player gambles with her safety, hides something, or cuts her share.",
+            "min": 0,
+            "max": 100,
+            "initial": 55,
+            "max_delta_per_turn": 15,
+            "bands": [
+              [
+                0,
+                25,
+                "looking for the door"
+              ],
+              [
+                25,
+                50,
+                "doubtful"
+              ],
+              [
+                50,
+                75,
+                "with you"
+              ],
+              [
+                75,
+                101,
+                "all in"
+              ]
+            ]
+          }
+        }
+      },
+      "lev": {
+        "name": "Lev Marek",
+        "keys": "marek, lev's, the van, getaway",
+        "desc": "Lev Marek is the crew's driver and muscle. Loyal to the crew and short of patience, he hates waiting and hates a changed route even more.",
+        "stats": {
+          "trust": {
+            "desc": "Lev's faith in the player's calls. Send a positive number when a call works or the player protects him, a negative number when the player gambles with his safety, hides something, or cuts his share.",
+            "min": 0,
+            "max": 100,
+            "initial": 65,
+            "max_delta_per_turn": 15,
+            "bands": [
+              [
+                0,
+                25,
+                "looking for the door"
+              ],
+              [
+                25,
+                50,
+                "doubtful"
+              ],
+              [
+                50,
+                75,
+                "with you"
+              ],
+              [
+                75,
+                101,
+                "all in"
+              ]
+            ]
+          }
+        }
+      },
+      "colette": {
+        "name": "Colette Dray",
+        "keys": "colette, dray",
+        "desc": "Colette Dray is the crew's inside face, working the sale floor as a guest. Brilliant, charming, and out for herself first.",
+        "stats": {
+          "trust": {
+            "desc": "Colette's faith in the player's calls. Send a positive number when a call works or the player protects her, a negative number when the player gambles with her safety, hides something, or cuts her share.",
+            "min": 0,
+            "max": 100,
+            "initial": 40,
+            "max_delta_per_turn": 15,
+            "bands": [
+              [
+                0,
+                25,
+                "looking for the door"
+              ],
+              [
+                25,
+                50,
+                "doubtful"
+              ],
+              [
+                50,
+                75,
+                "with you"
+              ],
+              [
+                75,
+                101,
+                "all in"
+              ]
+            ]
+          }
+        }
+      }
+    },
+    "milestones": {
+      "plan_set": {
+        "desc": "Settle on a way in and a way out"
+      },
+      "inside": {
+        "desc": "Reach the strongroom level"
+      },
+      "stone_in_hand": {
+        "desc": "Take the Larkspur Blue"
+      },
+      "clean_exit": {
+        "desc": "Get the whole crew out of the building"
+      },
+      "payday": {
+        "desc": "Deliver to Mr. Quill and split the take"
+      }
+    }
+  },
+  "story_cards": [
+    {
+      "type": "location",
+      "name": "The Aurelian",
+      "keys": "aurelian, auction house, sale room, loading dock, service corridor",
+      "entry": "The Aurelian is a private auction house in a former customs palace on the canal. The sale room is on the upper floor, service corridors run behind every wall, and the loading dock opens onto the canal side. The strongroom is two floors below the sale room, behind a time-locked door with a keypad and a guard station.",
+      "notes": "Public layout. The security layers themselves are on their own card."
+    },
+    {
+      "type": "item",
+      "name": "The Larkspur Blue",
+      "keys": "larkspur, diamond, the stone",
+      "entry": "The Larkspur Blue is a 31-carat blue diamond, tonight's headline lot at the Aurelian. It is small enough to close in a fist and famous enough that no honest dealer would touch it. Mr. Quill pays 600 thousand euros for it on delivery.",
+      "notes": ""
+    },
+    {
+      "type": "character",
+      "name": "Henrik Aalto",
+      "keys": "henrik, aalto, head of security",
+      "entry": "Henrik Aalto is the Aurelian's head of security, a quiet man in a plain suit who walks the building himself. He remembers faces, keeps his staff on fixed routines, and treats any break in a routine as a warning. He cannot be bought.",
+      "notes": "The narrator plays him as competent. ai_instructions repeat this."
+    },
+    {
+      "type": "character",
+      "name": "Mr. Quill",
+      "keys": "quill, ferry terminal, handoff",
+      "entry": "Mr. Quill is the client: a collector known only by that name, who pays 600 thousand euros on delivery. The handoff is at dawn at the Port Lucen ferry terminal, where a courier checks the stone before any money moves. Quill does not like surprises and does not wait long.",
+      "notes": ""
+    },
+    {
+      "type": "lore",
+      "name": "The Midnight Sale",
+      "keys": "midnight sale, timetable, armored car, auctioneer, guest list",
+      "entry": "The Aurelian's midnight sale draws four hundred guests. Doors open at 10 pm and bidding starts at midnight. The Larkspur Blue goes up to the sale floor at 12:30 for five minutes, then back down to the strongroom. At 6 am an armored car takes it to a bank vault.",
+      "notes": ""
+    },
+    {
+      "type": "lore",
+      "name": "Security Layers",
+      "keys": "camera, keypad, guard station, time lock, strongroom, alarm",
+      "entry": "The Aurelian's strongroom has four layers of security. Cameras cover every corridor and feed a monitored control room. The keypad code changes every night at 9 pm. A guard station sits at the strongroom door, and the door itself is on a time lock that opens only for the 12:30 display. Any layer left alone is still working when the crew arrives.",
+      "notes": "The four layers map to cameras_looped, code_known, guard_turned, and the display window."
+    },
+    {
+      "type": "location",
+      "name": "The Chandlery",
+      "keys": "safehouse, chandlery, fence, supplier",
+      "entry": "The chandlery is the crew's safehouse: a shuttered ship supply shop over the canal, with a mooring below. Rough prices in Port Lucen, in thousands of euros: a camera loop rig 8, a guard's cooperation 15 to 25, a fast boat for the night 6, a staff uniform and pass 3, a tip from the Aurelian's staff 2 to 5.",
+      "notes": "Gives the narrator price anchors so budget changes stay sensible."
+    }
+  ],
+  "scripts": [
+    {
+      "name": "Complications",
+      "description": "Every third turn, adds one complication to the scene that fits the current stage of the night.",
+      "library_js": "// Inserts a note above the length limit and the state_delta reminder. Those two\n// lines must stay last, because the model follows the text nearest its reply.\nfunction insertBeforeTail(text, note) {\n  var marks = [\"\\n\\n[Hard limit:\", \"\\n\\n[Part of your last state_delta\", \"\\n\\n[Reminder: end your reply\"];\n  for (var i = 0; i < marks.length; i++) {\n    var at = text.lastIndexOf(marks[i]);\n    if (at !== -1) return text.slice(0, at) + \"\\n\\n\" + note + text.slice(at);\n  }\n  return text + \"\\n\\n\" + note;\n}\n\n// Each complication has one version per stage of the night. The hook picks the\n// stage from the milestones, so a complication never asks for a scene the crew\n// has already left behind.\nvar COMPLICATIONS = [\n  { label: \"the keypad code changes early\",\n    prep: \"Word reaches the crew that the Aurelian will rotate the strongroom keypad code a second time tonight, at 11 pm. Any code taken before then will be stale.\",\n    job: \"The strongroom keypad rejects the first code entered. Security rotated it early tonight, and the panel logs the failed attempt.\",\n    out: \"A service door on the crew's way out now needs a fresh keypad code. Security rotated every code on the building when the night went wrong.\" },\n  { label: \"someone is recognized\",\n    prep: \"Colette learns that a dealer she once cheated is on tonight's guest list and will be on the sale floor.\",\n    job: \"A guest on the sale floor recognizes a member of the crew and says their name out loud.\",\n    out: \"A guest leaving the sale photographs a crew member's face, or the crew's vehicle, at close range.\" },\n  { label: \"Mr. Quill changes the handoff\",\n    prep: \"Mr. Quill's courier calls. The handoff moves from the ferry terminal to a place Quill will name only at 5 am.\",\n    job: \"Mr. Quill messages in the middle of the job. He wants proof the stone is genuine before he will meet at dawn.\",\n    out: \"Mr. Quill moves the handoff to a new place, an hour earlier, and gives no reason.\" },\n  { label: \"a guard swaps shifts\",\n    prep: \"The strongroom guard roster changes. A guard the crew has not studied takes the midnight shift.\",\n    job: \"A guard who swapped shifts at the last minute is on the strongroom level, a person no part of the plan accounts for.\",\n    out: \"A relief guard arrives early for the 6 am shift and walks toward the crew's way out.\" },\n  { label: \"the canal police\",\n    prep: \"A canal police patrol boat ties up below the safehouse, and two officers start asking about the shuttered chandlery.\",\n    job: \"A canal police boat idles beside the Aurelian's loading dock, on the crew's side of the building.\",\n    out: \"The canal police stop the crew's vehicle or boat for a routine check.\" },\n  { label: \"the timetable moves\",\n    prep: \"Word from the auction staff: the Larkspur Blue goes on the floor ten minutes early, at 12:20.\",\n    job: \"The auctioneer brings the Larkspur Blue up ten minutes early. Every timing the crew built on is now wrong.\",\n    out: \"A staff member checks the strongroom ten minutes before the routine round, so the loss is found sooner than planned.\" },\n  { label: \"a second crew\",\n    prep: \"Lev spots another crew scouting the Aurelian's loading dock. Someone else wants the same stone.\",\n    job: \"The crew finds signs of a second crew working the same sale: an unfamiliar tool left in a corridor, a lookout who is not theirs.\",\n    out: \"The second crew that worked the sale is waiting outside, and they want the stone.\" },\n  { label: \"the kit fails\",\n    prep: \"A piece of the crew's kit fails its test. A replacement costs money or time.\",\n    job: \"A piece of the crew's kit fails at the worst moment: a radio dies, a battery drains, or a tool snaps.\",\n    out: \"The vehicle for the way out will not start, or one of its tires is flat.\" },\n  { label: \"Henrik Aalto moves\",\n    prep: \"Henrik Aalto orders an extra check of the guest list and of every staff entrance for tonight.\",\n    job: \"Henrik Aalto leaves the sale floor and walks toward the strongroom level on a check of his own.\",\n    out: \"Henrik Aalto notices something wrong and starts closing the building's exits one by one.\" }\n];\n",
+      "input_js": "",
+      "context_js": "const modifier = (text) => {\n  // Clear the toast first, so a complication message shows on one turn only.\n  state.message = \"\";\n  var turn = Math.floor(info.actionCount / 2);\n  if (turn < 1 || turn % 3 !== 0) return { text: text };\n\n  // Read only the live state block, so story text cannot match a milestone id.\n  var at = text.lastIndexOf(\"Current world state (running totals\");\n  var live = at === -1 ? \"\" : text.slice(at);\n  var line = live.match(/\\nAchieved: ([^\\n]*)/);\n  var done = line ? line[1] : \"\";\n  // The engine separates a milestone id from its text with an em dash, char 8212.\n  var reached = function (id) {\n    return new RegExp(\"(^|; )\" + id + \" \" + String.fromCharCode(8212)).test(done);\n  };\n  if (reached(\"payday\")) return { text: text };\n\n  var stage = reached(\"clean_exit\") ? \"out\" : reached(\"inside\") ? \"job\" : \"prep\";\n  // Step through the table in an order seeded by the player character, so one\n  // adventure never repeats a complication within nine draws. Random draws\n  // repeated one entry three times in a playtest. A retry also keeps its draw.\n  var p = text.indexOf(\"Player character:\");\n  var who = p === -1 ? \"\" : text.slice(p, p + 200).split(\"Plot essentials:\")[0];\n  var seed = 0;\n  for (var i = 0; i < who.length; i++) seed = (seed * 31 + who.charCodeAt(i)) % 9973;\n  // A stride of 4 is coprime with 9, so nine steps visit every entry once.\n  var pick = COMPLICATIONS[(seed + (turn / 3) * 4) % COMPLICATIONS.length];\n  var note = \"[Complication this turn: \" + pick[stage] + \" Work it into this scene as a problem the player must answer, and do not solve it for them. If the story is already past this stage of the night, adapt it to where the crew is now.]\";\n  state.message = \"Complication: \" + pick.label;\n  return { text: insertBeforeTail(text, note) };\n};\nmodifier(text);\n",
+      "output_js": ""
+    }
+  ]
+}
