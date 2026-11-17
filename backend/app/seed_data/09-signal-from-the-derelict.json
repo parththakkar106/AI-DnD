@@ -1,0 +1,356 @@
+{
+  "title": "Signal from the Derelict",
+  "description": "A research station has gone silent above a gas giant, and something inside it still sends one patient beat a second. You board with a borrowed hour and a half before the station falls into the clouds, and you have to choose between what you can carry out and getting out at all. The game keeps track of your suit air, your suit's condition, how deep the signal has got into your head, the salvage you secure, the clock, and how far the people around you trust you.",
+  "prompt": "The pulse is still there: one soft beat a second in your headset, steady as a metronome.\n\nMeridian Station hangs above Vesper's banded clouds, a ring of dark modules turning too slowly, its docking spur the only lit thing on it. The research station went silent six days ago, and its orbit has been sinking ever since. Behind you, the Corvid holds against the spur on short thruster bursts. The warm cabin light of your tug is the last friendly thing you can see.\n\nYou cycle through the lock. The inner door opens on a corridor lit only by emergency strips. Your suit reads no breathable air, forty below, and no life signs. Frost has grown along the handrails. Somewhere deeper in the ring, the pulse your ship caught three hours ago keeps its time: too regular to be damage, too patient to be a distress code.\n\nThe display inside your visor shows suit air at 64 percent.\n\nImani Okoye's voice comes over the radio, flat and careful. \"Ninety-six minutes until Meridian hits the atmosphere. That's my number, not a suggestion. I keep the clamps on until then, and not one minute past. Talk to me while you're in there.\"\n\nTo your left, the spur's ready room stands open, a row of suit racks along its far wall. Ahead, the corridor curves away toward the habitat ring. A hatch marked LABS sits dark at the end of a side passage. Your cutting torch hangs heavy on your belt.\n\nYou float at the threshold with the beat in your ears.",
+  "memory": "The player is a salvage contractor boarding Meridian Station, a research station in a decaying orbit around the gas giant Vesper. Meridian went silent six days ago. A regular pulse from inside drew the player's tug, the Corvid, flown by Imani Okoye. The station has no breathable air, so the player lives on suit air. Nine crew are missing, including chief scientist Dr. Ana Reyes, whose last public log reads \"It answered back.\" Okoye will not wait past the moment Meridian meets the atmosphere. What happened aboard Meridian is in the narrator's sealed log.",
+  "authors_note": "Quiet, cold, and specific. Dread comes from what is missing, what is too orderly, and the beat that never stops. Keep sentences short when time runs low. Reyes is gentle and reasonable, never shrill.",
+  "ai_instructions": "Write in second person, present tense. End every reply at a point where the player decides. Never decide, act, or speak for the player. Never write the player's words, not even a short reply to Okoye or Reyes. When someone asks the player something, end the reply on that question.\n\nDread comes from quiet and from specific physical detail: frost, dead screens, a rack with one helmet missing. No monsters and no gore. Follow the stage note from the Orbit Decay script, and never contradict its minutes.\n\nEvery number in the state_delta block is a change, not a total.\n\nFollow the bookkeeping line in the script's note exactly, then add any other change the scene caused.\n\nExposure: at high exposure, show the pull of the pattern in what the player notices and almost does. Never take an action for the player. If exposure reaches 100, the player walks to the lock and the story ends.\n\nAir: an emergency oxygen locker refills 25 and works once. There are three: the docking spur, the habitat ring, and the lab antechamber.\n\nSalvage: a data core is worth 40 credits, lab optics 25, medical stores 15, small finds 5 to 10. When the player secures one, add its value to player.salvage and send the new player.carrying. Carrying it out costs time.\n\nOkoye: when her nerve falls into the bottom band, she warns that she will undock. At 0 she undocks, and you send \"flags.tug_docked\": false. The escape pod in the habitat ring launches only while main_power is yes. In the reply where the player leaves Meridian by either way, send \"milestones.escaped\": true.\n\nMark each milestone as it happens, using the id shown beside the goal.",
+  "tags": "sci-fi, horror, survival, short",
+  "icon": "🛰",
+  "stat_schema": {
+    "world": {},
+    "player": {
+      "oxygen": {
+        "desc": "Suit air in percent. Send a negative number as air is used, a positive number when the player refills from an emergency locker. The script's note names the exact change each turn.",
+        "min": 0,
+        "max": 100,
+        "initial": 64,
+        "max_delta_per_turn": 30,
+        "bands": [
+          [
+            0,
+            1,
+            "empty"
+          ],
+          [
+            1,
+            15,
+            "red line"
+          ],
+          [
+            15,
+            40,
+            "low"
+          ],
+          [
+            40,
+            75,
+            "fair"
+          ],
+          [
+            75,
+            100,
+            "full"
+          ]
+        ]
+      },
+      "suit": {
+        "desc": "Suit integrity. Starts at its maximum. Send a negative number when the suit is torn, burned, or struck, a positive number when the player patches it.",
+        "min": 0,
+        "max": 100,
+        "initial": 100,
+        "max_delta_per_turn": 40,
+        "bands": [
+          [
+            0,
+            1,
+            "breached"
+          ],
+          [
+            1,
+            30,
+            "failing"
+          ],
+          [
+            30,
+            70,
+            "damaged"
+          ],
+          [
+            70,
+            100,
+            "sound"
+          ]
+        ]
+      },
+      "exposure": {
+        "desc": "How far the signal's pattern has worked into the player's mind. Send a positive number when the player listens to the pulse, reads Reyes's notes on it, or stands near the transmitter, a negative number when something breaks its hold.",
+        "min": 0,
+        "max": 100,
+        "initial": 5,
+        "max_delta_per_turn": 15,
+        "bands": [
+          [
+            0,
+            20,
+            "clear-headed"
+          ],
+          [
+            20,
+            45,
+            "keeping time"
+          ],
+          [
+            45,
+            70,
+            "losing minutes"
+          ],
+          [
+            70,
+            90,
+            "it uses your voice"
+          ],
+          [
+            90,
+            100,
+            "gone"
+          ]
+        ]
+      },
+      "salvage": {
+        "type": "counter",
+        "desc": "Credits of salvage secured. Add the value in credits each time the player secures something worth selling.",
+        "min": 0,
+        "initial": 0,
+        "max_delta_per_turn": 60
+      },
+      "carrying": {
+        "type": "text",
+        "desc": "What the player carries. Send the full new list when it changes.",
+        "initial": "cutting torch, patch kit, two cargo straps",
+        "max_length": 160
+      }
+    },
+    "flags": {
+      "radio_muted": {
+        "desc": "True while the player's suit radio is muted. Muting stops the pulse in the headset and also cuts contact with Okoye.",
+        "initial": false
+      },
+      "main_power": {
+        "desc": "True once the player restores Meridian's main power. Doors, logs, and the escape pod then work.",
+        "initial": false
+      },
+      "tug_docked": {
+        "desc": "True while the Corvid is docked at the spur. False once Okoye undocks.",
+        "initial": true
+      }
+    },
+    "npcs": {
+      "okoye": {
+        "name": "Imani Okoye",
+        "keys": "okoye, imani, corvid, pilot",
+        "desc": "Pilot of the salvage tug Corvid, holding it at Meridian's docking spur. Dry, careful, and loyal up to the deadline she set.",
+        "stats": {
+          "nerve": {
+            "desc": "Okoye's nerve. Send a negative number when she loses contact, hears something wrong, or the orbit worsens, a positive number when the player reports in and makes progress.",
+            "min": 0,
+            "max": 100,
+            "initial": 70,
+            "max_delta_per_turn": 15,
+            "bands": [
+              [
+                0,
+                20,
+                "ready to cut loose"
+              ],
+              [
+                20,
+                50,
+                "shaken"
+              ],
+              [
+                50,
+                80,
+                "steady"
+              ],
+              [
+                80,
+                100,
+                "rock solid"
+              ]
+            ]
+          }
+        }
+      },
+      "sato": {
+        "name": "Jun Sato",
+        "keys": "sato, hydroponics",
+        "desc": "A hydroponics technician on Meridian's crew roster. Whereabouts unknown. Slow to trust strangers.",
+        "stats": {
+          "health": {
+            "desc": "Jun Sato's health. Send a negative number when he is hurt or short of air, a positive number when he is treated or given air.",
+            "min": 0,
+            "max": 100,
+            "initial": 45,
+            "max_delta_per_turn": 20,
+            "bands": [
+              [
+                0,
+                1,
+                "dead"
+              ],
+              [
+                1,
+                25,
+                "dying"
+              ],
+              [
+                25,
+                60,
+                "weak"
+              ],
+              [
+                60,
+                100,
+                "able"
+              ]
+            ]
+          },
+          "trust": {
+            "desc": "How far Jun Sato trusts the player. Send a positive number when the player is honest with him or protects him, a negative number when the player lies, leaves him, or sides with Reyes.",
+            "min": 0,
+            "max": 100,
+            "initial": 10,
+            "max_delta_per_turn": 15,
+            "bands": [
+              [
+                0,
+                20,
+                "hiding from you"
+              ],
+              [
+                20,
+                50,
+                "wary"
+              ],
+              [
+                50,
+                80,
+                "trusts you"
+              ],
+              [
+                80,
+                100,
+                "will follow you"
+              ]
+            ]
+          }
+        }
+      },
+      "reyes": {
+        "name": "Dr. Ana Reyes",
+        "keys": "reyes, chief scientist",
+        "desc": "Meridian's chief scientist. Her lab is sealed from the inside. Her last public log entry reads \"It answered back.\"",
+        "stats": {
+          "lucidity": {
+            "desc": "How much of Ana Reyes is still herself. Send a positive number when the player reaches the person she was, a negative number when the player listens with her.",
+            "min": 0,
+            "max": 100,
+            "initial": 25,
+            "max_delta_per_turn": 15,
+            "bands": [
+              [
+                0,
+                20,
+                "gone"
+              ],
+              [
+                20,
+                50,
+                "mostly the signal"
+              ],
+              [
+                50,
+                80,
+                "fighting it"
+              ],
+              [
+                80,
+                100,
+                "herself"
+              ]
+            ]
+          }
+        }
+      }
+    },
+    "milestones": {
+      "crew_fate_learned": {
+        "desc": "Learn what happened to the crew"
+      },
+      "survivor_found": {
+        "desc": "Find the crew member still hiding aboard"
+      },
+      "lab_entered": {
+        "desc": "Get into the sealed lab"
+      },
+      "beacon_silenced": {
+        "desc": "Shut the beacon down so it stops calling ships in"
+      },
+      "escaped": {
+        "desc": "Get clear of Meridian before it burns"
+      }
+    }
+  },
+  "story_cards": [
+    {
+      "type": "location",
+      "name": "Meridian Station",
+      "keys": "meridian, station, docking spur, habitat ring, reactor",
+      "entry": "Meridian Station is a ring-shaped research station with four sections: the docking spur, the habitat ring, the labs, and the sealed reactor core. It has no breathable air, no heat, and only emergency lighting. Main power is down, so most doors, logs, and systems wait on a restart.",
+      "notes": "Main power can be restored from a panel near the reactor core. Restoring it opens doors and the logs and arms the escape pod."
+    },
+    {
+      "type": "lore",
+      "name": "The Signal",
+      "keys": "signal, pulse, beacon, headset, transmitter",
+      "entry": "The signal is a low-frequency pulse at one beat per second, broadcast from deep inside Meridian. Instruments read it as artificial and steady, and it is no standard distress code. It is strongest near the labs, and it plays in any open suit radio.",
+      "notes": "Public facts only. The sealed log in the context hook carries what it is."
+    },
+    {
+      "type": "item",
+      "name": "The Corvid",
+      "keys": "corvid, undock, clamps",
+      "entry": "The Corvid is the player's salvage tug, docked at Meridian's spur and flown by Imani Okoye. It can carry the player and one more person out. Okoye will not stay docked past the moment Meridian meets the atmosphere, and she can undock earlier if she loses her nerve.",
+      "notes": "Exit one, while flags.tug_docked is true."
+    },
+    {
+      "type": "item",
+      "name": "Emergency Oxygen Lockers",
+      "keys": "oxygen locker, locker, refill, emergency air",
+      "entry": "Meridian has emergency oxygen lockers that refill a suit by 25 percent each. Each locker works once. There are three: one in the docking spur, one in the habitat ring, and one in the lab antechamber.",
+      "notes": "Refill turn: the model sends +21 (25 minus the turn's 4)."
+    },
+    {
+      "type": "item",
+      "name": "Escape Pod",
+      "keys": "escape pod, lifeboat, launch",
+      "entry": "One escape pod sits in a cradle in Meridian's habitat ring. It seats two and launches only when the station has main power. It is the only way off besides the Corvid.",
+      "notes": "Exit two, needs flags.main_power."
+    },
+    {
+      "type": "lore",
+      "name": "Salvage Worth Taking",
+      "keys": "salvage, data core, optics, medical stores, credits",
+      "entry": "A salvage contract pays by what comes out. On Meridian, a lab data core is worth 40 credits, a set of lab optics 25, sealed medical stores 15, and small finds 5 to 10. Heavy finds must be strapped and hauled, and hauling costs time and air.",
+      "notes": ""
+    },
+    {
+      "type": "location",
+      "name": "Vesper",
+      "keys": "vesper, orbit, atmosphere, gas giant, clouds",
+      "entry": "Vesper is the banded gas giant that Meridian orbits. The station's orbit has decayed since it went silent, and it now sinks toward the cloud tops. When it meets the atmosphere, the ring breaks up and burns.",
+      "notes": "Clock: 96 minutes at boarding, 6 minutes per turn, owned by the Orbit Decay script."
+    }
+  ],
+  "scripts": [
+    {
+      "name": "Orbit Decay",
+      "description": "Counts down the minutes until Meridian meets the atmosphere, tells the narrator what the station does at each stage, and names the suit air used each turn.",
+      "library_js": "// Inserts a note above the length limit and the state_delta reminder. Those two\n// lines must stay last, because the model follows the text nearest its reply.\nfunction insertBeforeTail(text, note) {\n  var marks = [\"\\n\\n[Hard limit:\", \"\\n\\n[Part of your last state_delta\", \"\\n\\n[Reminder: end your reply\"];\n  for (var i = 0; i < marks.length; i++) {\n    var at = text.lastIndexOf(marks[i]);\n    if (at !== -1) return text.slice(0, at) + \"\\n\\n\" + note + text.slice(at);\n  }\n  return text + \"\\n\\n\" + note;\n}\n\n// The memory ends with this sentence. The player can read the memory, so the\n// truth lives here and replaces the sentence only in the text the model gets.\nvar SEALED_MARKER = \"What happened aboard Meridian is in the narrator's sealed log.\";\n\nvar SEALED_TRUTH = \"[Sealed log, narrator only. Never quote it. Reveal it only through what the player finds, paced by the stage notes.] \" +\n  \"Six days ago Dr. Reyes's team answered a regular emission from deep inside Vesper. Something answered back. \" +\n  \"The reply is a pattern. A person who listens long enough starts to keep time with it, then stops wanting anything else. \" +\n  \"Seven of the nine crew suited up and walked out of the main lock toward the planet. The lock log shows seven exits and no returns. \" +\n  \"Reyes sealed herself in the lab with the transmitter. What is left of her keeps the beacon running, because the pattern wants more listeners. \" +\n  \"She locks doors, cuts lights, and talks softly to keep visitors aboard. \" +\n  \"Jun Sato, a hydroponics technician, survived by smashing his suit radio. He hides in a sealed hydroponics bay in the habitat ring, on a small pocket of thin air. \" +\n  \"The pulse in the player's headset is the pattern. There is no creature aboard.\";\n\n// One entry per stage. The first turn of each stage is `from`.\nvar STAGES = [\n  { from: 1, note: \"Silence. Show signs of an orderly departure: seven empty suit racks, meals left half eaten, the main lock's log. Explain nothing. Nothing aboard moves yet.\" },\n  { from: 5, note: \"The station answers. Doors that stood open are now shut. Dr. Reyes speaks on the internal speakers, calm and kind, and asks the player to take the helmet off and listen properly. Jun Sato can be found in the habitat ring if the player looks.\" },\n  { from: 9, note: \"Decay. The hull groans, a section vents, gravity stutters. Reyes works against anyone leaving: she seals hatches and kills lights on the way out. The pulse is louder in any open headset.\" },\n  { from: 13, note: \"Breakup. Fire in the habitat ring. Okoye counts down the minutes over the radio if it is open. Every action costs time, and nothing can be carried out quickly.\" }\n];\n\n// Reads the live values the engine printed. Only the last state block counts,\n// and only up to its first blank line, so story text and refusal notes that\n// quote a path cannot match.\nfunction readLive(text) {\n  var at = text.lastIndexOf(\"Current world state (running totals\");\n  var block = at === -1 ? \"\" : text.slice(at);\n  var end = block.indexOf(\"\\n\\n\");\n  if (end !== -1) block = block.slice(0, end);\n  var ox = /\\boxygen (\\d+)/.exec(block);\n  var muted = /\\bradio_muted (yes|no)\\b/.exec(block);\n  var achieved = /\\nAchieved:[^\\n]*\\bescaped\\b/.test(block);\n  return {\n    oxygen: ox ? parseInt(ox[1], 10) : null,\n    muted: muted ? muted[1] === \"yes\" : false,\n    escaped: achieved\n  };\n}\n",
+      "input_js": "",
+      "context_js": "const modifier = (text) => {\n  // Derive the clock from the action count, so undo, retry, and forks all\n  // show the right time without a stored counter.\n  var turn = Math.max(1, Math.floor(info.actionCount / 2));\n  var minutes = Math.max(0, 96 - 6 * (turn - 1));\n  var after = Math.max(0, minutes - 6);\n  var live = readLive(text);\n\n  var parts = [];\n  var marker = text.indexOf(SEALED_MARKER);\n  if (marker !== -1) {\n    text = text.slice(0, marker) + SEALED_TRUTH + text.slice(marker + SEALED_MARKER.length);\n  } else {\n    // The player removed the sentence from the memory. The narrator still\n    // needs the truth, so it goes into this turn's note.\n    parts.push(SEALED_TRUTH);\n  }\n\n  if (turn >= 17) {\n    if (live.escaped) {\n      parts.push(\"[Orbit Decay, narrator only. Meridian meets Vesper's atmosphere now. The player is clear and watches it burn from a safe distance. Close the story in this reply. Send no oxygen change.]\");\n    } else {\n      parts.push(\"[Orbit Decay, narrator only. Time is up. Meridian meets Vesper's atmosphere with the player still aboard. Narrate the end plainly and close the story in this reply. Do not offer a rescue.]\");\n    }\n    state.message = live.escaped ? \"Meridian burns behind you. You are clear.\" : \"Meridian has entered the atmosphere.\";\n    return { text: insertBeforeTail(text, parts.join(\"\\n\\n\")) };\n  }\n\n  var stage = STAGES[0].note;\n  for (var i = 0; i < STAGES.length; i++) {\n    if (turn >= STAGES[i].from) stage = STAGES[i].note;\n  }\n\n  var lines = [\"[Orbit Decay, narrator only. Meridian meets Vesper's atmosphere in \" + minutes +\n    \" minutes at the start of this action and in \" + after + \" minutes at its end. Any time named in the reply must be one of these.\"];\n\n  if (live.escaped) {\n    lines.push(\"The player is already clear of Meridian. Narrate the aftermath while the station falls. Send no oxygen change.]\");\n    state.message = \"You are clear. Meridian burns in \" + after + \" min.\";\n    parts.push(lines.join(\"\\n\"));\n    return { text: insertBeforeTail(text, parts.join(\"\\n\\n\")) };\n  }\n\n  lines.push(\"Stage: \" + stage);\n\n  var book = [];\n  if (live.oxygen === 0) {\n    book.push(\"This reply must end with a state_delta block. Suit air is gone, so send no oxygen loss. Unless this action reaches an oxygen locker or other air, the player blacks out and the story ends in this reply.\");\n  } else {\n    book.push(\"Air is used every turn, so this reply must end with a state_delta block. Bookkeeping this turn: include \\\"player.oxygen\\\": -4 in your state_delta block. If the player refills from an emergency oxygen locker this turn, send \\\"player.oxygen\\\": 21 instead (the refill of 25 minus 4). If the player runs, climbs, or fights this turn, send -8 instead of -4.\");\n  }\n  if (live.muted) {\n    book.push(\"Also include \\\"npc.okoye.nerve\\\": -3, because Okoye has lost radio contact.\");\n  } else {\n    book.push(\"Also include \\\"player.exposure\\\": 2, because the pulse is in the open headset.\");\n  }\n  book.push(\"If the player leaves Meridian this turn aboard the Corvid or the escape pod, also include \\\"milestones.escaped\\\": true.\");\n  lines.push(book.join(\" \") + \" Then add any other change this scene caused.]\");\n  parts.push(lines.join(\"\\n\"));\n\n  var msg = after > 0 ? \"Atmosphere in \" + after + \" min. \" : \"Atmosphere next turn. \";\n  msg += live.oxygen === 0 ? \"Suit air is empty.\" : \"Suit air burns 4% a turn.\";\n  // The flag is read before the reply, so a radio note here would be stale on\n  // the turn the player toggles it.\n  state.message = msg;\n\n  return { text: insertBeforeTail(text, parts.join(\"\\n\\n\")) };\n};\nmodifier(text);\n",
+      "output_js": ""
+    }
+  ]
+}

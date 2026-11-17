@@ -1,0 +1,466 @@
+{
+  "title": "A Death at Low Tide",
+  "description": "Ambrose Thorne lies dead at his desk on a tidal island, and five people in the house could have killed him. The sea holds the causeway shut until six, so you have one night to question them, search the rooms, and name the killer before they can walk away. The game keeps your clues and notebook, shows how steady and how trusting each suspect is, and draws a different killer, weapon, and hiding place every time you start.",
+  "prompt": "Rain hammers the windows of Cormorant House, and the lamp on the dead man's desk is still burning.\n\nCormorant House stands alone on Skerry Holm, a tidal island joined to the mainland by one stone causeway. The sea covered the causeway at eight o'clock, and it stays under water until six in the morning. An hour ago the storm brought down the telephone line. Nobody can leave the island tonight, and nobody can reach it.\n\nYou crossed at twenty to eight because Ambrose Thorne wrote asking you to come tonight, on a matter he could not put in a letter. You dined with his household and never got your private word. Over dinner he said he would set certain things right at breakfast. At a quarter past nine he went to his study and asked not to be disturbed.\n\nAt twenty past eleven Mrs. Moffat, the housekeeper, carried up his cocoa and found him. Now it is half past eleven, and you stand in the study doorway. Ambrose sits slumped forward over the desk blotter, one arm hanging, a brandy glass on its side near his hand. The lamp is lit. Nobody has touched him. From the doorway you cannot see what killed him.\n\nDownstairs in the drawing room the other five wait: his nephew Julian, his secretary Edith Crane, Dr. Leonard Fisk, his business partner Vivian Lasker, and Mrs. Moffat herself. One of them did this. At six the police can cross the causeway, and so can the killer.\n\nMrs. Moffat stands on the landing behind you, the cocoa tray still shaking in her hands, waiting for you to tell her what happens now.\n\n(When you are sure, type accuse and a name, for example \"accuse Julian\". You get one accusation.)",
+  "memory": "Cormorant House on Skerry Holm, about 1934. The player is a private inquiry agent whom Ambrose Thorne, 68, owner of the Thorne & Lasker shipping line, asked to come tonight. Ambrose died at his desk at about ten o'clock. Mrs. Moffat found him at 11:20 pm. The causeway is under water until 6:00 am and the telephone line is down, so there are no police and no laboratory tonight. The five in the house are Julian Thorne, Edith Crane, Dr. Leonard Fisk, Vivian Lasker, and Agnes Moffat. One of them killed him. Inspector Hale crosses on foot at six. The truth of the case is in the narrator's sealed file.",
+  "authors_note": "A fair-play country-house mystery of the 1930s. Keep the prose spare and exact. Give each room physical detail the player can search. Suspects speak in their own voices: they evade, interrupt, and lie as the sealed file allows. Show composure and trust through behavior, never by naming a number.",
+  "ai_instructions": "Write in second person, present tense. The player is the inquiry agent. End each reply at a point where the player decides what to do next. Never decide or speak for the player.\n\nThe mystery is fair. The sealed case file in the plot essentials is fact: play it exactly and never alter it to fit the player's theory. Reveal a fact only when the player's action would uncover it. Suspects answer in character and may lie as the file says. The player has one formal accusation, made by typing accuse and a name. Before it, nobody confesses to the murder, and the narration never hints who did it. Keep every mention of the time consistent with the clock note.\n\nEvery number in the state_delta block is a change, not a total.\n\nComposure and trust belong to each suspect separately. An innocent suspect at cracking composure or confiding trust gives up their lesser secret and what they saw. The killer at cracking composure slips and contradicts their own story, but does not confess.\n\nAdd to player.clues only for a new solid fact. In the same reply, send player.case_notes as the whole notebook with that fact added at the end. If the notebook nears 600 characters, shorten older phrases instead of dropping them.\n\nSet flags.household_gathered false when the player takes a suspect aside or the group scatters, and true when all five are back together in the drawing room.\n\nMark each milestone as it happens, using the id shown beside the goal. Mark milestones.case_closed only when a verdict note tells you to.",
+  "tags": "mystery, detective, whodunit, short, replayable",
+  "icon": "🕯",
+  "stat_schema": {
+    "world": {},
+    "player": {
+      "clues": {
+        "type": "counter",
+        "desc": "Solid facts the player has established. Add 1 each time the player establishes a new solid fact: a physical find, a broken alibi, or an admission. Add nothing for a guess",
+        "min": 0,
+        "max": 10,
+        "initial": 0,
+        "max_delta_per_turn": 2,
+        "bands": [
+          [
+            0,
+            2,
+            "nothing solid"
+          ],
+          [
+            2,
+            4,
+            "a thread"
+          ],
+          [
+            4,
+            7,
+            "a case forming"
+          ],
+          [
+            7,
+            11,
+            "enough for a jury"
+          ]
+        ]
+      },
+      "case_notes": {
+        "type": "text",
+        "max_length": 600,
+        "initial": "Ambrose Thorne found dead at his desk at 11:20 pm",
+        "desc": "The player's notebook of established facts, as phrases of under ten words separated by semicolons. When a fact is established, send the whole notebook again with the new fact added at the end. Drop nothing"
+      }
+    },
+    "flags": {
+      "lights_out": {
+        "desc": "True while the storm has cut the electric light and the house is lit by lamp and candle",
+        "initial": false
+      },
+      "household_gathered": {
+        "desc": "True while all five suspects are together in the drawing room; false once the player takes someone aside or the group scatters",
+        "initial": true
+      }
+    },
+    "npcs": {
+      "julian": {
+        "name": "Julian Thorne",
+        "keys": "julian, nephew",
+        "desc": "Ambrose's nephew and heir, 31. Charming, quick with a joke, and known to be in debt. Claims he was alone in the billiard room from half past nine.",
+        "stats": {
+          "composure": {
+            "desc": "How steady this suspect is. Send a negative number when the player confronts them with evidence or catches a lie, a small positive number when they are given time or reassured",
+            "min": 0,
+            "max": 100,
+            "initial": 65,
+            "max_delta_per_turn": 20,
+            "bands": [
+              [
+                0,
+                25,
+                "cracking"
+              ],
+              [
+                25,
+                50,
+                "rattled"
+              ],
+              [
+                50,
+                75,
+                "guarded"
+              ],
+              [
+                75,
+                101,
+                "composed"
+              ]
+            ]
+          },
+          "trust": {
+            "desc": "How far this suspect trusts the player. Send a positive number when the player treats them fairly or keeps a confidence, a negative number when the player bullies them or accuses without cause",
+            "min": 0,
+            "max": 100,
+            "initial": 40,
+            "max_delta_per_turn": 15,
+            "bands": [
+              [
+                0,
+                20,
+                "hostile"
+              ],
+              [
+                20,
+                45,
+                "wary"
+              ],
+              [
+                45,
+                70,
+                "cooperative"
+              ],
+              [
+                70,
+                101,
+                "confiding"
+              ]
+            ]
+          }
+        }
+      },
+      "crane": {
+        "name": "Edith Crane",
+        "keys": "crane, edith, secretary",
+        "desc": "Ambrose's private secretary for fifteen years. Exact, tired, and correct in manner. Claims she was typing letters in the morning room until eleven.",
+        "stats": {
+          "composure": {
+            "desc": "How steady this suspect is. Send a negative number when the player confronts them with evidence or catches a lie, a small positive number when they are given time or reassured",
+            "min": 0,
+            "max": 100,
+            "initial": 85,
+            "max_delta_per_turn": 20,
+            "bands": [
+              [
+                0,
+                25,
+                "cracking"
+              ],
+              [
+                25,
+                50,
+                "rattled"
+              ],
+              [
+                50,
+                75,
+                "guarded"
+              ],
+              [
+                75,
+                101,
+                "composed"
+              ]
+            ]
+          },
+          "trust": {
+            "desc": "How far this suspect trusts the player. Send a positive number when the player treats them fairly or keeps a confidence, a negative number when the player bullies them or accuses without cause",
+            "min": 0,
+            "max": 100,
+            "initial": 30,
+            "max_delta_per_turn": 15,
+            "bands": [
+              [
+                0,
+                20,
+                "hostile"
+              ],
+              [
+                20,
+                45,
+                "wary"
+              ],
+              [
+                45,
+                70,
+                "cooperative"
+              ],
+              [
+                70,
+                101,
+                "confiding"
+              ]
+            ]
+          }
+        }
+      },
+      "fisk": {
+        "name": "Dr. Leonard Fisk",
+        "keys": "fisk, doctor, physician",
+        "desc": "The family physician and Ambrose's oldest friend, 60. Genial and talkative. Claims he read in the library until ten, then went to bed.",
+        "stats": {
+          "composure": {
+            "desc": "How steady this suspect is. Send a negative number when the player confronts them with evidence or catches a lie, a small positive number when they are given time or reassured",
+            "min": 0,
+            "max": 100,
+            "initial": 80,
+            "max_delta_per_turn": 20,
+            "bands": [
+              [
+                0,
+                25,
+                "cracking"
+              ],
+              [
+                25,
+                50,
+                "rattled"
+              ],
+              [
+                50,
+                75,
+                "guarded"
+              ],
+              [
+                75,
+                101,
+                "composed"
+              ]
+            ]
+          },
+          "trust": {
+            "desc": "How far this suspect trusts the player. Send a positive number when the player treats them fairly or keeps a confidence, a negative number when the player bullies them or accuses without cause",
+            "min": 0,
+            "max": 100,
+            "initial": 50,
+            "max_delta_per_turn": 15,
+            "bands": [
+              [
+                0,
+                20,
+                "hostile"
+              ],
+              [
+                20,
+                45,
+                "wary"
+              ],
+              [
+                45,
+                70,
+                "cooperative"
+              ],
+              [
+                70,
+                101,
+                "confiding"
+              ]
+            ]
+          }
+        }
+      },
+      "lasker": {
+        "name": "Vivian Lasker",
+        "keys": "lasker, vivian, partner",
+        "desc": "Ambrose's partner in the Thorne & Lasker Line, in her fifties. Brisk and proud. Claims she smoked on the terrace, then wrote letters in her room.",
+        "stats": {
+          "composure": {
+            "desc": "How steady this suspect is. Send a negative number when the player confronts them with evidence or catches a lie, a small positive number when they are given time or reassured",
+            "min": 0,
+            "max": 100,
+            "initial": 75,
+            "max_delta_per_turn": 20,
+            "bands": [
+              [
+                0,
+                25,
+                "cracking"
+              ],
+              [
+                25,
+                50,
+                "rattled"
+              ],
+              [
+                50,
+                75,
+                "guarded"
+              ],
+              [
+                75,
+                101,
+                "composed"
+              ]
+            ]
+          },
+          "trust": {
+            "desc": "How far this suspect trusts the player. Send a positive number when the player treats them fairly or keeps a confidence, a negative number when the player bullies them or accuses without cause",
+            "min": 0,
+            "max": 100,
+            "initial": 25,
+            "max_delta_per_turn": 15,
+            "bands": [
+              [
+                0,
+                20,
+                "hostile"
+              ],
+              [
+                20,
+                45,
+                "wary"
+              ],
+              [
+                45,
+                70,
+                "cooperative"
+              ],
+              [
+                70,
+                101,
+                "confiding"
+              ]
+            ]
+          }
+        }
+      },
+      "moffat": {
+        "name": "Agnes Moffat",
+        "keys": "moffat, agnes, housekeeper",
+        "desc": "Housekeeper at Cormorant House for thirty years. She found the body at 11:20 pm. Claims she was in the kitchen all evening until she took up the cocoa.",
+        "stats": {
+          "composure": {
+            "desc": "How steady this suspect is. Send a negative number when the player confronts them with evidence or catches a lie, a small positive number when they are given time or reassured",
+            "min": 0,
+            "max": 100,
+            "initial": 60,
+            "max_delta_per_turn": 20,
+            "bands": [
+              [
+                0,
+                25,
+                "cracking"
+              ],
+              [
+                25,
+                50,
+                "rattled"
+              ],
+              [
+                50,
+                75,
+                "guarded"
+              ],
+              [
+                75,
+                101,
+                "composed"
+              ]
+            ]
+          },
+          "trust": {
+            "desc": "How far this suspect trusts the player. Send a positive number when the player treats them fairly or keeps a confidence, a negative number when the player bullies them or accuses without cause",
+            "min": 0,
+            "max": 100,
+            "initial": 45,
+            "max_delta_per_turn": 15,
+            "bands": [
+              [
+                0,
+                20,
+                "hostile"
+              ],
+              [
+                20,
+                45,
+                "wary"
+              ],
+              [
+                45,
+                70,
+                "cooperative"
+              ],
+              [
+                70,
+                101,
+                "confiding"
+              ]
+            ]
+          }
+        }
+      }
+    },
+    "milestones": {
+      "body_examined": {
+        "desc": "Examine the body and learn how Ambrose Thorne died"
+      },
+      "weapon_found": {
+        "desc": "Find what was used to kill him"
+      },
+      "alibi_broken": {
+        "desc": "Prove that one of the five lied about where they were"
+      },
+      "secret_exposed": {
+        "desc": "Get one of the five to admit what they are hiding"
+      },
+      "case_closed": {
+        "desc": "Name the killer before the causeway clears at six"
+      }
+    }
+  },
+  "story_cards": [
+    {
+      "type": "location",
+      "name": "Cormorant House",
+      "keys": "cormorant, drawing room, library, billiard, morning room, estate office, conservatory, kitchen, plate room, servants' stair, terrace, boathouse, cellar",
+      "entry": "Cormorant House is a granite house of three floors on Skerry Holm. The ground floor holds the drawing room, library, billiard room, morning room, estate office, and conservatory, with a garden door to the terrace and a path down to the boathouse. Ambrose's study, bedroom, and dressing room are on the first floor off the main stair. The kitchen, plate room, and cellar lie below, joined to every floor by the servants' stair.",
+      "notes": "Every room any of the 45 cases needs is named here, so the narrator never invents a layout that breaks a trail."
+    },
+    {
+      "type": "location",
+      "name": "The Causeway and the Tide",
+      "keys": "causeway, tide, skerry, mainland",
+      "entry": "The causeway is a raised stone road that joins Skerry Holm to the mainland at low tide. Tonight the sea covered it at eight o'clock, and it clears at six in the morning. Until then nobody can cross, and the storm has cut the telephone line.",
+      "notes": "The deadline. The clock note in the script keeps the time."
+    },
+    {
+      "type": "character",
+      "name": "Ambrose Thorne",
+      "keys": "ambrose, victim, the body, dinner",
+      "entry": "Ambrose Thorne, 68, owned the Thorne & Lasker shipping line and Cormorant House. He was a hard, private man who wrote to an inquiry agent rather than to his solicitor. At dinner tonight he said he would set certain things right at breakfast. At a quarter past nine he went to his study and asked not to be disturbed.",
+      "notes": "Public facts only. The breakfast line fits every killer's motive."
+    },
+    {
+      "type": "location",
+      "name": "The Study",
+      "keys": "study, desk, mantel, blotter, brandy, decanter, paper knife, tide clock",
+      "entry": "Ambrose Thorne's study is on the first floor. On an ordinary evening a brass tide clock stands on the mantel, a narrow paper knife lies in the desk tray, and a decanter of brandy sits on the side table. Anything missing or disturbed in the study tonight matters.",
+      "notes": "Worded as an ordinary evening, so it fits all three methods."
+    },
+    {
+      "type": "faction",
+      "name": "Thorne & Lasker Line",
+      "keys": "shipping, the firm, ledger, accounts, company, steamer",
+      "entry": "The Thorne & Lasker Line runs cargo steamers out of the northern ports. Ambrose Thorne and Vivian Lasker own it together. This past year the talk on the quays is that money is short and the ships are old.",
+      "notes": "Background for the crane, lasker, and moffat motives without pointing at any one."
+    },
+    {
+      "type": "item",
+      "name": "Dr. Fisk's Bag",
+      "keys": "medical bag, doctor's bag, chloral, vial, sleeping draught, hall table",
+      "entry": "Dr. Fisk's medical bag stood on the hall table all evening, where anyone passing could reach it. It holds his instruments and several small vials of chloral hydrate, a sleeping draught that kills in a large dose.",
+      "notes": "Needed for the poison method. True in every case."
+    },
+    {
+      "type": "character",
+      "name": "Inspector Hale",
+      "keys": "inspector, police, constable",
+      "entry": "Inspector Hale of the county police is expected to cross the causeway on foot at six. He is thorough and unhurried, and he will search the whole house. Until he arrives, the inquiry agent is the only investigator on Skerry Holm.",
+      "notes": "Arrives at dawn in the script's turn-18 note and in the endings."
+    }
+  ],
+  "scripts": [
+    {
+      "name": "The Sealed Case",
+      "description": "Draws a killer, a method, and a hiding place when the adventure starts, gives the narrator the same sealed answer every turn, keeps the night's clock, and judges the one formal accusation.",
+      "library_js": "// Inserts a note above the length limit and the state_delta reminder. Those two\n// lines must stay last, because the model follows the text nearest its reply.\nfunction insertBeforeTail(text, note) {\n  var marks = [\"\\n\\n[Hard limit:\", \"\\n\\n[Part of your last state_delta\", \"\\n\\n[Reminder: end your reply\"];\n  for (var i = 0; i < marks.length; i++) {\n    var at = text.lastIndexOf(marks[i]);\n    if (at !== -1) return text.slice(0, at) + \"\\n\\n\" + note + text.slice(at);\n  }\n  return text + \"\\n\\n\" + note;\n}\n\nvar MARKER = \"The truth of the case is in the narrator's sealed file.\";\nvar DAWN_TURN = 18;\n\n// The order matches the case number arithmetic: killer = floor(caseNo / 9).\nvar SUSPECTS = [\n  { id: \"julian\", name: \"Julian Thorne\", aliases: [\"julian\", \"thorne\", \"nephew\"] },\n  { id: \"crane\", name: \"Edith Crane\", aliases: [\"edith\", \"crane\", \"secretary\"] },\n  { id: \"fisk\", name: \"Dr. Leonard Fisk\", aliases: [\"leonard\", \"fisk\", \"doctor\", \"physician\", \"dr\"] },\n  { id: \"lasker\", name: \"Vivian Lasker\", aliases: [\"vivian\", \"lasker\", \"partner\"] },\n  { id: \"moffat\", name: \"Agnes Moffat\", aliases: [\"agnes\", \"moffat\", \"housekeeper\"] }\n];\n\n// Each breaker uses a physical fact, or a witness whose own lesser secret puts\n// them in the right place at ten, so every breaker holds in every case.\nvar KILLERS = [\n  {\n    motive: \"Ambrose was cutting him from the will at breakfast, and he owes a London moneylender four thousand pounds\",\n    lie: \"he was not in the billiard room after half past nine\",\n    breaker: \"the billiard room fire was never lit, and the balls lie as Mrs. Moffat racked them at nine\",\n    item: \"his monogrammed gold cuff link\",\n    tell: \"he jokes, pours drinks, and one shirt cuff hangs open\",\n    secret: \"at ten he was searching Ambrose's dressing room for the draft will\"\n  },\n  {\n    motive: \"Ambrose had found fifteen years of small alterations in the accounts in her hand and meant to prosecute\",\n    lie: \"she was not typing in the morning room\",\n    breaker: \"the morning room typewriter is still under its cover, and tonight's letters carry yesterday's date\",\n    item: \"a glove stained with typewriter ribbon ink\",\n    tell: \"she answers too precisely and keeps her hands out of sight\",\n    secret: \"at ten she was in the estate office copying ledgers that show money leaving the firm, fearing the blame\"\n  },\n  {\n    motive: \"Ambrose had learned that the doctor's error killed his wife two years ago and meant to report him\",\n    lie: \"he was not reading in the library\",\n    breaker: \"the novel he names is uncut past chapter two, and the library lamp burned no oil tonight\",\n    item: \"the leather case of his reading spectacles\",\n    tell: \"he grows kindly and long-winded, and keeps offering to examine people\",\n    secret: \"at ten he was in the cellar for whisky; he drinks again and Ambrose knew\"\n  },\n  {\n    motive: \"Ambrose was dissolving the partnership tomorrow and exposing her use of company money\",\n    lie: \"she was not on the terrace\",\n    breaker: \"rain has swept the terrace since nine, yet her shoes and hem are dry, and Mrs. Moffat found the terrace door bolted inside at eleven\",\n    item: \"an amber cigarette holder\",\n    tell: \"she turns cold and formal and threatens lawyers\",\n    secret: \"at ten she was searching Ambrose's bedroom for the partnership papers\"\n  },\n  {\n    motive: \"tonight she read a letter proving Ambrose knew the ship that drowned her son was unfit for sea\",\n    lie: \"she was not in the kitchen all evening\",\n    breaker: \"the kitchen range burned to ash untended, and Dr. Fisk crossed an empty kitchen near ten on his way to the cellar\",\n    item: \"a small brass key from the ring at her belt, which now has a gap\",\n    tell: \"she fusses with trays and speaks of Ambrose as if he were alive\",\n    secret: \"all evening she was in the plate room hiding gaps left by silver she sold for her sister's care\"\n  }\n];\n\nvar METHODS = [\n  {\n    how: \"poisoned his brandy with chloral hydrate from a vial taken from Dr. Fisk's bag in the hall\",\n    body: \"no wound; bluish lips; the spilled brandy smells sharp and bitter\",\n    weapon: \"the empty chloral vial\",\n    absence: \"nothing is disturbed, but one chloral vial is missing from Dr. Fisk's bag\"\n  },\n  {\n    how: \"struck him from behind with the brass tide clock from the mantel\",\n    body: \"a wound under the hair at the back of the skull\",\n    weapon: \"the brass tide clock, blood on its base\",\n    absence: \"the tide clock is gone, and a clean ring in the mantel dust shows where it stood\"\n  },\n  {\n    how: \"stabbed him from behind, between the ribs, with the paper knife from the desk tray\",\n    body: \"a narrow puncture in the back, little blood, hidden by the jacket\",\n    weapon: \"the paper knife, blood in its hinge\",\n    absence: \"the desk tray has an empty slot\"\n  }\n];\n\nvar HIDES = [\n  { place: \"in the boathouse, under the upturned dinghy\", trail: \"wet sand on the mat by the garden door\" },\n  { place: \"in the conservatory, in the soil of the largest fern tub\", trail: \"potting soil on the study carpet\" },\n  { place: \"in the linen cupboard on the servants' stair, behind the sheets\", trail: \"a smear on the stair rail and one sheet folded wrong\" }\n];\n\n// Draws the case once per adventure. Only the number is stored, because the\n// player can read the script state and a name there would give the answer.\nfunction ensureCase() {\n  if (typeof state.caseNo !== \"number\" || state.caseNo < 0 || state.caseNo > 44) {\n    state.caseNo = Math.floor(Math.random() * 45);\n  }\n  return state.caseNo;\n}\n\nfunction decode(caseNo) {\n  return {\n    killer: Math.floor(caseNo / 9),\n    method: Math.floor(caseNo / 3) % 3,\n    hide: caseNo % 3\n  };\n}\n\n// Turn 1 is 11:30 pm, and each later turn adds 24 minutes, so turn 17 is 5:54 am.\nfunction clockText(turn) {\n  var minutes = (23 * 60 + 30 + 24 * (Math.max(turn, 1) - 1)) % (24 * 60);\n  var h = Math.floor(minutes / 60);\n  var m = minutes % 60;\n  var suffix = h < 12 ? \"am\" : \"pm\";\n  var h12 = h % 12 === 0 ? 12 : h % 12;\n  return h12 + \":\" + (m < 10 ? \"0\" : \"\") + m + \" \" + suffix;\n}\n\nfunction suspectById(id) {\n  for (var i = 0; i < SUSPECTS.length; i++) {\n    if (SUSPECTS[i].id === id) return SUSPECTS[i];\n  }\n  return SUSPECTS[0];\n}\n\nfunction hudMessage(turn) {\n  if (typeof state.accused === \"string\") {\n    return \"The case is closed. You accused \" + suspectById(state.accused).name + \".\";\n  }\n  if (turn >= DAWN_TURN) return \"Dawn. The causeway is open and Inspector Hale is here.\";\n  return clockText(turn) + \". The causeway clears at 6:00.\";\n}\n\nfunction caseFile(caseNo) {\n  var c = decode(caseNo);\n  var who = SUSPECTS[c.killer].name;\n  var k = KILLERS[c.killer];\n  var m = METHODS[c.method];\n  var h = HIDES[c.hide];\n  var others = [];\n  for (var i = 0; i < SUSPECTS.length; i++) {\n    if (i !== c.killer) others.push(SUSPECTS[i].name + \": \" + KILLERS[i].secret);\n  }\n  return \"SEALED CASE FILE (narrator only; never quote or show it). \" +\n    \"Killer: \" + who + \", at about ten. Motive: \" + k.motive + \". \" +\n    \"How: \" + who + \" \" + m.how + \". Body shows: \" + m.body + \". Study: \" + m.absence + \". \" +\n    \"Hidden \" + h.place + \": \" + m.weapon + \", and \" + k.item + \". Trail there: \" + h.trail + \". \" +\n    \"Alibi lie: \" + k.lie + \". Broken by: \" + k.breaker + \". When pressed: \" + k.tell + \". \" +\n    \"Innocent, with lesser secrets. \" + others.join(\". \") + \". \" +\n    \"Reveal a fact only when the player's action uncovers it. The innocents never confess to \" +\n    \"murder. The killer lies steadily and never confesses or is hinted at before a formal accusation.\";\n}\n",
+      "input_js": "// Words allowed between the start of a clause and \"accuse\" in a do action.\n// Players write \"gather everyone and formally accuse Lasker\", so the verb may\n// sit mid-sentence. Any other word, such as \"not\", \"would\", or \"want to\",\n// means the player is not accusing anyone.\nvar LEAD_WORDS = /^(?:you|i|then|and|now|at|last|once|here|there)$/i;\n\n// Returns the text after a deliberate accusation and the text before it, or null.\nfunction accusationTarget(text) {\n  var adverb = \"(?:[a-z]+ly\\\\s+|now\\\\s+)?\";\n  if (/^>\\s*You\\s+(?!say\\s+\")/i.test(text)) {\n    var re = /\\baccuse\\s+/ig;\n    var m;\n    while ((m = re.exec(text)) !== null) {\n      var before = text.slice(0, m.index).replace(/^>\\s*/, \"\");\n      var clause = before.split(/[,.;:!?]|\\band\\b|\\bthen\\b/i).pop();\n      var words = clause.split(/\\s+/).filter(function (w) { return w.length > 0; });\n      var plain = words.every(function (w) { return LEAD_WORDS.test(w) || /^[a-z]+ly$/i.test(w); });\n      if (plain) return { rest: text.slice(m.index + m[0].length), before: before };\n    }\n    return null;\n  }\n  var say = /^>\\s*You\\s+say\\s+\"([\\s\\S]*)\"?\\s*$/i.exec(text);\n  if (!say) return null;\n  // \"I accuse\" must open the quote or a sentence inside it.\n  var asSay = new RegExp(\"(?:^|[.!?]\\\\s+)I\\\\s+\" + adverb + \"accuse\\\\s+([\\\\s\\\\S]*)$\", \"i\").exec(say[1]);\n  return asSay ? { rest: asSay[1], before: say[1].slice(0, asSay.index) } : null;\n}\n\n// Picks the suspect whose alias appears first, so a sentence that names a second\n// person later still accuses the first. With `last`, picks the one named last,\n// which is who a pronoun such as \"him\" points back to.\nfunction matchSuspect(rest, last) {\n  var best = null;\n  var bestAt = -1;\n  for (var i = 0; i < SUSPECTS.length; i++) {\n    for (var j = 0; j < SUSPECTS[i].aliases.length; j++) {\n      var m = new RegExp(\"\\\\b\" + SUSPECTS[i].aliases[j] + \"\\\\b\", \"i\").exec(rest);\n      if (m && (bestAt === -1 || (last ? m.index > bestAt : m.index < bestAt))) {\n        best = SUSPECTS[i];\n        bestAt = m.index;\n      }\n    }\n  }\n  return best;\n}\n\nconst modifier = (text) => {\n  ensureCase();\n  var turn = Math.floor((info.actionCount + 1) / 2);\n  state.message = hudMessage(turn);\n  var found = accusationTarget(text);\n  if (found === null) return { text: text };\n  // One accusation per adventure. A later one changes nothing.\n  if (typeof state.accused === \"string\") return { text: text };\n  var who = matchSuspect(found.rest, false);\n  if (!who && /^(?:him|her|you)\\b/i.test(found.rest)) who = matchSuspect(found.before, true);\n  if (!who) {\n    state.message = \"Name one of the five: Julian, Crane, Fisk, Lasker, or Moffat.\";\n    return { text: text };\n  }\n  state.accused = who.id;\n  state.correct = who.id === SUSPECTS[decode(state.caseNo).killer].id;\n  state.accusedTurn = turn;\n  state.message = hudMessage(turn);\n  return { text: text };\n};\nmodifier(text);\n",
+      "context_js": "// Reads the live state block only, because story text could repeat its words.\nfunction liveState(text) {\n  var at = text.lastIndexOf(\"Current world state (running totals\");\n  return at === -1 ? \"\" : text.slice(at);\n}\n\nfunction achievedLine(live) {\n  var m = /\\nAchieved: ([^\\n]*)/.exec(live);\n  return m ? m[1] : \"\";\n}\n\nfunction clockNote(turn, live) {\n  var now = clockText(turn);\n  if (turn >= DAWN_TURN) {\n    return \"[Clock: it is dawn and past six. The causeway is open. Inspector Hale crosses it on foot \" +\n      \"and asks you, the inquiry agent, for a name. If the player's action this turn names nobody, \" +\n      \"the case passes to Hale, the killer leaves the island unaccused, and you end the story now \" +\n      \"and reveal the whole truth of the sealed file plainly. Do not mark milestones.case_closed.]\";\n  }\n  var note = \"[Clock: the time is now \" + now + \". The causeway clears at 6:00 am. Every mention \" +\n    \"of the time in your reply must agree with this.\";\n  if (turn >= 15) note += \" The tide is going out and time is short; let the household feel it.\";\n  // The storm cuts the light at a fixed hour so the flag moves on every\n  // playthrough. The note repeats for two more turns because a model sometimes\n  // narrates the blackout and omits the flag.\n  if (turn >= 5 && turn <= 7 && /\\blights_out no\\b/.test(live)) {\n    note += \" By this turn the storm has cut the electric light, and the house is lit only by \" +\n      \"lamps and candles. Include \\\"flags.lights_out\\\": true in your state_delta block.\";\n  }\n  return note + \"]\";\n}\n\nfunction verdictNote(turn, live) {\n  var file = decode(state.caseNo);\n  var killer = SUSPECTS[file.killer];\n  var accused = suspectById(state.accused);\n  if (turn > state.accusedTurn) {\n    return \"[Verdict: the case is over. Only an epilogue remains. No new evidence or argument \" +\n      \"changes the result. Do not mark milestones.case_closed now.]\";\n  }\n  if (state.correct) {\n    var achieved = achievedLine(live);\n    var proof = /\\bweapon_found\\b/.test(achieved) || /\\balibi_broken\\b/.test(achieved);\n    var late = state.accusedTurn >= DAWN_TURN;\n    var ending = proof\n      ? \"The player's proof holds. \" + killer.name + \" breaks and confesses in front of the household.\"\n      : \"The player has neither the weapon nor a broken alibi. \" + killer.name + \" denies it coldly, \" +\n        \"and the proof surfaces only when the police search the hiding place at dawn.\";\n    return \"[Verdict: the player's formal accusation of \" + accused.name + \" is correct. \" +\n      killer.name + \" is the killer. Play the ending now. \" + ending + \" Then state the whole \" +\n      \"truth of the sealed file plainly. \" +\n      (late ? \"The accusation came after six, so do not mark milestones.case_closed.\"\n            : \"Include \\\"milestones.case_closed\\\": true in your state_delta block.\") + \"]\";\n  }\n  return \"[Verdict: the player's formal accusation of \" + accused.name + \" is wrong. \" +\n    accused.name + \" is innocent of the murder, and their lesser secret from the sealed file comes \" +\n    \"out now. Play the ending: at dawn Inspector Hale's search finds the weapon and \" +\n    killer.name + \"'s item at the hiding place. Tell the player plainly that \" + killer.name +\n    \" did it, how, and why, and name the clues they missed. Do not mark milestones.case_closed.]\";\n}\n\nconst modifier = (text) => {\n  ensureCase();\n  var turn = Math.floor(info.actionCount / 2);\n  var live = liveState(text);\n  var file = caseFile(state.caseNo);\n  var at = text.indexOf(MARKER);\n  // The memory slot sits in the fixed system block, away from the player's\n  // latest action. If the player removed the marker, the tail is the fallback.\n  if (at !== -1) {\n    text = text.slice(0, at) + file + text.slice(at + MARKER.length);\n  } else {\n    text = insertBeforeTail(text, \"[\" + file + \"]\");\n  }\n  var note = typeof state.accused === \"string\" ? verdictNote(turn, live) : clockNote(turn, live);\n  text = insertBeforeTail(text, note);\n  state.message = hudMessage(turn);\n  return { text: text };\n};\nmodifier(text);\n",
+      "output_js": ""
+    }
+  ]
+}

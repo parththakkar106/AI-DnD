@@ -1,0 +1,452 @@
+{
+  "title": "A Second Life in Aldermere",
+  "description": "You died an ordinary death and woke on a shrine step above the Vale of Aldermere, holding one gift and eight silver. Below lie the market town of Brindle Cross, a Guild that hires wayfarers, and a grey rot creeping south out of the Hollow Wood. The game tracks your wounds, coin, Guild rank, how far your gift has grown, and how far the rot has spread, and it rolls a die for every risky action.",
+  "prompt": "The last thing you remember is ordinary: a narrow bed, a slow breath, and then nothing at all.\n\nNow cold stone presses against your cheek, and birds you do not know are singing. You lie on the worn step of a wayside shrine on the Pilgrim Road. Grey standing stones ring a basin of still water, and a disc of pale wood, a shrine token, sits warm in your hand. You still wear the clothes you died in, and eight silver pieces weigh down a pocket that was empty a moment ago. Below the ridge, the Vale of Aldermere spreads out in hedged fields. A market town smokes at the meeting of two roads, and a marker at the shrine gate names it Brindle Cross, two miles on. Far to the north, the edge of a great forest has gone the color of ash.\n\nSomething new sits behind your breastbone, steady as a second pulse. The shrine gives each soul it wakes one gift. Fresh letters are cut into the rim of the basin, and the stone always names the gift it gave.\n\n${Your one gift (Beast-speech, Runesmithing, Shadowstep, Mending, or invent one)}\n\nDown the slope, a carter's wagon leans in the ditch with one wheel cracked through. A wiry girl with a sling at her belt is trying to lever it free alone, cursing a mule that will not pull. Three grey-feathered crows watch her from the fence.\n\nShe looks up, sees you on the shrine step, and sets a stone in the sling. \"You one of the shrine-woken, then? Or just lost?\"",
+  "memory": "The player is shrine-woken: they died in our world and woke at a wayside shrine above Brindle Cross in the Vale of Aldermere. The gift the shrine gave the player: [${Your one gift (Beast-speech, Runesmithing, Shadowstep, Mending, or invent one)}]. If the brackets are empty, the gift is Mending. Each soul holds one gift only. The Wayfarers' Guild in Brindle Cross registers wayfarers for 5 silver and posts paid contracts. The Greyrot spreads south from the Hollow Wood, and no one yet knows its source.",
+  "authors_note": "Keep the world busy with its own affairs: clerks are short of time, prices are real, and strangers have their own errands. Let failure land with weight. Describe the gift through sensation and cost, never as easy power. Keep the Greyrot present in small signs: grey leaves on the road, worried talk, empty farms.",
+  "ai_instructions": "Write in second person, present tense. End each reply at a point where the player decides. Never decide, act, or speak for the player.\n\nThe world does not revolve around the player. Townsfolk, the Guild, and Corwin Vane have their own business. People here know of the shrine-woken: some value them and some distrust them. If the plot essentials name no gift, the gift is Mending.\n\nWhen Pell agrees to travel with the player, set flags.pell_travelling to true and mark milestones.companion_joined in the same block.\n\nThe gift follows the mastery band. Untrained: small, unreliable effects that sometimes misfire. Novice: reliable small effects. Adept and above: larger effects at a higher focus cost. Never let the gift do more than its band allows, whatever the player writes. Narrate the attempt falling short instead.\n\nA do action may end with a tag such as [d20: 14]. Use it only when the outcome is in doubt. 1 to 5: the action fails and costs something. 6 to 10: it fails, or succeeds at a cost. 11 to 15: it succeeds. 16 to 19: it succeeds well. 20: an exceptional result. Ignore the roll for actions with no risk, such as walking or talking. Never mention the roll or its number in the narration.\n\nEvery number in the state_delta block is a change, not a total.\n\nFocus: each use of the gift costs focus, 1 to 3 for a small use and 4 to 6 for a great one, doubled while on_blighted_ground is true. A night's sleep or a meal restores it. At 0 focus the gift does nothing.\n\nWhen the player sleeps through a night, add 1 to world.day and 1 to 3 to world.blight in the same block.\n\nRegistering with the Guild costs 5 silver and adds 1 to player.rank, which makes the player Copper rank.\n\nMark each milestone as it happens, using the id shown beside the goal.",
+  "tags": "fantasy, isekai, sandbox, adventure, rpg",
+  "icon": "🗺",
+  "stat_schema": {
+    "world": {
+      "day": {
+        "type": "counter",
+        "desc": "Days since the player woke. Add 1 when the player sleeps through a night.",
+        "min": 1,
+        "initial": 1,
+        "max_delta_per_turn": 1,
+        "cooldown": 6
+      },
+      "blight": {
+        "desc": "How far the Greyrot has spread through the vale. Send a positive number of 1 to 3 each time a day passes, and more when the player's choices help it spread. Send a negative number only when the player destroys a rot-heart or cleanses a place.",
+        "min": 0,
+        "max": 100,
+        "initial": 12,
+        "max_delta_per_turn": 6,
+        "bands": [
+          [
+            0,
+            20,
+            "rumors"
+          ],
+          [
+            20,
+            45,
+            "the north wood is sick"
+          ],
+          [
+            45,
+            70,
+            "farms abandoned"
+          ],
+          [
+            70,
+            90,
+            "at the town walls"
+          ],
+          [
+            90,
+            101,
+            "the vale is lost"
+          ]
+        ]
+      }
+    },
+    "player": {
+      "hp": {
+        "desc": "The player's health. Send a negative number for wounds taken and a positive number for healing. Wounds do not close on blighted ground, so send no healing there.",
+        "min": 0,
+        "max": 40,
+        "initial": 40,
+        "max_delta_per_turn": 20,
+        "bands": [
+          [
+            0,
+            1,
+            "down"
+          ],
+          [
+            1,
+            12,
+            "badly hurt"
+          ],
+          [
+            12,
+            28,
+            "hurt"
+          ],
+          [
+            28,
+            41,
+            "unhurt"
+          ]
+        ]
+      },
+      "focus": {
+        "desc": "The reserve the gift draws on. Send a negative number each time the gift is used, and a positive number after sleep or a meal. It starts full, so a use is always negative.",
+        "min": 0,
+        "max": 20,
+        "initial": 20,
+        "max_delta_per_turn": 10,
+        "bands": [
+          [
+            0,
+            1,
+            "spent"
+          ],
+          [
+            1,
+            7,
+            "strained"
+          ],
+          [
+            7,
+            14,
+            "steady"
+          ],
+          [
+            14,
+            21,
+            "fresh"
+          ]
+        ]
+      },
+      "coin": {
+        "desc": "Silver pieces the player carries. Send a negative number when the player pays and a positive number when the player is paid or finds coin.",
+        "min": 0,
+        "initial": 8,
+        "max_delta_per_turn": 200
+      },
+      "mastery": {
+        "type": "counter",
+        "desc": "Skill with the gift. Add 1 to 4 only when the player practices the gift, is taught, or uses it under real pressure.",
+        "min": 0,
+        "max": 100,
+        "initial": 0,
+        "max_delta_per_turn": 4,
+        "bands": [
+          [
+            0,
+            15,
+            "untrained"
+          ],
+          [
+            15,
+            35,
+            "novice"
+          ],
+          [
+            35,
+            60,
+            "adept"
+          ],
+          [
+            60,
+            85,
+            "expert"
+          ],
+          [
+            85,
+            101,
+            "master"
+          ]
+        ]
+      },
+      "rank": {
+        "type": "counter",
+        "desc": "Guild rank. Add 1 when the Guild registers the player, and 1 for each later formal promotion by the Guild.",
+        "min": 0,
+        "max": 5,
+        "initial": 0,
+        "max_delta_per_turn": 1,
+        "cooldown": 12,
+        "bands": [
+          [
+            0,
+            1,
+            "unregistered"
+          ],
+          [
+            1,
+            2,
+            "Copper"
+          ],
+          [
+            2,
+            3,
+            "Bronze"
+          ],
+          [
+            3,
+            4,
+            "Silver"
+          ],
+          [
+            4,
+            5,
+            "Gold"
+          ],
+          [
+            5,
+            6,
+            "Warden"
+          ]
+        ]
+      },
+      "gear": {
+        "type": "text",
+        "desc": "What the player carries besides coin. Send the full new list when it changes.",
+        "initial": "the clothes you died in, a shrine token",
+        "max_length": 200
+      },
+      "location": {
+        "type": "text",
+        "desc": "Where the player is now, in a few words. Send the full new text when the player moves.",
+        "initial": "the wayside shrine above Brindle Cross",
+        "max_length": 80
+      }
+    },
+    "npcs": {
+      "odile": {
+        "name": "Odile Marsh",
+        "keys": "odile, registrar",
+        "desc": "Odile Marsh is registrar of the Wayfarers' Guild in Brindle Cross. Dry, fair, and buried in paperwork. She handles registration, the contract board, and promotions.",
+        "stats": {
+          "trust": {
+            "desc": "Odile's trust in the player. Send a positive number when the player is honest, punctual, or does tidy work, and a negative number for lies, trouble, or wasted time.",
+            "min": 0,
+            "max": 100,
+            "initial": 20,
+            "max_delta_per_turn": 10,
+            "bands": [
+              [
+                0,
+                20,
+                "cold"
+              ],
+              [
+                20,
+                40,
+                "wary"
+              ],
+              [
+                40,
+                60,
+                "cordial"
+              ],
+              [
+                60,
+                80,
+                "trusting"
+              ],
+              [
+                80,
+                101,
+                "staunch ally"
+              ]
+            ]
+          }
+        }
+      },
+      "corwin": {
+        "name": "Corwin Vane",
+        "keys": "corwin",
+        "desc": "Corwin Vane is a Silver-rank wayfarer of the Guild. Skilled, vain, and quick to sneer at newcomers, but not cruel. He competes with the player for contracts and notice.",
+        "stats": {
+          "respect": {
+            "desc": "Corwin's respect for the player. Send a positive number when the player shows real skill or stands up to him, and a negative number when the player fails in front of him, boasts, or backs down.",
+            "min": 0,
+            "max": 100,
+            "initial": 15,
+            "max_delta_per_turn": 10,
+            "bands": [
+              [
+                0,
+                15,
+                "contemptuous"
+              ],
+              [
+                15,
+                35,
+                "dismissive"
+              ],
+              [
+                35,
+                60,
+                "grudging"
+              ],
+              [
+                60,
+                85,
+                "respectful"
+              ],
+              [
+                85,
+                101,
+                "admiring"
+              ]
+            ]
+          }
+        }
+      },
+      "pell": {
+        "name": "Pell Ashdown",
+        "keys": "pell, ashdown",
+        "desc": "Pell Ashdown is a carter's daughter of 17 from the farms north of Brindle Cross. She carries a sling, fears nothing, and talks too much. She may travel with the player if the player earns it.",
+        "stats": {
+          "health": {
+            "desc": "Pell's health. Send a negative number when she is hurt and a positive number when she is healed.",
+            "min": 0,
+            "max": 30,
+            "initial": 30,
+            "max_delta_per_turn": 15,
+            "bands": [
+              [
+                0,
+                1,
+                "down"
+              ],
+              [
+                1,
+                10,
+                "badly hurt"
+              ],
+              [
+                10,
+                20,
+                "hurt"
+              ],
+              [
+                20,
+                31,
+                "unhurt"
+              ]
+            ]
+          },
+          "loyalty": {
+            "desc": "Pell's loyalty to the player. Send a positive number when the player helps, protects, or keeps faith with her, and a negative number when the player lies to her, abandons her, or puts her in needless danger.",
+            "min": 0,
+            "max": 100,
+            "initial": 25,
+            "max_delta_per_turn": 10,
+            "bands": [
+              [
+                0,
+                20,
+                "distrustful"
+              ],
+              [
+                20,
+                45,
+                "curious"
+              ],
+              [
+                45,
+                70,
+                "friendly"
+              ],
+              [
+                70,
+                90,
+                "loyal"
+              ],
+              [
+                90,
+                101,
+                "devoted"
+              ]
+            ]
+          }
+        }
+      }
+    },
+    "flags": {
+      "pell_travelling": {
+        "desc": "True while Pell travels with the player. False when she stays behind or leaves.",
+        "initial": false
+      },
+      "on_blighted_ground": {
+        "desc": "True while the player stands on land the Greyrot has taken. There the gift costs double focus and wounds do not close. False once the player leaves it.",
+        "initial": false
+      }
+    },
+    "milestones": {
+      "registered": {
+        "desc": "Register with the Wayfarers' Guild"
+      },
+      "first_contract": {
+        "desc": "Complete a Guild contract"
+      },
+      "companion_joined": {
+        "desc": "Earn a traveling companion"
+      },
+      "rot_source_found": {
+        "desc": "Learn where the Greyrot comes from"
+      },
+      "heart_destroyed": {
+        "desc": "Destroy a rot-heart"
+      }
+    }
+  },
+  "story_cards": [
+    {
+      "type": "location",
+      "name": "Brindle Cross",
+      "keys": "brindle, market town, town square",
+      "entry": "Brindle Cross is a market town where the Pilgrim Road meets the Mill Road, in the Vale of Aldermere. It has a stone bridge, a weekly market, the Wayfarers' Guild hall, and an inn called the Tilted Lantern. Lately its streets fill with farm families who fled the rot in the north.",
+      "notes": "The town the player reaches first. The Guild hall and the inn are the two places the opening points toward."
+    },
+    {
+      "type": "faction",
+      "name": "The Wayfarers' Guild",
+      "keys": "guild, wayfarer, contract, notice board",
+      "entry": "The Wayfarers' Guild hires out sellswords, guides, and specialists across the vale. Registration costs 5 silver and makes a member Copper rank. The ranks above are Bronze, Silver, Gold, and Warden, and each one takes a formal promotion. Members take paid work from the contract board, and a Copper contract pays 6 to 15 silver.",
+      "notes": "Registration is 5 silver of the 8 the player starts with. rank 0 to 1 on registering."
+    },
+    {
+      "type": "lore",
+      "name": "The Greyrot",
+      "keys": "greyrot, rot-heart, blight, ashen",
+      "entry": "The Greyrot is a grey blight spreading south from the Hollow Wood. It drains color and life from leaves, soil, and animals, and wounds taken on rotted ground do not close. Hedge scholars say it grows from buried knots of grey tissue called rot-hearts, and that destroying one cleanses the land around it. No one knows what plants them.",
+      "notes": "The source is deliberately left open for the narrator. rot_source_found fires when the player learns it in play."
+    },
+    {
+      "type": "lore",
+      "name": "The Shrine's Gift",
+      "keys": "gift, focus, ${Your one gift (Beast-speech, Runesmithing, Shadowstep, Mending, or invent one)}",
+      "entry": "The gift the shrine gave the player: [${Your one gift (Beast-speech, Runesmithing, Shadowstep, Mending, or invent one)}]. If the brackets are empty, the gift is Mending. Each soul holds exactly one gift. Using it draws on focus, a reserve that sleep and food restore, and it grows stronger only through practice, teaching, and use under pressure.",
+      "notes": "A blank answer leaves an empty key, which the engine skips."
+    },
+    {
+      "type": "lore",
+      "name": "Wayside Shrines",
+      "keys": "shrine, shrine-woken, token",
+      "entry": "Wayside shrines are rings of grey standing stones along the old roads of the Vale of Aldermere. Now and then a shrine wakes a stranger who died in another world, gives them one gift, and leaves them on its step with a shrine token. People call them the shrine-woken. Some folk count them a blessing and some count them bad luck.",
+      "notes": "Explains the premise to the narrator and to a player who opens the card."
+    },
+    {
+      "type": "location",
+      "name": "The Hollow Wood",
+      "keys": "hollow wood, hollow, north wood, forest",
+      "entry": "The Hollow Wood is an old forest of oak and ash at the north end of the Vale of Aldermere. Charcoal burners and trappers once worked its edge. Its southern edge has gone grey with the Greyrot, and the trappers no longer go in.",
+      "notes": "Where the rot-hearts are. Ground here counts as blighted."
+    },
+    {
+      "type": "lore",
+      "name": "Coin and Prices",
+      "keys": "silver, coin, price, copper, tilted lantern, lodging",
+      "entry": "Coin and prices in the Vale of Aldermere: ten coppers make one silver. A bed at the Tilted Lantern costs 1 silver a night, a hot meal a few coppers, and a good knife 3 silver. A Copper-rank Guild contract pays 6 to 15 silver.",
+      "notes": "player.coin counts whole silver. Coppers round away."
+    }
+  ],
+  "scripts": [
+    {
+      "name": "Fate's Die",
+      "description": "Rolls a d20 for every do action and adds the result to the action, so the narrator decides success or failure from a real roll. Also reminds the narrator to record what each use of the gift costs.",
+      "library_js": "// Inserts a note above the length limit and the state_delta reminder. Those two\n// lines must stay last, because the model follows the text nearest its reply.\nfunction insertBeforeTail(text, note) {\n  var marks = [\"\\n\\n[Hard limit:\", \"\\n\\n[Part of your last state_delta\", \"\\n\\n[Reminder: end your reply\"];\n  for (var i = 0; i < marks.length; i++) {\n    var at = text.lastIndexOf(marks[i]);\n    if (at !== -1) return text.slice(0, at) + \"\\n\\n\" + note + text.slice(at);\n  }\n  return text + \"\\n\\n\" + note;\n}\n",
+      "input_js": "// Rolls a d20 for each do action, so the narrator has a reason to let an\n// action fail.\nconst modifier = (text) => {\n  // A say action also starts with \"> You\", so it is excluded by its own prefix.\n  // Story actions do not start with \"> You\" and pass through unchanged.\n  if (text.indexOf(\"> You \") !== 0 || text.indexOf(\"> You say\") === 0) {\n    return { text: text };\n  }\n  // An edited turn runs this hook again on text it already tagged. Remove the\n  // earlier tag so the action never carries two. Keep its number, so that\n  // editing a turn cannot reroll a failure.\n  var old = text.match(/\\s*\\[d20: (\\d+)\\]\\s*$/);\n  // A tag that a player typed into the action sits before the closing period,\n  // not at the end. Remove it so the player cannot choose the roll.\n  var base = (old ? text.slice(0, old.index) : text).replace(/\\s*\\[d20:[^\\]]*\\]/g, \"\");\n  var roll = old ? Number(old[1]) : Math.floor(Math.random() * 20) + 1;\n  if (!(roll >= 1 && roll <= 20)) roll = Math.floor(Math.random() * 20) + 1;\n  return { text: base + \" [d20: \" + roll + \"]\" };\n};\nmodifier(text);\n",
+      "context_js": "// In playtests the narrator described the gift's cost but sent no focus or\n// mastery change, and sometimes dropped a wound. A note next to the reply asks\n// for that bookkeeping. When the player's action names the gift, the note asks\n// for exact changes, because the model follows an exact number more reliably\n// than a condition.\nconst modifier = (text) => {\n  // Read the gift from the plot essentials. A blank answer means Mending.\n  var m = text.match(/The gift the shrine gave the player: \\[([^\\]\\n]*)\\]/);\n  var gift = (m && m[1].trim()) || \"Mending\";\n  var word = (gift.toLowerCase().match(/[a-z]+/) || [\"gift\"])[0];\n  // \"Mending\" must also match \"mend\", so drop a trailing \"ing\".\n  if (word.length > 6 && /ing$/.test(word)) word = word.slice(0, -3);\n\n  // Only the newest entry counts. On a continue it is the narrator's own text,\n  // and an older action must not be charged twice.\n  var last = history.length ? history[history.length - 1] : null;\n  var action = last && /^> You /.test(last.text || \"\") ? last.text.toLowerCase() : \"\";\n  var usesGift = action !== \"\" && (action.indexOf(\"gift\") !== -1 || action.indexOf(word) !== -1);\n\n  var note;\n  if (usesGift) {\n    note = \"[Bookkeeping this turn: the player uses the gift. Include \\\"player.focus\\\" and \\\"player.mastery\\\" in your state_delta block: focus -2 and mastery 1 for a small use, or focus -5 and mastery 2 for a great use or an attempt beyond the gift's band. Double the focus cost on blighted ground. Mastery may reach 4 under real pressure. If the gift fails before it starts, send focus only.]\";\n  } else {\n    note = \"[Bookkeeping: report every wound as a negative \\\"player.hp\\\", every payment as a \\\"player.coin\\\" change, and any use of the gift as a negative \\\"player.focus\\\" with a \\\"player.mastery\\\" of 1 to 4.]\";\n  }\n  return { text: insertBeforeTail(text, note) };\n};\nmodifier(text);\n",
+      "output_js": ""
+    }
+  ]
+}

@@ -1,0 +1,428 @@
+{
+  "title": "A Shop of Your Own",
+  "description": "Your great-aunt Maren has left you her shuttered shop on Lantern Row in the harbor town of Wrenhaven, along with a debt of 300 marks to the Harbor Bank. Open the doors, find your customers, and get to know your neighbors one conversation at a time. The game keeps track of your savings, the debt, your stock, your good name in town, the day, and how close you are to each neighbor.",
+  "prompt": "The ferry horn sounds twice, and the gulls lift off the harbor wall.\n\nWrenhaven is a small harbor town of grey stone and painted doors. Fishing boats knock against the quay, and the smell of fresh bread drifts down from the hill. Lantern Row climbs from the water, a lane of narrow shops with iron lamps over their doors. Halfway up stands the shop your great-aunt Maren Holloway kept for forty years. It has been shut since her death in the spring.\n\nYou step off the morning ferry with one bag, 40 marks, and a brass key. Aunt Maren left you the shop. She also left a debt of 300 marks to the Harbor Bank, due on the thirtieth day. On the back of your ferry ticket, in pencil, you have written the two things you have settled:\n\nName: ${Name your shop (for example, The Kettle & Compass)}\nGoods: ${What does your shop sell?}\n\nWhere a line is blank, the shop stays as Aunt Maren left it: the sign reads \"Holloway's\" and the shelves hold her tea, maps, and curios.\n\nThe key turns hard in the lock. Inside, dust lies over the counter, and the shelves hold a thin first stock of the shop's goods. The shutters will not budge, and a bucket in the back room is full of rainwater from the leak above it. Aunt Maren's ledger sits by the till, its ribbon marking a page of names.\n\nNext door, a bell jingles. A round woman in a flour-dusted apron leans out of the bakery and looks you over.\n\n\"You'll be Maren's,\" she says. \"I'm Hattie. Kettle's on, if you want a cup. Or I can leave you to it.\"",
+  "memory": "You inherited Aunt Maren Holloway's shop on Lantern Row in Wrenhaven, a small harbor town. Shop name: ${Name your shop (for example, The Kettle & Compass)}. If no name is given there, the sign reads \"Holloway's\". Goods on the shelves from day 1: ${What does your shop sell?}. If no goods are given there, the shelves hold Maren's old stock of tea, maps, and curios. You owe the Harbor Bank 300 marks, due on day 30. Maren's ledger lists townsfolk who owed her favors.",
+  "authors_note": "Gentle slice of life. Give each scene one concrete detail of the town: weather, a smell, a sound from the quay. Townsfolk talk like people with their own worries. Keep money and time honest and small.",
+  "ai_instructions": "Write in second person, present tense. End each reply at a point where the player decides. Never decide or speak for the player.\n\nA turn is one scene. A day has a morning, an afternoon, and an evening. The day advances only when the player closes up and sleeps. If the player tries to sleep again before living part of the new day, they doze for an hour and the day stays the same. Market day falls on every seventh day. The Harvest Fair runs on days 21 and 22, with a prize of 60 marks and a ribbon. The bank debt falls due on day 30.\n\nThe shop sells the goods named in the plot essentials. Only when none are named does it sell Maren's old tea, maps, and curios.\n\nKeep stakes gentle: no violence and no villains. Problems are small and human, such as a late delivery, a rival's sale, or a neighbor's bad week. Townsfolk follow their own plans. They are sometimes busy, tired, or wrong, and they do not exist to serve the player.\n\nEvery number in the state_delta block is a change, not a total.\n\nMoney is small. A slow day takes 4 to 8 marks, a good day 12 to 20, and market day more. Repairs and stock cost real money. When the player pays the bank, send the same negative amount to both player.debt and player.savings. The player cannot spend marks they do not have.\n\nReputation moves a point or two for ordinary good service.\n\nFriendship rises slowly. A kind word is worth 1, a real favor 2 or 3, and something the person will remember 4 or 5. A slight costs the same amounts. Friendship never jumps.\n\nWhen the shop's condition changes, send player.shop_state as the full new description. When the roof is mended, set flags.roof_leaking to false and mark milestones.roof_mended in the same reply.\n\nMark each milestone as it happens, using the id shown beside the goal.",
+  "tags": "slice of life, cozy, shop, relationships, sandbox",
+  "icon": "🔔",
+  "stat_schema": {
+    "world": {
+      "day": {
+        "type": "counter",
+        "desc": "The day in Wrenhaven. Add 1 when the player closes up and sleeps. Send nothing on any other turn. The bank debt is due on day 30.",
+        "min": 1,
+        "initial": 1,
+        "max_delta_per_turn": 1,
+        "cooldown": 6
+      }
+    },
+    "player": {
+      "savings": {
+        "desc": "The player's marks. Send a negative number when the player spends, a positive number when the player earns.",
+        "min": 0,
+        "initial": 40,
+        "max_delta_per_turn": 80
+      },
+      "debt": {
+        "desc": "Marks still owed to the Harbor Bank. Send a negative number when the player pays the bank part of it. It never rises, so never send a positive number.",
+        "min": 0,
+        "max": 300,
+        "initial": 300,
+        "max_delta_per_turn": 300,
+        "bands": [
+          [
+            0,
+            1,
+            "cleared"
+          ],
+          [
+            1,
+            100,
+            "nearly paid"
+          ],
+          [
+            100,
+            200,
+            "half paid"
+          ],
+          [
+            200,
+            300,
+            "heavy"
+          ]
+        ]
+      },
+      "reputation": {
+        "desc": "How the town thinks of the shop. Send a positive number for good service or a kindness the town hears about, a negative number for poor service or a slight.",
+        "min": 0,
+        "max": 100,
+        "initial": 5,
+        "max_delta_per_turn": 6,
+        "bands": [
+          [
+            0,
+            15,
+            "unknown"
+          ],
+          [
+            15,
+            35,
+            "a curiosity"
+          ],
+          [
+            35,
+            60,
+            "well liked"
+          ],
+          [
+            60,
+            85,
+            "a town fixture"
+          ],
+          [
+            85,
+            100,
+            "beloved"
+          ]
+        ]
+      },
+      "stock": {
+        "desc": "How full the shelves are. Send a negative number as customers buy, a positive number when the player restocks or makes goods.",
+        "min": 0,
+        "max": 100,
+        "initial": 20,
+        "max_delta_per_turn": 30,
+        "bands": [
+          [
+            0,
+            10,
+            "bare"
+          ],
+          [
+            10,
+            35,
+            "thin"
+          ],
+          [
+            35,
+            70,
+            "steady"
+          ],
+          [
+            70,
+            100,
+            "full"
+          ]
+        ]
+      },
+      "shop_state": {
+        "type": "text",
+        "desc": "The shop's physical condition in a short phrase. Send the full new phrase when cleaning, repairs, or damage change it.",
+        "initial": "dusty, shutters stuck, roof leaking over the back room",
+        "max_length": 200
+      }
+    },
+    "flags": {
+      "shop_open": {
+        "desc": "True while the door is unlocked for customers. False once the player locks up.",
+        "initial": false
+      },
+      "roof_leaking": {
+        "desc": "True while the roof leaks over the back room. False once the roof is mended.",
+        "initial": true
+      },
+      "fair_entered": {
+        "desc": "True once the player enters the Harvest Fair contest.",
+        "initial": false
+      }
+    },
+    "npcs": {
+      "hattie": {
+        "name": "Hattie Brindle",
+        "keys": "hattie, brindle, bakery, baker",
+        "desc": "Hattie Brindle, the baker next door. Warm, and she talks a lot. She wants someone to mind her stall at the Harvest Fair.",
+        "stats": {
+          "friendship": {
+            "desc": "Send +1 for a kind word, +2 or +3 for a real favor, +4 or +5 for something she will remember. Send the same as a negative for a slight.",
+            "min": 0,
+            "max": 100,
+            "initial": 20,
+            "max_delta_per_turn": 5,
+            "bands": [
+              [
+                0,
+                15,
+                "stranger"
+              ],
+              [
+                15,
+                35,
+                "acquaintance"
+              ],
+              [
+                35,
+                60,
+                "friendly"
+              ],
+              [
+                60,
+                85,
+                "close friend"
+              ],
+              [
+                85,
+                100,
+                "like family"
+              ]
+            ]
+          }
+        }
+      },
+      "oswin": {
+        "name": "Captain Oswin Tarr",
+        "keys": "oswin, captain, tarr",
+        "desc": "Captain Oswin Tarr, a retired ferry captain. Gruff and alone. He wants to finish the model boat he is building for his granddaughter.",
+        "stats": {
+          "friendship": {
+            "desc": "Send +1 for a kind word, +2 or +3 for a real favor, +4 or +5 for something he will remember. Send the same as a negative for a slight.",
+            "min": 0,
+            "max": 100,
+            "initial": 8,
+            "max_delta_per_turn": 5,
+            "bands": [
+              [
+                0,
+                15,
+                "stranger"
+              ],
+              [
+                15,
+                35,
+                "acquaintance"
+              ],
+              [
+                35,
+                60,
+                "friendly"
+              ],
+              [
+                60,
+                85,
+                "close friend"
+              ],
+              [
+                85,
+                100,
+                "like family"
+              ]
+            ]
+          }
+        }
+      },
+      "mirela": {
+        "name": "Mirela Voss",
+        "keys": "mirela, voss, clerk, harbor bank",
+        "desc": "Mirela Voss, the Harbor Bank clerk who holds the debt. Exact and formal. She wants to see the old shop open again, though she will not say so.",
+        "stats": {
+          "friendship": {
+            "desc": "Send +1 for a kind word, +2 or +3 for a real favor, +4 or +5 for something she will remember. Send the same as a negative for a slight.",
+            "min": 0,
+            "max": 100,
+            "initial": 10,
+            "max_delta_per_turn": 5,
+            "bands": [
+              [
+                0,
+                15,
+                "stranger"
+              ],
+              [
+                15,
+                35,
+                "acquaintance"
+              ],
+              [
+                35,
+                60,
+                "friendly"
+              ],
+              [
+                60,
+                85,
+                "close friend"
+              ],
+              [
+                85,
+                100,
+                "like family"
+              ]
+            ]
+          }
+        }
+      },
+      "tobin": {
+        "name": "Tobin Pike",
+        "keys": "tobin, errand",
+        "desc": "Tobin Pike, twelve, runs errands on the quay. Quick and sharp. He wants steady work.",
+        "stats": {
+          "friendship": {
+            "desc": "Send +1 for a kind word, +2 or +3 for a real favor, +4 or +5 for something he will remember. Send the same as a negative for a slight.",
+            "min": 0,
+            "max": 100,
+            "initial": 12,
+            "max_delta_per_turn": 5,
+            "bands": [
+              [
+                0,
+                15,
+                "stranger"
+              ],
+              [
+                15,
+                35,
+                "acquaintance"
+              ],
+              [
+                35,
+                60,
+                "friendly"
+              ],
+              [
+                60,
+                85,
+                "close friend"
+              ],
+              [
+                85,
+                100,
+                "like family"
+              ]
+            ]
+          }
+        }
+      },
+      "iris": {
+        "name": "Iris Calloway",
+        "keys": "iris, calloway",
+        "desc": "Iris Calloway, owner of the larger shop across the lane. Competitive and proud. She wants to win the Harvest Fair ribbon again.",
+        "stats": {
+          "friendship": {
+            "desc": "Send +1 for a kind word, +2 or +3 for a real favor, +4 or +5 for something she will remember. Send the same as a negative for a slight.",
+            "min": 0,
+            "max": 100,
+            "initial": 5,
+            "max_delta_per_turn": 5,
+            "bands": [
+              [
+                0,
+                15,
+                "stranger"
+              ],
+              [
+                15,
+                35,
+                "acquaintance"
+              ],
+              [
+                35,
+                60,
+                "friendly"
+              ],
+              [
+                60,
+                85,
+                "close friend"
+              ],
+              [
+                85,
+                100,
+                "like family"
+              ]
+            ]
+          }
+        }
+      }
+    },
+    "milestones": {
+      "first_sale": {
+        "desc": "Make a first sale"
+      },
+      "first_regular": {
+        "desc": "Earn a customer who comes back"
+      },
+      "roof_mended": {
+        "desc": "Mend the roof"
+      },
+      "help_hired": {
+        "desc": "Take on help in the shop"
+      },
+      "debt_cleared": {
+        "desc": "Pay the Harbor Bank in full"
+      },
+      "fair_ribbon": {
+        "desc": "Win a ribbon at the Harvest Fair"
+      }
+    }
+  },
+  "story_cards": [
+    {
+      "type": "location",
+      "name": "Wrenhaven",
+      "keys": "wrenhaven, town, harbor",
+      "entry": "Wrenhaven is a small harbor town of grey stone, painted doors, and steep lanes. Most people fish, mend boats, or keep shops, and everyone knows everyone's business by noon. Rain comes in off the sea most afternoons in autumn.",
+      "notes": "General setting card."
+    },
+    {
+      "type": "location",
+      "name": "Lantern Row",
+      "keys": "lantern row, lane",
+      "entry": "Lantern Row is a short lane of narrow shops climbing from the quay, each with an iron lamp over its door. Hattie Brindle's bakery stands next to Aunt Maren's old shop. Iris Calloway's larger shop, bright and well stocked, faces it across the lane.",
+      "notes": "Places the bakery and the rival shop."
+    },
+    {
+      "type": "location",
+      "name": "The Shop on Lantern Row",
+      "keys": "shutter, counter, shelves, back room",
+      "entry": "The player's shop on Lantern Row, kept by Maren Holloway for forty years. Its new name, if the player chose one: ${Name your shop (for example, The Kettle & Compass)}. If no name is given there, the sign still reads \"Holloway's\". Its goods: ${What does your shop sell?}. If no goods are given there, it sells Maren's tea, maps, and curios. It has one front room with a counter and till, a back room under a leaky roof, and a small room upstairs to sleep in.",
+      "notes": "Carries both placeholders. A blank answer reads as a field left empty, then the fallback sentence applies."
+    },
+    {
+      "type": "faction",
+      "name": "The Harbor Bank and the Debt",
+      "keys": "bank, debt, loan",
+      "entry": "The Harbor Bank is a narrow stone building on the quay. Aunt Maren borrowed 300 marks from it for stock and repairs, and the debt passed to the player with the shop. It is due on day 30. The bank takes part payments at the counter and writes each one in a receipt book.",
+      "notes": "The debt clerk is the NPC Mirela Voss."
+    },
+    {
+      "type": "lore",
+      "name": "The Harvest Fair",
+      "keys": "harvest, ribbon, contest",
+      "entry": "The Harvest Fair fills the harbor green on days 21 and 22. Shops set up stalls, and judges award a ribbon and a prize of 60 marks for the best stall. Iris Calloway has won the ribbon three years running. Entry costs 5 marks at the town hall.",
+      "notes": "The entry fee gives fair_entered a concrete moment."
+    },
+    {
+      "type": "item",
+      "name": "Aunt Maren's Ledger",
+      "keys": "ledger, maren",
+      "entry": "Aunt Maren's ledger is a worn green book by the till. Its back pages list townsfolk who owed her favors: Captain Tarr owes her \"a day's work, and the tar for it\", Tobin Pike \"ran errands, always paid in cake\", and Hattie Brindle \"owes me the fair stall, or I owe her, I forget which\".",
+      "notes": "Gives leads: Oswin for the roof, Tobin as hired help, Hattie and the fair."
+    },
+    {
+      "type": "lore",
+      "name": "Market Day",
+      "keys": "market",
+      "entry": "Market day comes every seventh day. Farmers and fishers fill the quay with stalls, and the crowds spill up Lantern Row. A shop that is open, stocked, and clean can take two or three times a normal day's money.",
+      "notes": "Days 7, 14, 21, 28."
+    },
+    {
+      "type": "location",
+      "name": "The Morning Ferry and Suppliers",
+      "keys": "ferry, supplier, crate, wholesale, restock",
+      "entry": "The morning ferry from the mainland docks at the quay each day at eight. It carries the post and the suppliers' crates. Goods ordered from the mainland arrive on the ferry two days later, and a full crate of ordinary stock costs about 20 marks.",
+      "notes": "Gives restocking a cost and a delay."
+    }
+  ],
+  "scripts": []
+}
